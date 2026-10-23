@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <string>
@@ -39,6 +41,28 @@ std::map<std::string, std::vector<u8>> ContractDatagrams() {
     return datagrams;
 }
 
+// The contracts' server key: its secret 32 x 0x44.
+LinkAuth::ServerKey ServerKey() {
+    LinkAuth::Key secret;
+    secret.fill(0x44);
+    return LinkAuth::ServerKeyOf(secret);
+}
+
+LinkAuth::Key Filled(u8 byte) {
+    LinkAuth::Key key;
+    key.fill(byte);
+    return key;
+}
+
+// A new ephemeral key for each handshake (past byte 0, whose low bits X25519 clears).
+LinkAuth::Key NextKey() {
+    static u32 count = 0;
+    LinkAuth::Key key = Filled(0x60);
+    ++count;
+    std::memcpy(key.data() + 1, &count, sizeof(count));
+    return key;
+}
+
 constexpr u32 Loopback = 0x0100007F; // 127.0.0.1 as sockaddr_in holds it on a little-endian PC
 constexpr u16 Port1234 = 0x3412;     // port 0x1234 in network byte order
 
@@ -49,13 +73,12 @@ const std::vector<u8> GameFrame{0x75, 0x30, 0x75, 0x31, 0x07, 0x00, 0x00,
 
 TEST(NetLink, EncodesTheContractsDatagrams) {
     const auto datagrams = ContractDatagrams();
-    ASSERT_EQ(datagrams.size(), 14u) << BLOODBORNE_SERVER_LINK_CONTRACTS;
+    ASSERT_EQ(datagrams.size(), 17u) << BLOODBORNE_SERVER_LINK_CONTRACTS;
     Hello hello{
         .online_id = "Kaniel", .build = "92829ac4 events 1f protocol 9", .secret = "s3cr3t"};
     hello.cookie.fill(0x11);
-    hello.nonce.fill(0x22);
     EXPECT_EQ(Encode(hello), datagrams.at("hello"));
-    EXPECT_EQ(EncodeCookie(hello.cookie, 20), datagrams.at("cookie"));
+    EXPECT_EQ(EncodeCookie(hello.cookie, 20, ServerKey().pub), datagrams.at("cookie"));
     EXPECT_EQ(EncodeWork(20), datagrams.at("work"));
     hello.work = 0x0807060504030201;
     EXPECT_EQ(Encode(hello), datagrams.at("hello.work"));
@@ -83,16 +106,18 @@ TEST(NetLink, DecodesTheContractsDatagrams) {
     EXPECT_EQ(hello->version, LinkVersion);
     EXPECT_EQ(hello->online_id, "Kaniel");
     EXPECT_EQ(hello->build, "92829ac4 events 1f protocol 9");
-    EXPECT_EQ(hello->version, 3) << "link version 3: the cookie and the tags";
+    EXPECT_EQ(hello->version, 4) << "link version 4: the handshake and the encryption";
     EXPECT_EQ(hello->secret, "s3cr3t");
     EXPECT_EQ(hello->cookie[15], 0x11);
-    EXPECT_EQ(hello->nonce[0], 0x22);
     EXPECT_FALSE(hello->work.has_value());
     int work_bits = 0;
-    const auto cookie = DecodeCookie(datagrams.at("cookie"), &work_bits);
+    LinkAuth::Key key{};
+    const auto cookie = DecodeCookie(datagrams.at("cookie"), &work_bits, &key);
     ASSERT_TRUE(cookie.has_value());
     EXPECT_EQ((*cookie)[0], 0x11);
     EXPECT_EQ(work_bits, 20);
+    EXPECT_EQ(key, ServerKey().pub);
+    EXPECT_EQ(std::vector<u8>(key.begin(), key.end()), datagrams.at("server.key"));
     EXPECT_EQ(DecodeHello(datagrams.at("hello.work"))->work, 0x0807060504030201u);
     EXPECT_EQ(DecodeWork(datagrams.at("work")), 20);
     EXPECT_EQ(KindOf(datagrams.at("work")), Kind::Work);
@@ -132,17 +157,16 @@ TEST(NetLink, DecodesTheContractsDatagrams) {
 
 TEST(NetLink, EveryCutDatagramIsRefused) {
     for (const auto& [name, bytes] : ContractDatagrams()) {
+        if (name == "server.key" || name.ends_with(".sealed")) {
+            continue; // a key; datagrams read only once opened
+        }
         for (size_t size = 0; size < bytes.size(); ++size) {
             const std::span<const u8> cut{bytes.data(), size};
             if (name == "data" && size >= 8 + 1 + 6) {
                 continue; // a shorter frame is still a frame
             }
-            if (name == "ping.tagged" && size >= 9 + 12) {
-                continue; // a ping with bytes after it
-            }
-            if ((name == "hello.work" && size >= ContractDatagrams().at("hello").size()) ||
-                (name == "cookie" && size >= 9 + 16)) {
-                continue; // without the work, or its bits (none asked)
+            if (name == "hello.work" && size >= ContractDatagrams().at("hello").size()) {
+                continue; // without the work
             }
             EXPECT_FALSE(DecodeHello(cut) || DecodeWelcome(cut) || DecodeData(cut) ||
                          DecodeCookie(cut) || DecodePing(Kind::Ping, cut) ||
@@ -265,131 +289,181 @@ TEST(NetLink, NoAnswerAtAllIsAnOutageToo) {
     EXPECT_TRUE(quiet->quiet);
 }
 
-// Link version 3 (server/coop/link_auth.h): the game's side of the handshake and the tags, as
-// shadNet's tests check the server's (server/tests/test_server_link.cpp).
+// Link version 4 (server/coop/link_auth.h): the game's side of the handshake and the encryption,
+// as shadNet's tests check the server's (server/tests/test_server_link.cpp); LinkAuth::Responder
+// plays the server.
 TEST(NetLink, TheFirstHelloAsksForACookieAndCarriesNoSecret) {
+    const auto contracts = ContractDatagrams();
     LinkAuth::Client auth;
-    LinkAuth::Nonce nonce{};
-    nonce.fill(0x22);
-    auth.Restart(nonce);
-    const Hello first = HelloFor(auth, "Kaniel", "b", "s3cr3t");
-    EXPECT_TRUE(first.secret.empty());
-    EXPECT_EQ(first.cookie, LinkAuth::Cookie{});
+    const auto first = HelloDatagram(auth, "Kaniel", "b", "s3cr3t", NextKey());
+    EXPECT_EQ(first.size(), LinkAuth::FirstHelloBytes);
+    EXPECT_EQ(std::search(first.begin(), first.end(), std::begin("s3cr3t"), std::end("s3cr3t") - 1),
+              first.end());
+    EXPECT_EQ(DecodeHello(first)->cookie, LinkAuth::Cookie{}) << "the cookie asked for";
     EXPECT_FALSE(Sealed(auth, Encode(Kind::Ping, Ping{1, 1})).has_value()) << "no session yet";
     LinkAuth::Cookie cookie{};
     cookie.fill(0x11);
-    auth.TakeCookie(cookie);
-    const Hello second = HelloFor(auth, "Kaniel", "92829ac4 events 1f protocol 9", "s3cr3t");
-    EXPECT_EQ(second.secret, "s3cr3t");
-    EXPECT_EQ(Encode(second), ContractDatagrams().at("hello"));
-    // The game's first datagram of that link: what shadNet's tests expect byte for byte.
-    EXPECT_EQ(*Sealed(auth, Encode(Kind::Ping, Ping{7, 1000})),
-              ContractDatagrams().at("ping.tagged"));
+    ASSERT_TRUE(auth.TakeCookie(cookie, ServerKey().pub));
+    // The hello sealed to the server's key: the bytes shadNet's tests and noise_link.py expect.
+    const auto second =
+        HelloDatagram(auth, "Kaniel", "92829ac4 events 1f protocol 9", "s3cr3t", Filled(0x33));
+    EXPECT_EQ(second, contracts.at("hello.sealed"));
+    EXPECT_EQ(HelloDatagram(auth, "Kaniel", "92829ac4 events 1f protocol 9", "s3cr3t", NextKey()),
+              second)
+        << "said again: the same datagram";
+    std::vector<u8> plain;
+    ASSERT_TRUE(LinkAuth::Responder::Open(ServerKey(), second, plain).has_value());
+    EXPECT_EQ(plain, contracts.at("hello"));
+    // Its welcome opens, and the game's first datagram of that link is the contracts'.
+    const auto welcome = Opened(auth, contracts.at("welcome.sealed"));
+    ASSERT_TRUE(welcome.has_value());
+    EXPECT_TRUE(DecodeWelcome(*welcome)->accepted);
+    EXPECT_EQ(*Sealed(auth, Encode(Kind::Ping, Ping{7, 1000})), contracts.at("ping.sealed"));
 }
 
-TEST(NetLink, OnlyTheServersTaggedDatagramsOpen) {
-    LinkAuth::Nonce nonce{};
-    nonce[0] = 5;
+TEST(NetLink, OnlyTheServersSealedDatagramsOpen) {
     LinkAuth::Cookie cookie{};
     cookie[0] = 7;
     LinkAuth::Client auth;
-    auth.Restart(nonce);
-    auth.TakeCookie(cookie);
-    HelloFor(auth, "Ada", "b", "pw");
-    LinkAuth::Session server =
-        LinkAuth::ServerSession(LinkAuth::KeysFor("pw", nonce, cookie, "Ada"));
+    auth.Pin(ServerKey().pub);
+    ASSERT_TRUE(auth.TakeCookie(cookie, ServerKey().pub));
+    const auto hello = HelloDatagram(auth, "Ada", "b", "pw", NextKey());
+    std::vector<u8> plain_hello;
+    const auto server_hello = LinkAuth::Responder::Open(ServerKey(), hello, plain_hello);
+    ASSERT_TRUE(server_hello.has_value());
+    EXPECT_EQ(DecodeHello(plain_hello)->secret, "pw");
+    auto answered = server_hello->Answer(Encode(Welcome{.accepted = true}), NextKey());
+    LinkAuth::Session& server = answered.session;
     const auto seal = [&](std::vector<u8> datagram) {
         const auto trailer = server.Seal(datagram);
         datagram.insert(datagram.end(), trailer.begin(), trailer.end());
         return datagram;
     };
-    const auto welcome = seal(Encode(Welcome{.accepted = true}));
-    const auto opened = Opened(auth, welcome);
+    // A welcome changed on the way, or answering another game's hello: not this game's.
+    auto changed = answered.datagram;
+    changed[30] ^= 1;
+    EXPECT_FALSE(Opened(auth, changed).has_value());
+    LinkAuth::Client other;
+    other.TakeCookie(cookie, ServerKey().pub);
+    std::vector<u8> unused;
+    const auto other_answer =
+        LinkAuth::Responder::Open(ServerKey(), HelloDatagram(other, "Ada", "b", "pw", NextKey()),
+                                  unused)
+            ->Answer(Encode(Welcome{.accepted = true}), NextKey());
+    EXPECT_FALSE(Opened(auth, other_answer.datagram).has_value());
+    EXPECT_FALSE(auth.Linked());
+    const auto opened = Opened(auth, answered.datagram);
     ASSERT_TRUE(opened.has_value());
     EXPECT_TRUE(DecodeWelcome(*opened)->accepted);
-    EXPECT_FALSE(Opened(auth, welcome).has_value()) << "a replay";
+    EXPECT_TRUE(auth.Linked());
+    EXPECT_FALSE(Opened(auth, answered.datagram).has_value()) << "its handshake is done";
 
     const std::vector<u8> body{1, 2, 3};
     auto coop = seal(EncodeCoop(body));
+    EXPECT_NE(std::vector<u8>(coop.begin() + 9, coop.begin() + 12), body) << "encrypted";
     auto forged = coop;
     forged[10] ^= 1;
-    EXPECT_FALSE(Opened(auth, forged).has_value()) << "a bad tag";
-    EXPECT_FALSE(Opened(auth, EncodeCoop(body)).has_value()) << "no tag (a spoofed source)";
+    EXPECT_FALSE(Opened(auth, forged).has_value()) << "changed on the way";
+    EXPECT_FALSE(Opened(auth, EncodeCoop(body)).has_value()) << "not sealed (a spoofed source)";
     const auto plain = Opened(auth, coop);
     ASSERT_TRUE(plain.has_value());
     EXPECT_EQ(DecodeCoop(*plain)->size(), 3u);
+    EXPECT_FALSE(Opened(auth, coop).has_value()) << "a replay";
 
     // The game's datagrams open on the server's side with the other key.
-    const auto up = Sealed(auth, EncodeRpc(body));
+    auto up = Sealed(auth, EncodeRpc(body));
     ASSERT_TRUE(up.has_value());
+    auto reflected = *up;
     EXPECT_EQ(server.Open(*up), LinkAuth::Session::Verdict::Ok);
-    EXPECT_EQ(server.Open(*up), LinkAuth::Session::Verdict::Replay);
-    EXPECT_FALSE(Opened(auth, *up).has_value()) << "its own datagram reflected back";
+    auto again = Sealed(auth, EncodeRpc(body));
+    auto replayed = *again;
+    EXPECT_EQ(server.Open(*again), LinkAuth::Session::Verdict::Ok);
+    EXPECT_EQ(server.Open(replayed), LinkAuth::Session::Verdict::Replay);
+    EXPECT_FALSE(Opened(auth, reflected).has_value()) << "its own datagram reflected back";
 
-    // A hello again with the same nonce and cookie keeps the session (and its counters); a new
-    // nonce (the link restarted) makes another, the old one in use until the server welcomes it.
-    HelloFor(auth, "Ada", "b", "pw");
-    EXPECT_TRUE(Opened(auth, seal(EncodeCoop(body))).has_value());
-    LinkAuth::Nonce next = nonce;
-    next[1] = 1;
-    auth.Restart(next);
-    HelloFor(auth, "Ada", "b", "pw");
+    // The link restarted (the server may have restarted): a new handshake, the old session in
+    // use until the server welcomes it.
+    auth.Restart();
+    const auto renewed_hello = HelloDatagram(auth, "Ada", "b", "pw", NextKey());
+    EXPECT_NE(renewed_hello, hello);
     EXPECT_TRUE(Opened(auth, seal(EncodeCoop(body))).has_value()) << "the old session still";
-    LinkAuth::Session renewed =
-        LinkAuth::ServerSession(LinkAuth::KeysFor("pw", next, cookie, "Ada"));
-    auto welcome_again = Encode(Welcome{.accepted = true});
-    const auto trailer = renewed.Seal(welcome_again);
-    welcome_again.insert(welcome_again.end(), trailer.begin(), trailer.end());
-    EXPECT_TRUE(Opened(auth, welcome_again).has_value());
+    const auto renewed = LinkAuth::Responder::Open(ServerKey(), renewed_hello, unused)
+                             ->Answer(Encode(Welcome{.accepted = true}), NextKey());
+    EXPECT_TRUE(Opened(auth, renewed.datagram).has_value());
     EXPECT_FALSE(Opened(auth, seal(EncodeCoop(body))).has_value()) << "the old one is over";
 }
 
-// A hosted server's first sign-in: the server's tagged Work answer, the work done for the cookie
-// (under a new nonce: the old session took the answer's counter), and the hello that carries it.
+// The server's key: the launcher's, or the first cookie's once a welcome proves it.
+TEST(NetLink, TheServersKeyIsPinnedOrTrustedOnFirstUse) {
+    LinkAuth::Cookie cookie{};
+    cookie[0] = 9;
+    const auto impostor = LinkAuth::ServerKeyOf(Filled(0x77));
+    LinkAuth::Client pinned;
+    pinned.Pin(ServerKey().pub);
+    EXPECT_FALSE(pinned.TakeCookie(cookie, impostor.pub)) << "another key than the launcher's";
+    EXPECT_FALSE(pinned.HasCookie());
+
+    // No key from the launcher: the cookie's, kept only once its welcome opened.
+    LinkAuth::Client home;
+    ASSERT_TRUE(home.TakeCookie(cookie, impostor.pub)); // a forged cookie came first
+    EXPECT_FALSE(home.Pinned());
+    ASSERT_TRUE(home.TakeCookie(cookie, ServerKey().pub)); // then the server's
+    const auto hello = HelloDatagram(home, "Eileen", "b", "pw", NextKey());
+    std::vector<u8> unused;
+    EXPECT_FALSE(LinkAuth::Responder::Open(impostor, hello, unused).has_value());
+    const auto welcome = LinkAuth::Responder::Open(ServerKey(), hello, unused)
+                             ->Answer(Encode(Welcome{.accepted = true}), NextKey());
+    ASSERT_TRUE(Opened(home, welcome.datagram).has_value());
+    EXPECT_TRUE(home.Pinned());
+    EXPECT_EQ(home.TakeLearned(), ServerKey().pub) << "said once, for the launcher to keep";
+    EXPECT_FALSE(home.TakeLearned().has_value());
+    EXPECT_FALSE(home.TakeCookie(cookie, impostor.pub));
+    EXPECT_EQ(LinkAuth::KeyFromHex(LinkAuth::HexOf(ServerKey().pub)), ServerKey().pub);
+    EXPECT_FALSE(LinkAuth::KeyFromHex("not a key").has_value());
+}
+
+// A hosted server's first sign-in: the server's sealed Work answer, the work done for the cookie,
+// and the hello that carries it (a new handshake: its bytes changed).
 TEST(NetLink, AFirstSignInDoesTheWorkTheServerAsks) {
-    LinkAuth::Nonce nonce{};
-    nonce[0] = 5;
     LinkAuth::Cookie cookie{};
     cookie[0] = 7;
     LinkAuth::Client auth;
-    auth.Restart(nonce);
-    auth.TakeCookie(cookie);
-    EXPECT_FALSE(HelloFor(auth, "Ada", "b", "pw").work.has_value());
-    LinkAuth::Session server =
-        LinkAuth::ServerSession(LinkAuth::KeysFor("pw", nonce, cookie, "Ada"));
-    auto asked = EncodeWork(12);
-    const auto trailer = server.Seal(asked);
-    asked.insert(asked.end(), trailer.begin(), trailer.end());
-    const auto opened = Opened(auth, asked);
+    auth.TakeCookie(cookie, ServerKey().pub);
+    const auto hello = HelloDatagram(auth, "Ada", "b", "pw", NextKey());
+    std::vector<u8> plain;
+    const auto server = LinkAuth::Responder::Open(ServerKey(), hello, plain);
+    ASSERT_TRUE(server.has_value());
+    EXPECT_FALSE(DecodeHello(plain)->work.has_value());
+    const auto opened = Opened(auth, server->Answer(EncodeWork(12), NextKey()).datagram);
     ASSERT_TRUE(opened.has_value());
     EXPECT_EQ(DecodeWork(*opened), 12);
-    EXPECT_FALSE(Opened(auth, EncodeWork(30)).has_value()) << "untagged: nobody's to obey";
+    EXPECT_FALSE(auth.Linked());
+    EXPECT_FALSE(Opened(auth, EncodeWork(30)).has_value()) << "not sealed: nobody's to obey";
 
-    LinkAuth::Nonce fresh = nonce;
-    fresh[1] = 1;
-    ASSERT_TRUE(auth.WorkAsked(12, fresh));
+    ASSERT_TRUE(auth.WorkAsked(12));
     EXPECT_TRUE(auth.Working());
-    EXPECT_FALSE(auth.WorkAsked(12, fresh)) << "asked again while under way";
-    EXPECT_EQ(auth.NonceToSend(), fresh);
+    EXPECT_FALSE(auth.WorkAsked(12)) << "asked again while under way";
     const auto work = LinkAuth::SolveWork(cookie, "Ada", 12, 0, u64{1} << 24);
     ASSERT_TRUE(work.has_value());
     auth.TakeWork(cookie, 12, work);
     EXPECT_FALSE(auth.Working());
-    const Hello hello = HelloFor(auth, "Ada", "b", "pw");
-    ASSERT_TRUE(hello.work.has_value());
-    EXPECT_TRUE(LinkAuth::WorkDone(cookie, "Ada", *hello.work, 12));
-    EXPECT_EQ(DecodeHello(Encode(hello))->work, hello.work);
-    // The welcome under the new nonce's session opens.
-    LinkAuth::Session renewed =
-        LinkAuth::ServerSession(LinkAuth::KeysFor("pw", fresh, cookie, "Ada"));
-    auto welcome = Encode(Welcome{.accepted = true});
-    const auto welcome_trailer = renewed.Seal(welcome);
-    welcome.insert(welcome.end(), welcome_trailer.begin(), welcome_trailer.end());
-    EXPECT_TRUE(Opened(auth, welcome).has_value());
+    const auto worked = HelloDatagram(auth, "Ada", "b", "pw", NextKey());
+    EXPECT_NE(worked, hello);
+    const auto server_again = LinkAuth::Responder::Open(ServerKey(), worked, plain);
+    ASSERT_TRUE(server_again.has_value());
+    const auto said = DecodeHello(plain);
+    ASSERT_TRUE(said->work.has_value());
+    EXPECT_TRUE(LinkAuth::WorkDone(cookie, "Ada", *said->work, 12));
+    // Its welcome opens.
+    EXPECT_TRUE(
+        Opened(auth, server_again->Answer(Encode(Welcome{.accepted = true}), NextKey()).datagram)
+            .has_value());
+    EXPECT_TRUE(auth.Linked());
     // A new cookie (the old one ran out): the work is for the old one only.
     LinkAuth::Cookie later = cookie;
     later[1] = 1;
-    auth.TakeCookie(later);
-    EXPECT_FALSE(HelloFor(auth, "Ada", "b", "pw").work.has_value());
-    EXPECT_TRUE(auth.WorkAsked(12, nonce)) << "asked again for the new cookie";
+    auth.TakeCookie(later, ServerKey().pub);
+    LinkAuth::Responder::Open(ServerKey(), HelloDatagram(auth, "Ada", "b", "pw", NextKey()), plain);
+    EXPECT_FALSE(DecodeHello(plain)->work.has_value());
+    EXPECT_TRUE(auth.WorkAsked(12)) << "asked again for the new cookie";
 }

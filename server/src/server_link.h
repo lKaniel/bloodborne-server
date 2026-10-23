@@ -33,8 +33,10 @@
 namespace ServerLink {
 
 // 2 (phase 11): the hello carries the player's secret and signs it in.
-// 3: a cookie first, then every datagram after the hello tagged (coop/link_auth.h).
-constexpr quint8 LinkVersion = 3;
+// 3: a cookie first, then every datagram after the hello tagged.
+// 4: the hello and its answer a Noise NK handshake, every datagram after them encrypted
+// (coop/link_auth.h).
+constexpr quint8 LinkVersion = 4;
 enum class Kind : quint8 {
     Hello = 1,
     Welcome = 2,
@@ -48,10 +50,11 @@ enum class Kind : quint8 {
     // Phase 11: the calls that went over shadNet's TCP port (friends, scores, the NP sign-in), in
     // a second reliable stream (coop/coop_stream.h) of the link, so a host opens one UDP port.
     Rpc = 8,
-    // Link version 3: the answer to a hello without a valid cookie (coop/link_auth.h).
+    // Link version 3: the answer to a hello without a valid cookie (coop/link_auth.h), never
+    // encrypted; version 4: with the server's public key.
     Cookie = 9,
     // Hosted: the answer to a hello for an id with no account and no work nonce (or not enough):
-    // the bits its work needs (coop/link_auth.h), tagged like the hello's answers.
+    // the bits its work needs (coop/link_auth.h), sealed like the hello's other answers.
     Work = 10,
 };
 enum class MemberState : quint8 { Quiet = 0, Back = 1, Gone = 2 };
@@ -80,15 +83,15 @@ struct SignInVerdict {
     bool work = false; // hosted: no account for the id and the hello did no work: ask for it
 };
 
-// Link version 3: the version, the cookie (16 bytes, zeros before the server gave one), the game's
-// nonce (16 bytes), the id, the build and the secret (empty without a cookie).
+// The version, the cookie (16 bytes, zeros before the server gave one), the id, the build and the
+// secret. These are the hello's plain bytes: link version 4 sends all after the cookie encrypted
+// (LinkAuth::Client::SealHello), and the hub decodes what LinkAuth::Responder opened.
 struct Hello {
     quint8 version = LinkVersion;
     QByteArray online_id;
     QByteArray build;
     QByteArray secret; // phase 11: the player id's secret (the launcher made it)
     QByteArray cookie; // 16 bytes on the wire
-    QByteArray nonce;  // 16 bytes on the wire
     // Hosted: the work nonce for a new account (8 bytes after the secret, only when there is one).
     std::optional<quint64> work;
 };
@@ -114,9 +117,10 @@ struct Member {
 // The kind of a link datagram, or nothing for anything else (the STUN ping).
 std::optional<Kind> KindOf(const QByteArray& datagram);
 QByteArray Encode(const Hello& hello);
-// The cookie, then the bits a new account's work needs (0: none; hosted only).
-QByteArray EncodeCookie(const LinkAuth::Cookie& cookie, int work_bits = 0);
-std::optional<LinkAuth::Cookie> DecodeCookie(const QByteArray& datagram, int* work_bits = nullptr);
+// The cookie, the bits a new account's work needs (0: none; hosted only), the server's public key.
+QByteArray EncodeCookie(const LinkAuth::Cookie& cookie, int work_bits, const LinkAuth::Key& key);
+std::optional<LinkAuth::Cookie> DecodeCookie(const QByteArray& datagram, int* work_bits = nullptr,
+                                             LinkAuth::Key* key = nullptr);
 QByteArray EncodeWork(int bits);
 std::optional<int> DecodeWork(const QByteArray& datagram);
 QByteArray Encode(const Welcome& welcome);
@@ -134,17 +138,22 @@ std::optional<QByteArray> DecodeCoop(const QByteArray& datagram);
 std::optional<QByteArray> DecodeRpc(const QByteArray& datagram);
 // A hello of another link version decodes to its version only.
 
+// The server's static key (link version 4) from `path`, made there the first time (32 random bytes,
+// only the server's user may read them); `made` says it was. Nothing when the file is unreadable or
+// not a key (the server must not start with another key: its games pinned this one).
+std::optional<LinkAuth::Key> KeyFromFile(const QString& path, bool* made, QString* why);
+
 // The links of the games on this server, without sockets or clocks: the socket
 // hands it each datagram and calls Tick now and then; it says what to send and
-// what to log. Link version 3 (coop/link_auth.h): a hello needs a cookie of its
-// source, and every datagram after it carries its link's tag; what it says to
-// send is tagged already.
+// what to log. Link version 4 (coop/link_auth.h): a hello needs a cookie of its
+// source and opens with the server's key, and every datagram after it is
+// encrypted with its link's keys; what it says to send is sealed already.
 class Hub {
 public:
     struct Send {
         Endpoint to;
         QByteArray datagram;
-        bool sealed = false; // tagged already (or a cookie, never tagged)
+        bool sealed = false; // sealed already (or a cookie, never encrypted)
     };
     // A Coop datagram's body for the party's world (bloodborne_world.h), from a linked game.
     struct Coop {
@@ -179,22 +188,33 @@ public:
 
     // The key of the cookies (random per hub; a restart makes the games ask again).
     void SetCookieKey(const QByteArray& key);
+    // The static key the hellos are encrypted to (random per hub unless set: LinkServer keeps one
+    // in LinkKeyFile), and its public half (the launcher gives it to the games).
+    void SetStaticKey(const LinkAuth::Key& secret);
+    const LinkAuth::Key& PublicKey() const {
+        return static_key.pub;
+    }
     // Whether a hello datagram echoes a cookie of its source.
     bool CookieValid(const Endpoint& from, const QByteArray& hello, qint64 now_ms) const;
-    // A datagram for the game linked at `to`, tagged; nothing when none is.
+    // A datagram for the game linked at `to`, encrypted; nothing when none is.
     std::optional<QByteArray> Seal(const Endpoint& to, QByteArray datagram);
-    // A refusal for a hello with a valid cookie, tagged for its game; nothing otherwise.
+    // A refusal for a hello with a valid cookie that opens, sealed for its game; nothing otherwise.
+    // It costs the hello's key exchange and the answer's (hosted: hellos are limited before).
     std::optional<QByteArray> Refusal(const Endpoint& from, const QByteArray& hello,
                                       const QByteArray& text, qint64 now_ms) const;
-    // Whether a linked game's datagram, its tag good, goes on (hosted: its rates, admission.h).
-    // A datagram's tag is checked first: a spoofed one never counts against its address.
+    // Whether a linked game's datagram, once it opened, goes on (hosted: its rates, admission.h).
+    // A datagram is opened first: a spoofed one never counts against its address.
     using Admit = std::function<bool(const Endpoint& from, qsizetype bytes)>;
     void SetAdmit(Admit admit) {
         this->admit = std::move(admit);
     }
-    // Datagrams dropped for a bad tag, and for a counter seen already (or too old).
+    // Datagrams dropped for a bad tag, and for a counter seen already (or too old); hellos with a
+    // valid cookie that did not open (another server's key, or changed on the way).
     quint64 BadTags() const {
         return bad_tags;
+    }
+    quint64 BadHellos() const {
+        return bad_hellos;
     }
     quint64 Replays() const {
         return replays;
@@ -284,6 +304,10 @@ private:
         quint32 pings = 0;
         std::map<quint32, quint64> refused; // game packets not forwarded, per channel
         std::optional<LinkAuth::Session> session;
+        // The hello the session came from (its game's ephemeral key) and its welcome: the same
+        // hello again gets the same welcome, and the session stays.
+        LinkAuth::Key hello_key{};
+        QByteArray welcome;
     };
 
     void OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_ms, Result& result);
@@ -312,7 +336,9 @@ private:
     QHash<QPair<quint64, quint64>, quint64> pair_frames;
     quint64 dropped = 0;
     LinkAuth::HmacKey cookie_key;
+    LinkAuth::ServerKey static_key;
     quint64 bad_tags = 0;
+    quint64 bad_hellos = 0;
     quint64 replays = 0;
     quint64 cookies_sent = 0;
     quint64 old_versions = 0;

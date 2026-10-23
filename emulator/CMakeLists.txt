@@ -982,6 +982,8 @@ if (ARCHITECTURE STREQUAL "x86_64")
              src/core/bloodborne_trade.h
              ${CMAKE_CURRENT_SOURCE_DIR}/../server/coop/world_log.cpp
              ${CMAKE_CURRENT_SOURCE_DIR}/../server/coop/world_log.h
+             ${CMAKE_CURRENT_SOURCE_DIR}/../server/coop/link_auth.h
+             ${CMAKE_CURRENT_SOURCE_DIR}/../server/coop/link_crypto.cpp
              src/core/bloodborne_autoplay.cpp
              src/core/bloodborne_trace_diag.cpp
              src/core/bloodborne_re_tracer.cpp

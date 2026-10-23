@@ -260,6 +260,69 @@ def server_ids_of(saved):
             and valid_name(pair[0]) and valid_secret(pair[1])}
 
 
+# The link's server keys (link version 4, docs/HOSTED_SERVER.md): the game encrypts its link to the
+# server's public key, and a server without the key's secret cannot answer it. A public server's key
+# ships here, by its name as typed (server_key): its operator reads it from shadNet's log or the admin
+# `key` command. Any other server's (a friend's home host) is trusted the first time, as the game's
+# log says it (p2p_sockets.cpp), and kept in coop.json's server_keys.
+KNOWN_SERVER_KEYS = {}
+LEARNED_KEY_LINE = "Server link: the server's key, trusted on first use: "
+OTHER_KEY_LINE = 'Server link: the server says another key than the one pinned'
+OTHER_KEY_TEXT = ("The server answered with another key than the one kept for it: someone else may be answering "
+                  "for it, or its operator made a new key. If the operator says so, remove the server's line "
+                  "from server_keys in user\\coop.json.")
+
+
+def valid_link_key(value):
+    return isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value) is not None
+
+
+def link_key_for(settings, host):
+    """The key the game pins for `host`: the shipped one, else the one kept at its first link, else ''
+    (the game trusts the first one)."""
+    known = KNOWN_SERVER_KEYS.get(server_key(host))
+    if known:
+        return known
+    return (settings.get('server_keys') or {}).get(server_key(host), '')
+
+
+def with_link_key(settings, host, key):
+    """A copy of the settings keeping `key` for `host`."""
+    settings = dict(settings)
+    settings['server_keys'] = dict(settings.get('server_keys') or {})
+    settings['server_keys'][server_key(host)] = key
+    return settings
+
+
+def server_keys_of(saved):
+    """The valid entries of coop.json's server_keys ({} in a file from before it)."""
+    found = saved.get('server_keys') if isinstance(saved, dict) else None
+    if not isinstance(found, dict):
+        return {}
+    return {str(host): key for host, key in found.items() if valid_link_key(key)}
+
+
+def learned_key(line):
+    """The key a line of the game's log says it trusted on first use, or None: only the game's own line
+    (its level, thread, file:line and function, then the words; common/logging/log.h), never one carried inside other text."""
+    found = re.search(r'(?:^|\] )<Info> (?:\([^()]*\) )?\S+:\d+ \w+: ' + re.escape(LEARNED_KEY_LINE) + r'([0-9a-f]{64})\s*$',
+                      line)
+    return found.group(1) if found else None
+
+
+def learn_link_key(settings, host, key):
+    """The settings keeping `key`, the game's first-use key for `host`, or None when `host` has one
+    already (shipped or kept): a key from the log never replaces one."""
+    if link_key_for(settings, host):
+        return None
+    return with_link_key(settings, host, key)
+
+
+def other_key(line):
+    """Whether a line of the game's log says the server answered with another key than the pinned one."""
+    return OTHER_KEY_LINE in line
+
+
 # How the game's log says the server refused its hello (p2p_sockets.cpp OnWelcome, an error: on stderr,
 # so in console.txt, which the launcher follows), and the refusal of a new id whose virtual address
 # another account has (server link_server.cpp RefusalOf).
@@ -330,6 +393,7 @@ def read_settings(install):
         saved = json.loads(path.read_text(encoding='utf-8'))
         settings = {key: str(saved.get(key, default)) for key, default in DEFAULTS.items()}
         settings['server_ids'] = server_ids_of(saved)
+        settings['server_keys'] = server_keys_of(saved)
         return settings
     except (OSError, ValueError, AttributeError):
         pass
@@ -348,6 +412,8 @@ def save_settings(install, settings):
     saved = {key: settings.get(key, default) for key, default in DEFAULTS.items()}
     if settings.get('server_ids'):  # only once a server refused the id: older files stay as they were
         saved['server_ids'] = settings['server_ids']
+    if settings.get('server_keys'):
+        saved['server_keys'] = settings['server_keys']
     path.write_text(json.dumps(saved, indent=2) + '\n', encoding='utf-8')
 
 
@@ -771,6 +837,10 @@ def game_environment(env, settings, install, root):
         'SHADPS4_BLOODBORNE_SEAMLESS_COOP': '1',
         'SHADPS4_BLOODBORNE_RE_TRACE': '0',
     })
+    # The server's key, when one is known for it (link_key_for); else the game trusts the first one.
+    env.pop('BB_SHADNET_SERVER_KEY', None)
+    if valid_link_key(settings.get('link_key', '')):
+        env['BB_SHADNET_SERVER_KEY'] = settings['link_key']
     # The party is the team made in the game's team screen: never a setting.
     for key in ('SHADPS4_BLOODBORNE_PARTY', 'SHADPS4_BLOODBORNE_PARTY_ROLE'):
         env.pop(key, None)

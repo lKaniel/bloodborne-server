@@ -95,6 +95,7 @@ public:
     void SetShadNetSessionDisabled(bool v) { shadnet_session_disabled.store(v); }
     std::string GetShadNetServer() { return Text("BB_SHADNET_SERVER", "127.0.0.1:31314"); }
     std::string GetShadNetWebApiServer() { return Text("BB_SHADNET_WEBAPI", "http://127.0.0.1:31315"); }
+    std::string GetShadNetServerKey() { return Text("BB_SHADNET_SERVER_KEY", ""); }
 
 private:
     std::atomic<bool> shadnet_session_disabled{false};

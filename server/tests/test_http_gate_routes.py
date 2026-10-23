@@ -15,12 +15,19 @@ import socket
 import sqlite3
 import subprocess
 import tempfile
+import sys
 import time
 import unittest
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "loadtest"))
+try:
+    import noise_link  # the link's handshake (link version 4), on the cryptography package
+except ImportError:
+    noise_link = None
+
 SHADNET = os.environ.get("SHADNET_EXE", "")
 HEADER = b"\xff\xff\xff\xffSHLK"
-HELLO, WELCOME, COOKIE, WORK = 1, 2, 9, 10
+WELCOME, WORK = 2, 10
 BUILD = b"gatetest"
 
 
@@ -37,18 +44,6 @@ def can_bind(address):
         return True
     except OSError:
         return False
-
-
-def text(value):
-    return bytes([len(value)]) + value
-
-
-def hello(online_id, secret, cookie=b"", work=None, nonce=b"\x01" * 16):
-    # Link version 3 (coop/link_auth.h): the cookie the server gave, a nonce, and the secret
-    # once there is a cookie; hosted, a new account's work after it.
-    return (HEADER + bytes([HELLO, 3]) + cookie.ljust(16, b"\0") + nonce +
-            text(online_id) + text(BUILD) + text(secret if cookie else b"") +
-            (b"" if work is None else work.to_bytes(8, "little")))
 
 
 def solve_work(cookie, online_id, bits):
@@ -86,6 +81,7 @@ def send(port, method, path, body=None, source="127.0.0.1", headers=None):
 
 
 @unittest.skipUnless(SHADNET and os.path.exists(SHADNET), "SHADNET_EXE not set")
+@unittest.skipUnless(noise_link, "no cryptography package (pip install cryptography)")
 @unittest.skipUnless(can_bind("127.0.0.2"), "127.0.0.2 can't be bound here")
 class HostedHttpGate(unittest.TestCase):
     @classmethod
@@ -124,23 +120,33 @@ class HostedHttpGate(unittest.TestCase):
         cls.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         cls.udp.bind(("127.0.0.1", 0))
         cls.udp.settimeout(0.5)
-        cookie = b""
-        work = None
-        nonce = b"\x01" * 16
+        cookie, key, work, sealed = b"", None, None, None
         for _ in range(40):
-            cls.udp.sendto(hello(b"pgate01", b"secret-of-pgate01", cookie, work, nonce),
-                           ("127.0.0.1", cls.link))
+            if key is None:
+                datagram = noise_link.first_hello()
+            else:
+                # Link version 4 (coop/link_auth.h): the hello sealed to the server's key, which
+                # the cookie said (trusted on first use); a new ephemeral key for each new hello.
+                if sealed is None:
+                    sealed = noise_link.Hello(noise_link.plain_hello(
+                        b"pgate01", b"secret-of-pgate01", BUILD, cookie, work), key, os.urandom(32))
+                datagram = sealed.datagram
+            cls.udp.sendto(datagram, ("127.0.0.1", cls.link))
             try:
                 answer = cls.udp.recv(2048)
             except socket.timeout:
                 continue
-            if answer.startswith(HEADER) and answer[8] == COOKIE:
-                cookie = answer[9:25]
-            if answer.startswith(HEADER) and answer[8] == WORK:
-                # A new account: the work, under a new nonce (as the game does).
-                work = solve_work(cookie, b"pgate01", answer[9])
-                nonce = b"\x02" * 16
-            if answer.startswith(HEADER) and answer[8] == WELCOME and answer[9] == 1:
+            got = noise_link.cookie_of(answer)
+            if got:
+                cookie, _bits, key = got
+                sealed = None
+                continue
+            opened = sealed.open(answer) if sealed else None
+            if opened and opened[0][8] == WORK:
+                # A new account: the work, in a new hello (as the game does).
+                work = solve_work(cookie, b"pgate01", opened[0][9])
+                sealed = None
+            if opened and opened[0][8] == WELCOME and opened[0][9] == 1:
                 break
         else:
             cls.tearDownClass()

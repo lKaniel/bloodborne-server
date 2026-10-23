@@ -85,6 +85,9 @@ void ConfigManager::Parse(const QString& path) {
     m_statsPort = str("StatsPort", "31320");
     m_statsPath = str("StatsPath", "stats");
     m_bloodborneWorldPath = str("BloodborneWorldPath", "bloodborne_worlds");
+    m_linkKeyFile = str("LinkKeyFile", "link_key.bin").trimmed();
+    if (m_linkKeyFile.isEmpty()) // a new key each start would break every game's pin
+        m_linkKeyFile = QStringLiteral("link_key.bin");
     m_statsCacheLife = str("StatsCacheLife", "30").toInt();
     m_emailValidated = boolean("EmailValidated", false);
     m_makeAccountsAtSignIn = boolean("MakeAccountsAtSignIn", true);

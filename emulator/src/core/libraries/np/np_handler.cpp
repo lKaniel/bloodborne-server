@@ -258,7 +258,8 @@ bool NpHandler::ConnectUser(s32 user_id, const std::string& host, u16 port, cons
             LOG_ERROR(NpHandler, "user_id={} no server link to {}:{}", user_id, host, port);
             return false;
         }
-        Net::ConfigureServerLink(link_addr, htons(port), npid, password);
+        Net::ConfigureServerLink(link_addr, htons(port), npid, password,
+                                 EmulatorSettings.GetShadNetServerKey());
         client_port = Net::StartRpcBridge();
         client_host = "127.0.0.1";
         if (client_port == 0) {
@@ -331,7 +332,7 @@ bool NpHandler::ConnectUser(s32 user_id, const std::string& host, u16 port, cons
         NpMatching2::SetMmShadNetClient(client, host, port);
         // shadPS4: the peers' frames through shadNet's matching UDP port.
         Net::ConfigureServerLink(NpMatching2::GetMmServerAddr(), NpMatching2::GetMmServerUdpPort(),
-                                 npid, password);
+                                 npid, password, EmulatorSettings.GetShadNetServerKey());
     }
 
     // Build OrbisNpId

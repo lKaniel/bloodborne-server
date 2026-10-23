@@ -3,6 +3,7 @@
 // The server link's datagrams as the emulator writes them
 // (tests/contracts/server_link_frames.txt, which the emulator's tests read
 // too), and the hub that forwards the games' frames between them.
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -11,7 +12,10 @@
 #include <vector>
 
 #include <QCryptographicHash>
+#include <QFile>
+#include <QFileInfo>
 #include <QMessageAuthenticationCode>
+#include <QTemporaryDir>
 
 #include "coop/link_auth.h"
 #include "coop/packet_routes.h"
@@ -66,7 +70,7 @@ const Endpoint Eileen{0xC0A80105, 40003};
 
 QByteArray HelloFrom(const char *who, const QByteArray &build = Build,
                      const QByteArray &secret = "s3cr3t") {
-  return Encode(Hello{LinkVersion, who, build, secret, {}, {}});
+  return Encode(Hello{LinkVersion, who, build, secret, {}});
 }
 
 QByteArray Bytes(const LinkAuth::Trailer &trailer) {
@@ -77,6 +81,31 @@ QByteArray Bytes(const LinkAuth::Trailer &trailer) {
 std::span<const u8> Span(const QByteArray &bytes) {
   return {reinterpret_cast<const u8 *>(bytes.constData()),
           static_cast<size_t>(bytes.size())};
+}
+
+std::span<u8> MutableSpan(QByteArray &bytes) {
+  return {reinterpret_cast<u8 *>(bytes.data()),
+          static_cast<size_t>(bytes.size())};
+}
+
+template <typename T> QByteArray ToQt(const T &bytes) {
+  return QByteArray(reinterpret_cast<const char *>(bytes.data()),
+                    static_cast<qsizetype>(bytes.size()));
+}
+
+LinkAuth::Key Filled(u8 byte) {
+  LinkAuth::Key key;
+  key.fill(byte);
+  return key;
+}
+
+// A new ephemeral key for each handshake a test makes.
+LinkAuth::Key NextKey() {
+  static quint32 count = 0;
+  LinkAuth::Key key = Filled(0x60);
+  ++count; // past byte 0, whose low bits X25519 clears
+  std::memcpy(key.data() + 1, &count, sizeof(count));
+  return key;
 }
 
 // The sends of `result` to `to`.
@@ -90,10 +119,28 @@ QList<QByteArray> SentTo(const Hub::Result &result, const Endpoint &to) {
   return sent;
 }
 
+// A game's hello (`plain`, as Encode writes it) for its link's state: the
+// cookie it has, sealed to the server's key (coop/link_auth.h).
+QByteArray Sealed(LinkAuth::Client &game, QByteArray plain) {
+  if (game.HasCookie()) {
+    plain.replace(LinkAuth::HeaderBytes + 1, LinkAuth::CookieBytes,
+                  ToQt(game.CookieToEcho()));
+  }
+  return ToQt(game.SealHello(Span(plain), NextKey()));
+}
+
+// The cookie of a cookie answer, taken by `game` (with the server's key).
+bool TakeCookie(LinkAuth::Client &game, const QByteArray &answer) {
+  LinkAuth::Key key{};
+  const auto cookie = DecodeCookie(answer, nullptr, &key);
+  return cookie && game.TakeCookie(*cookie, key);
+}
+
 // The hub with the games' side of the link around it (coop/link_auth.h, as the
-// emulator runs it): a hello goes through the cookie round trip, a game's
-// datagram goes tagged, and the hub's answers come back opened by their game
-// (one that does not open is dropped and counted in `unopened`).
+// emulator runs it): a hello goes through the cookie round trip and the
+// handshake, a game's datagram goes sealed, and the hub's answers come back
+// opened by their game (one that does not open is dropped and counted in
+// `unopened`).
 class Net {
 public:
   template <typename... Args> explicit Net(Args... args) : hub(args...) {}
@@ -102,43 +149,21 @@ public:
                       qint64 now_ms) {
     const auto hello =
         KindOf(datagram) == Kind::Hello ? DecodeHello(datagram) : std::nullopt;
+    auto &game = games[from.Key()];
     if (!hello || hello->version != LinkVersion) {
       QByteArray sent = datagram;
-      if (const auto found = games.find(from.Key()); found != games.end()) {
-        if (const auto trailer = found->second.Seal(Span(sent))) {
-          sent += Bytes(*trailer);
-        }
+      if (const auto trailer = game.Seal(MutableSpan(sent))) {
+        sent += Bytes(*trailer);
       }
       return Opened(hub.Receive(from, sent, now_ms));
     }
-    auto [game, made] = games.try_emplace(from.Key());
-    if (made) {
-      LinkAuth::Nonce nonce{};
-      nonce[0] = static_cast<u8>(++nonces);
-      game->second.Restart(nonce);
-    }
     for (int round = 0; round < 3; ++round) {
-      Hello said = *hello;
-      if (game->second.HasCookie()) {
-        game->second.ForHello(said.secret.toStdString(),
-                              said.online_id.toStdString());
-        const auto &cookie = game->second.CookieToEcho();
-        said.cookie = QByteArray(reinterpret_cast<const char *>(cookie.data()),
-                                 LinkAuth::CookieBytes);
-      } else {
-        said.secret.clear(); // only once the cookie came
-      }
-      const auto &nonce = game->second.NonceToSend();
-      said.nonce = QByteArray(reinterpret_cast<const char *>(nonce.data()),
-                              LinkAuth::NonceBytes);
-      Hub::Result result = hub.Receive(from, Encode(said), now_ms);
+      Hub::Result result = hub.Receive(from, Sealed(game, datagram), now_ms);
       const auto sent = SentTo(result, from);
-      const auto cookie =
-          sent.size() == 1 ? DecodeCookie(sent[0]) : std::nullopt;
-      if (!cookie) {
+      if (sent.size() != 1 || KindOf(sent[0]) != Kind::Cookie) {
         return Opened(std::move(result));
       }
-      game->second.TakeCookie(*cookie);
+      TakeCookie(game, sent[0]);
     }
     return {};
   }
@@ -148,33 +173,25 @@ public:
 
   Hub hub;
   std::map<quint64, LinkAuth::Client> games;
-  int nonces = 0;
   int unopened = 0;
 
 private:
   Hub::Result Opened(Hub::Result result) {
     QList<Hub::Send> opened;
     for (const auto &send : result.sends) {
-      const auto found = games.find(send.to.Key());
       if (KindOf(send.datagram) == Kind::Cookie) {
         opened.append(send);
         continue;
       }
-      const auto from = found == games.end()
-                            ? LinkAuth::Client::From::Nobody
-                            : found->second.Open(Span(send.datagram));
-      if (from == LinkAuth::Client::From::Nobody) {
+      const auto found = games.find(send.to.Key());
+      const auto plain = found == games.end()
+                             ? std::nullopt
+                             : found->second.Open(Span(send.datagram));
+      if (!plain) {
         ++unopened;
         continue;
       }
-      const QByteArray plain =
-          send.datagram.left(send.datagram.size() - LinkAuth::TrailerBytes);
-      if (const auto welcome = DecodeWelcome(plain);
-          welcome && welcome->accepted &&
-          from == LinkAuth::Client::From::Pending) {
-        found->second.Welcomed();
-      }
-      opened.append({send.to, plain, true});
+      opened.append({send.to, ToQt(*plain), true});
     }
     result.sends = opened;
     return result;
@@ -183,44 +200,57 @@ private:
 
 int Contracts() {
   const auto datagrams = ReadContracts(BLOODBORNE_SERVER_LINK_CONTRACTS);
-  CHECK(datagrams.size() == 14);
+  CHECK(datagrams.size() == 17);
   const auto datagram = [&](const char *name) { return datagrams.at(name); };
 
   const QByteArray cookie(16, '\x11');
-  const QByteArray nonce(16, '\x22');
-  CHECK(Encode(Hello{LinkVersion, "Kaniel", Build, "s3cr3t", cookie, nonce}) ==
+  CHECK(Encode(Hello{LinkVersion, "Kaniel", Build, "s3cr3t", cookie}) ==
         datagram("hello"));
   const auto hello = DecodeHello(datagram("hello"));
-  CHECK(hello && hello->version == 3 && hello->online_id == "Kaniel" &&
+  CHECK(hello && hello->version == 4 && hello->online_id == "Kaniel" &&
         hello->build == Build && hello->secret == "s3cr3t" &&
-        hello->cookie == cookie && hello->nonce == nonce);
-  // Link version 3: the cookie, and a datagram's counter and tag (the keys from
-  // the hello's secret, nonce, cookie and id; the game's first datagram).
+        hello->cookie == cookie);
+  // The cookie, with the work's bits and the server's key.
+  const LinkAuth::ServerKey server_key = LinkAuth::ServerKeyOf(Filled(0x44));
+  CHECK(ToQt(server_key.pub) == datagram("server.key"));
   LinkAuth::Cookie cookie_bytes;
   cookie_bytes.fill(0x11);
-  CHECK(EncodeCookie(cookie_bytes, 20) == datagram("cookie"));
+  CHECK(EncodeCookie(cookie_bytes, 20, server_key.pub) == datagram("cookie"));
   int work_bits = 0;
-  CHECK(DecodeCookie(datagram("cookie"), &work_bits) == cookie_bytes &&
-        work_bits == 20);
+  LinkAuth::Key said_key{};
+  CHECK(DecodeCookie(datagram("cookie"), &work_bits, &said_key) ==
+            cookie_bytes &&
+        work_bits == 20 && said_key == server_key.pub);
   // Hosted: a new account's work, and the answer that asks for it.
-  Hello worked{LinkVersion, "Kaniel", Build, "s3cr3t", cookie, nonce};
+  Hello worked{LinkVersion, "Kaniel", Build, "s3cr3t", cookie};
   worked.work = 0x0807060504030201;
   CHECK(Encode(worked) == datagram("hello.work"));
   CHECK(DecodeHello(datagram("hello.work"))->work == 0x0807060504030201);
   CHECK(!hello->work);
   CHECK(EncodeWork(20) == datagram("work"));
   CHECK(DecodeWork(datagram("work")) == 20 && !DecodeWork(datagram("rpc")));
-  LinkAuth::Nonce nonce_bytes;
-  nonce_bytes.fill(0x22);
-  const auto keys =
-      LinkAuth::KeysFor("s3cr3t", nonce_bytes, cookie_bytes, "Kaniel");
-  LinkAuth::Session game{keys.up, keys.down};
-  const QByteArray ping_bytes = Encode(Kind::Ping, Ping{7, 1000});
-  CHECK(ping_bytes + Bytes(game.Seal(Span(ping_bytes))) ==
-        datagram("ping.tagged"));
-  LinkAuth::Session server = LinkAuth::ServerSession(keys);
-  CHECK(server.Open(Span(datagram("ping.tagged"))) ==
-        LinkAuth::Session::Verdict::Ok);
+  // Link version 4 (coop/link_auth.h): the hello sealed to the server's key
+  // (the game's ephemeral key 32 x 0x33), the welcome's answer (the server's
+  // 32 x 0x55), the game's first datagram: the bytes loadtest/noise_link.py
+  // makes with Python's cryptography, not with our code.
+  LinkAuth::Client game;
+  CHECK(game.TakeCookie(cookie_bytes, server_key.pub));
+  CHECK(ToQt(game.SealHello(Span(datagram("hello")), Filled(0x33))) ==
+        datagram("hello.sealed"));
+  std::vector<u8> plain;
+  const auto responder = LinkAuth::Responder::Open(
+      server_key, Span(datagram("hello.sealed")), plain);
+  CHECK(responder && ToQt(plain) == datagram("hello"));
+  auto answered = responder->Answer(Span(datagram("welcome.ok")), Filled(0x55));
+  CHECK(ToQt(answered.datagram) == datagram("welcome.sealed"));
+  const auto welcomed = game.Open(Span(datagram("welcome.sealed")));
+  CHECK(welcomed && ToQt(*welcomed) == datagram("welcome.ok") && game.Linked());
+  QByteArray ping_bytes = Encode(Kind::Ping, Ping{7, 1000});
+  ping_bytes += Bytes(*game.Seal(MutableSpan(ping_bytes)));
+  CHECK(ping_bytes == datagram("ping.sealed"));
+  CHECK(answered.session.Open(MutableSpan(ping_bytes)) ==
+            LinkAuth::Session::Verdict::Ok &&
+        ping_bytes.left(ping_bytes.size() - 24) == datagram("ping"));
   // Phase 11: the old calls (friends, scores) in the link's second stream.
   CHECK(EncodeRpc(QByteArray::fromHex("0102")) == datagram("rpc"));
   CHECK(DecodeRpc(datagram("rpc")) == QByteArray::fromHex("0102"));
@@ -254,18 +284,20 @@ int Contracts() {
         gone->endpoint == Ada127 && gone->online_id == "Ada");
 
   for (const auto &[name, bytes] : datagrams) {
+    if (name == "server.key") {
+      continue; // a key, not a datagram
+    }
     CHECK(KindOf(bytes).has_value());
+    if (name.ends_with(".sealed")) {
+      continue; // read only once opened
+    }
     for (int size = 0; size < bytes.size(); ++size) {
       const QByteArray cut = bytes.left(size);
       if (name == "data" && size >= 15) {
         continue; // a shorter frame is still a frame
       }
-      if (name == "ping.tagged" && size >= 21) {
-        continue; // a ping with bytes after it
-      }
-      if ((name == "hello.work" && size >= datagram("hello").size()) ||
-          (name == "cookie" && size >= 25)) {
-        continue; // without the work, or its bits (none asked)
+      if (name == "hello.work" && size >= datagram("hello").size()) {
+        continue; // without the work
       }
       CHECK(!DecodeHello(cut) && !DecodeWelcome(cut) && !DecodeData(cut) &&
             !DecodeCookie(cut) && !DecodePing(Kind::Ping, cut) &&
@@ -290,6 +322,18 @@ int HelloAndBuilds() {
   CHECK(DecodeWelcome(SentTo(result, Ada).value(0))->accepted);
   CHECK(hub->Members() == 2);
 
+  // A build or id with control characters is no hello: its text goes into other
+  // games' refusals and logs, where a line break could pass for a line of the
+  // game's own (the launcher reads them).
+  result =
+      hub.Receive(Eileen, HelloFrom("Eileen", "x\nServer link: forged"), 15);
+  CHECK(SentTo(result, Eileen).isEmpty() && hub->Members() == 2);
+  result = hub.Receive(Eileen,
+                       HelloFrom("Eil\x01"
+                                 "een"),
+                       16);
+  CHECK(SentTo(result, Eileen).isEmpty() && hub->Members() == 2);
+
   // One build for everyone: the 0x60 record carries a raw vtable pointer.
   result = hub.Receive(Eileen, HelloFrom("Eileen", "13ddd14d"), 20);
   const auto refused = DecodeWelcome(SentTo(result, Eileen).value(0));
@@ -299,11 +343,14 @@ int HelloAndBuilds() {
       "everyone needs the same release")); // said on the team screen
   CHECK(hub->Members() == 2);
 
-  // Another link version cannot read a tagged answer, and an untagged one
-  // would go to any source: it hears nothing.
-  Hello later{4, "Eileen", Build, "s3cr3t", {}, {}};
-  result = hub.Receive(Eileen, Encode(later), 30);
-  CHECK(result.sends.isEmpty() && hub->Members() == 2);
+  // Another link version cannot read a sealed answer, and a plain one would
+  // go to any source: it hears nothing (version 3's games, the last before
+  // encryption, neither).
+  for (const quint8 version : {3, 5}) {
+    Hello other{version, "Eileen", Build, "s3cr3t", {}, {}};
+    result = hub.Receive(Eileen, Encode(other).leftJustified(80, '\0'), 30);
+    CHECK(result.sends.isEmpty() && hub->Members() == 2);
+  }
 
   // A hello again (the game restarted on the same port) is welcomed again.
   result = hub.Receive(Kaniel, HelloFrom("Kaniel"), 40);
@@ -707,8 +754,8 @@ int RoutesGamePackets() {
   std::cout << "server link routes game packets: ok\n";
   return 0;
 }
-// Link version 3 (coop/link_auth.h): SHA-256 and HMAC as the standards say, and
-// as Qt computes them.
+// The cookies and the work (coop/link_auth.h): SHA-256 and HMAC as the
+// standards say, and as Qt computes them.
 int Crypto() {
   const auto hex = [](const LinkAuth::Digest &digest) {
     return QByteArray(reinterpret_cast<const char *>(digest.data()), 32)
@@ -735,16 +782,70 @@ int Crypto() {
   return 0;
 }
 
-// Link version 3: a hello needs a cookie of its source address and port (no
-// state kept, the answer no larger than the hello); after it every datagram
-// carries its link's counter and tag, and one that does not is dropped without
-// a word, counted.
+// Link version 4 (coop/link_auth.h): Monocypher's X25519, ChaCha20-Poly1305
+// and BLAKE2b as their standards' examples say.
+int Noise() {
+  namespace Mono = MONOCYPHER_CPP_NAMESPACE;
+  const auto key = [](const char *hex) {
+    LinkAuth::Key out;
+    const QByteArray bytes = QByteArray::fromHex(hex);
+    std::memcpy(out.data(), bytes.constData(), out.size());
+    return out;
+  };
+  // RFC 7748, section 6.1.
+  const auto alice =
+      key("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+  const auto bob =
+      key("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb");
+  CHECK(ToQt(LinkAuth::Noise::PublicOf(alice)).toHex() ==
+        "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
+  CHECK(ToQt(*LinkAuth::Noise::Dh(bob, LinkAuth::Noise::PublicOf(alice)))
+            .toHex() ==
+        "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
+  // A small-order point shares no secret.
+  CHECK(!LinkAuth::Noise::Dh(alice, LinkAuth::Key{}));
+  // RFC 8439, section 2.8.2.
+  QByteArray text = "Ladies and Gentlemen of the class of '99: If I could "
+                    "offer you only one tip for the future, sunscreen would "
+                    "be it.";
+  const QByteArray ad = QByteArray::fromHex("50515253c0c1c2c3c4c5c6c7");
+  const QByteArray nonce = QByteArray::fromHex("070000004041424344454647");
+  LinkAuth::Key aead_key;
+  for (size_t index = 0; index < aead_key.size(); ++index) {
+    aead_key[index] = static_cast<u8>(0x80 + index);
+  }
+  Mono::crypto_aead_ctx ctx;
+  Mono::crypto_aead_init_ietf(&ctx, aead_key.data(),
+                              reinterpret_cast<const u8 *>(nonce.constData()));
+  u8 tag[16];
+  Mono::crypto_aead_write(&ctx, MutableSpan(text).data(), tag,
+                          reinterpret_cast<const u8 *>(ad.constData()),
+                          ad.size(), MutableSpan(text).data(), text.size());
+  CHECK(text.left(16).toHex() == "d31a8d34648e60db7b86afbc53ef7ec2");
+  CHECK(QByteArray(reinterpret_cast<const char *>(tag), 16).toHex() ==
+        "1ae10b594f09e26a7e902ecbd0600691");
+  CHECK(ToQt(LinkAuth::Noise::Blake2b(LinkAuth::Bytes("abc"))).toHex() ==
+        "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87"
+        "c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923");
+  // Key text both ways.
+  CHECK(LinkAuth::KeyFromHex(LinkAuth::HexOf(alice)) == alice);
+  CHECK(!LinkAuth::KeyFromHex("abc") &&
+        !LinkAuth::KeyFromHex(std::string(64, 'g')));
+  std::cout << "server link noise: ok\n";
+  return 0;
+}
+
+// Link version 4: a hello needs a cookie of its source address and port (no
+// state kept, the answer smaller than the hello); the hello that echoes it is
+// the handshake, which opens only with the server's key; after it every
+// datagram is encrypted with its link's keys, and one that does not open is
+// dropped without a word, counted.
 int Handshake() {
   Hub hub;
   int checks = 0;
-  hub.SetSignIn([&](const QByteArray &, const QByteArray &, bool) {
+  hub.SetSignIn([&](const QByteArray &, const QByteArray &secret, bool) {
     ++checks;
-    return SignInVerdict{true, {}};
+    return SignInVerdict{secret == "s3cr3t", {}};
   });
   int admitted = 0;
   hub.SetAdmit([&](const Endpoint &, qsizetype) {
@@ -752,33 +853,29 @@ int Handshake() {
     return true;
   });
   LinkAuth::Client game;
-  LinkAuth::Nonce nonce{};
-  nonce[3] = 9;
-  game.Restart(nonce);
-  const auto hello = [&](const Endpoint &, qint64) {
-    Hello said{LinkVersion, "Kaniel", Build, {}, {}, {}};
-    const auto &echo = game.CookieToEcho();
-    if (game.HasCookie()) {
-      game.ForHello("s3cr3t", "Kaniel");
-      said.secret = "s3cr3t";
-      said.cookie = QByteArray(reinterpret_cast<const char *>(echo.data()), 16);
-    }
-    said.nonce = QByteArray(reinterpret_cast<const char *>(nonce.data()), 16);
-    return Encode(said);
-  };
+  game.Pin(hub.PublicKey());
+  const QByteArray plain = HelloFrom("Kaniel");
 
-  // The first hello: a cookie back, nothing else (a spoofed source never sees
-  // it: no link, no sign-in, nothing kept).
-  const QByteArray first = hello(Kaniel, 0);
+  // The first hello: a cookie back with the server's key, nothing else (a
+  // spoofed source never sees it: no link, no sign-in, nothing kept). It says
+  // nothing secret.
+  const QByteArray first = Sealed(game, plain);
+  CHECK(first.size() == static_cast<qsizetype>(LinkAuth::FirstHelloBytes) &&
+        !first.contains("s3cr3t") && !first.contains("Kaniel"));
   auto result = hub.Receive(Kaniel, first, 1000);
   CHECK(result.sends.size() == 1 && result.log.isEmpty());
-  const auto cookie = DecodeCookie(result.sends[0].datagram);
-  CHECK(cookie && result.sends[0].datagram.size() < first.size());
+  CHECK(result.sends[0].datagram.size() < first.size());
   CHECK(hub.Members() == 0 && checks == 0 && hub.CookiesSent() == 1);
-  game.TakeCookie(*cookie);
+  // Shorter than that: not even a cookie (the answer would be larger).
+  CHECK(
+      hub.Receive(Kaniel, first.left(first.size() - 1), 1000).sends.isEmpty());
+  CHECK(TakeCookie(game, result.sends[0].datagram));
 
   // The cookie holds for its source only, and for 30-60 s.
-  const QByteArray second = hello(Kaniel, 1000);
+  const QByteArray second = Sealed(game, plain);
+  CHECK(Sealed(game, plain) == second); // said again: the same datagram
+  CHECK(!second.contains("s3cr3t") && !second.contains("Kaniel") &&
+        !second.contains(Build));
   CHECK(hub.CookieValid(Kaniel, second, 1000));
   CHECK(hub.CookieValid(Kaniel, second, 59'999));
   CHECK(!hub.CookieValid(Kaniel, second, 60'000));
@@ -786,46 +883,85 @@ int Handshake() {
   CHECK(!hub.CookieValid(Endpoint{Kaniel.ipv4 + 1, Kaniel.port}, second, 1000));
   CHECK(!hub.CookieValid(Kaniel, first, 1000));
   result = hub.Receive(Ada, second, 1000); // someone else's cookie
-  CHECK(DecodeCookie(SentTo(result, Ada).value(0)) && hub.Members() == 0 &&
-        checks == 0);
+  CHECK(KindOf(SentTo(result, Ada).value(0)) == Kind::Cookie &&
+        hub.Members() == 0 && checks == 0);
   Hub restarted; // another key: the cookies of before hold nothing
   CHECK(!restarted.CookieValid(Kaniel, second, 1000));
 
-  // The cookie echoed: signed in, and the welcome tagged for this game.
+  // The handshake changed on the way, or sealed to another server's key: it
+  // does not open; no sign-in, no answer, counted.
+  QByteArray changed = second;
+  changed[40] = char(changed[40] ^ 1);
+  CHECK(hub.Receive(Kaniel, changed, 1500).sends.isEmpty());
+  changed = second;
+  changed[changed.size() - 30] = char(changed[changed.size() - 30] ^ 1);
+  CHECK(hub.Receive(Kaniel, changed, 1500).sends.isEmpty());
+  LinkAuth::Client other_server;
+  other_server.Pin(restarted.PublicKey());
+  CHECK(other_server.TakeCookie(game.CookieToEcho(), restarted.PublicKey()));
+  CHECK(hub.Receive(Kaniel, Sealed(other_server, plain), 1500).sends.isEmpty());
+  CHECK(checks == 0 && hub.Members() == 0 && hub.BadHellos() == 3);
+
+  // The cookie echoed: signed in, and the welcome sealed for this game.
   result = hub.Receive(Kaniel, second, 2000);
   CHECK(checks == 1 && hub.Members() == 1);
   const QByteArray welcome = SentTo(result, Kaniel).value(0);
-  CHECK(game.Open(Span(welcome)) == LinkAuth::Client::From::Pending);
-  CHECK(DecodeWelcome(welcome.left(welcome.size() - 24))->accepted);
-  game.Welcomed();
+  // Another game's answer, a changed one, or one made with another key: not
+  // this game's welcome.
+  LinkAuth::Client bystander;
+  bystander.Pin(hub.PublicKey());
+  bystander.TakeCookie(game.CookieToEcho(), hub.PublicKey());
+  Sealed(bystander, plain);
+  CHECK(!bystander.Open(Span(welcome)) && !bystander.Linked());
+  QByteArray forged_welcome = welcome;
+  forged_welcome[20] = char(forged_welcome[20] ^ 1);
+  CHECK(!game.Open(Span(forged_welcome)) && !game.Linked());
+  std::vector<u8> unused;
+  // (the server's answer under another static key, to this game's hello)
+  LinkAuth::ServerKey impostor = LinkAuth::ServerKeyOf(Filled(0x77));
+  impostor.pub = hub.PublicKey(); // it says the real key, but holds another
+  CHECK(!LinkAuth::Responder::Open(impostor, Span(second), unused));
+  const auto opened = game.Open(Span(welcome));
+  CHECK(opened && DecodeWelcome(ToQt(*opened))->accepted && game.Linked());
+  CHECK(!game.Open(Span(welcome))); // its handshake is done
 
-  const auto sealed = [&](const QByteArray &plain) {
-    return plain + Bytes(*game.Seal(Span(plain)));
+  const auto sealed = [&](QByteArray datagram) {
+    datagram += Bytes(*game.Seal(MutableSpan(datagram)));
+    return datagram;
   };
   const QByteArray ping = sealed(Encode(Kind::Ping, Ping{1, 1}));
   result = hub.Receive(Kaniel, ping, 2100);
   CHECK(SentTo(result, Kaniel).size() == 1 && admitted == 1);
-  CHECK(game.Open(Span(SentTo(result, Kaniel)[0])) ==
-        LinkAuth::Client::From::Current);
+  const auto pong = game.Open(Span(SentTo(result, Kaniel)[0]));
+  CHECK(pong && DecodePing(Kind::Pong, ToQt(*pong))->seq == 1);
 
   // The same datagram again (a replay): dropped, counted.
   result = hub.Receive(Kaniel, ping, 2200);
   CHECK(result.sends.isEmpty() && result.log.isEmpty() && hub.Replays() == 1 &&
         admitted == 1);
-  // A bad tag, or none (someone sending from the game's address): dropped
-  // before its rates count it.
-  QByteArray forged = sealed(EncodeCoop("restart"));
-  forged[forged.size() - 1] = char(forged[forged.size() - 1] ^ 1);
+  // Its body changed, its tag, or none (someone sending from the game's
+  // address): dropped before its rates count it.
+  const QByteArray coop = sealed(EncodeCoop("restart"));
+  CHECK(!coop.contains("restart")); // encrypted
+  QByteArray forged = coop;
+  forged[10] = char(forged[10] ^ 1);
   result = hub.Receive(Kaniel, forged, 2300);
   CHECK(result.coop.isEmpty() && result.sends.isEmpty() && hub.BadTags() == 1);
-  result = hub.Receive(Kaniel, EncodeRpc("injected"), 2400);
-  CHECK(result.rpc.isEmpty() && hub.BadTags() == 2 && admitted == 1);
+  forged = coop;
+  forged[forged.size() - 1] = char(forged[forged.size() - 1] ^ 1);
+  CHECK(hub.Receive(Kaniel, forged, 2300).coop.isEmpty() && hub.BadTags() == 2);
+  forged = coop;
+  forged[8] = char(Kind::Rpc); // its kind, in clear, is authenticated too
+  CHECK(hub.Receive(Kaniel, forged, 2300).rpc.isEmpty() && hub.BadTags() == 3);
+  result =
+      hub.Receive(Kaniel, EncodeRpc("injected" + QByteArray(30, 'x')), 2400);
+  CHECK(result.rpc.isEmpty() && hub.BadTags() == 4 && admitted == 1);
   QByteArray moved_bytes = sealed(EncodeCoop("body"));
   result = hub.Receive(Ada, moved_bytes, 2450); // from another source
   CHECK(result.coop.isEmpty());
-  // A tag good, the stream goes on.
-  result = hub.Receive(Kaniel, sealed(EncodeCoop("body")), 2500);
-  CHECK(result.coop.size() == 1 && result.coop[0].body == "body");
+  // One that opens: the stream goes on.
+  result = hub.Receive(Kaniel, coop, 2500);
+  CHECK(result.coop.size() == 1 && result.coop[0].body == "restart");
 
   // Late datagrams within the window are taken, once; older ones are not.
   QList<QByteArray> burst;
@@ -839,31 +975,72 @@ int Handshake() {
   CHECK(hub.Replays() == 3);
   CHECK(hub.Receive(Kaniel, burst[1098], 3000).coop.size() == 1);
 
-  // The hello repeated (the same nonce and cookie): one session, its counters
-  // kept, so a datagram of before is still a replay.
-  result = hub.Receive(Kaniel, hello(Kaniel, 3100), 3100);
-  CHECK(game.Open(Span(SentTo(result, Kaniel).value(0))) ==
-        LinkAuth::Client::From::Current);
+  // The hello repeated (its welcome lost): the same welcome, one session, its
+  // counters kept, so a datagram of before is still a replay.
+  result = hub.Receive(Kaniel, second, 3100);
+  CHECK(SentTo(result, Kaniel).value(0) == welcome);
   CHECK(hub.Receive(Kaniel, burst[1099], 3200).coop.isEmpty());
+  CHECK(game.Open(Span(*hub.Seal(Kaniel, EncodeCoop("x")))).has_value());
 
-  // A refusal is tagged for the game that asked, a hello without a cookie
+  // A refusal is sealed for the game that asked, a hello without a cookie
   // gets none.
   CHECK(!hub.Refusal(Kaniel, first, "too many", 3300));
-  const auto refusal = hub.Refusal(Kaniel, second, "too many", 3300);
   LinkAuth::Client fresh;
-  fresh.Restart(nonce);
-  fresh.TakeCookie(*cookie);
-  fresh.ForHello("s3cr3t", "Kaniel");
-  CHECK(refusal &&
-        fresh.Open(Span(*refusal)) == LinkAuth::Client::From::Pending);
-  // What the hub sends a game outside its answers (the worlds, Rpc): tagged
+  fresh.Pin(hub.PublicKey());
+  fresh.TakeCookie(game.CookieToEcho(), hub.PublicKey());
+  const QByteArray asked = Sealed(fresh, plain);
+  const auto refusal = hub.Refusal(Kaniel, asked, "too many", 3300);
+  const auto heard = refusal ? fresh.Open(Span(*refusal)) : std::nullopt;
+  CHECK(heard && DecodeWelcome(ToQt(*heard))->text == "too many" &&
+        !fresh.Linked() && !game.Open(Span(*refusal)));
+  // What the hub sends a game outside its answers (the worlds, Rpc): sealed
   // for a linked game, nothing for another.
   CHECK(!hub.Seal(Ada, EncodeCoop("x")));
-  CHECK(game.Open(Span(*hub.Seal(Kaniel, EncodeCoop("x")))) ==
-        LinkAuth::Client::From::Current);
+  const auto rpc = game.Open(Span(*hub.Seal(Kaniel, EncodeRpc("secret rpc"))));
+  CHECK(rpc && DecodeRpc(ToQt(*rpc)) == "secret rpc");
+  CHECK(!hub.Seal(Kaniel, EncodeRpc("secret rpc"))->contains("secret"));
+
+  // A game with no key from its launcher takes the first cookie's, and keeps
+  // it once a welcome proves the server holds it (trust on first use); then a
+  // cookie with another key is not taken.
+  LinkAuth::Client home;
+  result = hub.Receive(Eileen, Sealed(home, HelloFrom("Eileen")), 4000);
+  CHECK(TakeCookie(home, SentTo(result, Eileen).value(0)) && !home.Pinned());
+  result = hub.Receive(Eileen, Sealed(home, HelloFrom("Eileen")), 4000);
+  CHECK(home.Open(Span(SentTo(result, Eileen).value(0))) && home.Pinned());
+  CHECK(home.TakeLearned() == hub.PublicKey() && !home.TakeLearned());
+  CHECK(!home.TakeCookie(game.CookieToEcho(), restarted.PublicKey()));
+  // A game pinned to another key takes no cookie of this server.
+  LinkAuth::Client pinned;
+  pinned.Pin(restarted.PublicKey());
+  result = hub.Receive(Eileen, Sealed(pinned, HelloFrom("Eileen")), 4100);
+  CHECK(!TakeCookie(pinned, SentTo(result, Eileen).value(0)) &&
+        !pinned.HasCookie());
   std::cout << "server link handshake: ok\n";
   return 0;
 }
+
+// LinkKeyFile: the server's key made the first time, only its user may read
+// it, and the same key every start after.
+int KeyFile() {
+  QTemporaryDir folder;
+  const QString path = folder.filePath("link_key.bin");
+  bool made = false;
+  QString why;
+  const auto key = KeyFromFile(path, &made, &why);
+  CHECK(key && made && QFileInfo{path}.size() == 32);
+  const auto permissions = QFile::permissions(path);
+  CHECK(!(permissions & (QFileDevice::ReadGroup | QFileDevice::ReadOther |
+                         QFileDevice::WriteGroup | QFileDevice::WriteOther)));
+  CHECK(KeyFromFile(path, &made, &why) == key && !made);
+  QFile file{path};
+  CHECK(file.open(QIODevice::Append) && file.write("x") == 1);
+  file.close();
+  CHECK(!KeyFromFile(path, &made, &why) && why.contains("not a key"));
+  std::cout << "server link key file: ok\n";
+  return 0;
+}
+
 // Hosted: a hello for an id with no account must carry work (coop/link_auth.h)
 // for its cookie and id; the hub checks it with one hash before the sign-in,
 // an account already made never pays, and a hello without it hears how much.
@@ -910,21 +1087,10 @@ int SignupWork() {
     return SignInVerdict{true, {}};
   });
   LinkAuth::Client game;
-  LinkAuth::Nonce nonce{};
-  nonce[0] = 1;
-  game.Restart(nonce);
   const auto hello = [&](const char *who, std::optional<quint64> work) {
-    Hello said{LinkVersion, who, Build, {}, {}, {}};
-    if (game.HasCookie()) {
-      game.ForHello("s3cr3t", who);
-      said.secret = "s3cr3t";
-      said.cookie = QByteArray(
-          reinterpret_cast<const char *>(game.CookieToEcho().data()), 16);
-      said.work = work;
-    }
-    said.nonce = QByteArray(
-        reinterpret_cast<const char *>(game.NonceToSend().data()), 16);
-    return Encode(said);
+    Hello said{LinkVersion, who, Build, "s3cr3t", {}};
+    said.work = work;
+    return Sealed(game, Encode(said));
   };
 
   // The cookie says the work a new account needs.
@@ -932,21 +1098,21 @@ int SignupWork() {
   int bits = -1;
   const auto cookie = DecodeCookie(SentTo(result, Ada).value(0), &bits);
   CHECK(cookie && bits == 10 && asked.isEmpty());
-  game.TakeCookie(*cookie);
+  CHECK(TakeCookie(game, SentTo(result, Ada).value(0)));
 
-  // No work: the game hears how much, tagged for its hello (a spoofed one
+  // No work: the game hears how much, sealed for its hello (a spoofed one
   // cannot make a game spend its CPU); no account, no link.
   result = hub.Receive(Ada, hello("Ada", {}), 1100);
   CHECK(
       (asked.size() == 1 && asked[0] == std::tuple{QByteArray{"Ada"}, false}));
   QByteArray answer = SentTo(result, Ada).value(0);
-  CHECK(game.Open(Span(answer)) == LinkAuth::Client::From::Pending);
-  CHECK(DecodeWork(answer.left(answer.size() - 24)) == 10);
+  QByteArray spoofed = EncodeWork(30);
+  CHECK(!game.Open(Span(spoofed)));
+  auto opened = game.Open(Span(answer));
+  CHECK(opened && DecodeWork(ToQt(*opened)) == 10 && !game.Linked());
   CHECK(hub.Members() == 0 && hub.WorkAsked() == 1);
-  LinkAuth::Nonce fresh{};
-  fresh[0] = 2;
-  CHECK(game.WorkAsked(10, fresh) && game.Working());
-  CHECK(!game.WorkAsked(10, fresh)); // asked again while under way
+  CHECK(game.WorkAsked(10) && game.Working());
+  CHECK(!game.WorkAsked(10)); // asked again while under way
 
   // Work not done (a wrong nonce, or one for another id): not paid.
   const auto right = *LinkAuth::SolveWork(*cookie, "Ada", 10, 0, 1 << 22);
@@ -965,32 +1131,26 @@ int SignupWork() {
   game.TakeWork(*cookie, 10, right);
   CHECK(!game.Working() && game.WorkToSend() == right);
   result = hub.Receive(Eileen, hello("Ada", right), 1300);
-  CHECK(DecodeCookie(SentTo(result, Eileen).value(0)) && hub.Members() == 0);
+  CHECK(KindOf(SentTo(result, Eileen).value(0)) == Kind::Cookie &&
+        hub.Members() == 0);
 
-  // The work done: paid, signed in, welcomed under the hello's new nonce.
+  // The work done: paid, signed in, welcomed (the hello with it is a new
+  // handshake: its bytes changed).
   const int before = static_cast<int>(asked.size());
   result = hub.Receive(Ada, hello("Ada", game.WorkToSend()), 1400);
   CHECK((asked.size() == before + 1 &&
          asked.last() == std::tuple{QByteArray{"Ada"}, true}));
-  answer = SentTo(result, Ada).value(0);
-  CHECK(game.Open(Span(answer)) == LinkAuth::Client::From::Pending);
-  CHECK(DecodeWelcome(answer.left(answer.size() - 24))->accepted);
+  opened = game.Open(Span(SentTo(result, Ada).value(0)));
+  CHECK(opened && DecodeWelcome(ToQt(*opened))->accepted && game.Linked());
   CHECK(hub.Members() == 1);
 
   // An account already made: no work asked, welcomed at once.
   LinkAuth::Client kaniel;
-  kaniel.Restart(nonce);
-  result = hub.Receive(Kaniel, HelloFrom("Kaniel"), 2000);
-  kaniel.TakeCookie(*DecodeCookie(SentTo(result, Kaniel).value(0)));
-  kaniel.ForHello("s3cr3t", "Kaniel");
-  Hello said{LinkVersion, "Kaniel", Build, "s3cr3t", {}, {}};
-  said.cookie = QByteArray(
-      reinterpret_cast<const char *>(kaniel.CookieToEcho().data()), 16);
-  said.nonce = QByteArray(reinterpret_cast<const char *>(nonce.data()), 16);
-  result = hub.Receive(Kaniel, Encode(said), 2100);
-  answer = SentTo(result, Kaniel).value(0);
-  CHECK(kaniel.Open(Span(answer)) == LinkAuth::Client::From::Pending);
-  CHECK(DecodeWelcome(answer.left(answer.size() - 24))->accepted);
+  result = hub.Receive(Kaniel, Sealed(kaniel, HelloFrom("Kaniel")), 2000);
+  CHECK(TakeCookie(kaniel, SentTo(result, Kaniel).value(0)));
+  result = hub.Receive(Kaniel, Sealed(kaniel, HelloFrom("Kaniel")), 2100);
+  opened = kaniel.Open(Span(SentTo(result, Kaniel).value(0)));
+  CHECK(opened && DecodeWelcome(ToQt(*opened))->accepted);
   CHECK((asked.last() == std::tuple{QByteArray{"Kaniel"}, false}));
   CHECK(hub.WorkAsked() == 2 || hub.WorkAsked() == 3);
 
@@ -1001,13 +1161,12 @@ int SignupWork() {
     paid = p;
     return SignInVerdict{true, {}};
   });
-  result = open.Receive(Kaniel, HelloFrom("Kaniel"), 0);
+  LinkAuth::Client home;
+  result = open.Receive(Kaniel, Sealed(home, HelloFrom("Kaniel")), 0);
   bits = -1;
   CHECK(DecodeCookie(SentTo(result, Kaniel).value(0), &bits) && bits == 0);
-  said.cookie = QByteArray(reinterpret_cast<const char *>(
-                               DecodeCookie(SentTo(result, Kaniel)[0])->data()),
-                           16);
-  open.Receive(Kaniel, Encode(said), 10);
+  CHECK(TakeCookie(home, SentTo(result, Kaniel)[0]));
+  open.Receive(Kaniel, Sealed(home, HelloFrom("Kaniel")), 10);
   CHECK(paid && open.Members() == 1);
   std::cout << "server link signup work: ok\n";
   return 0;
@@ -1018,8 +1177,8 @@ int main() {
   if (Contracts() != 0 || HelloAndBuilds() != 0 || Relays() != 0 ||
       Liveness() != 0 || TeamOnly() != 0 || VirtualMembers() != 0 ||
       RoutesGamePackets() != 0 || SignsIn() != 0 ||
-      ALongSilenceEndsTheSignIn() != 0 || Crypto() != 0 || Handshake() != 0 ||
-      SignupWork() != 0) {
+      ALongSilenceEndsTheSignIn() != 0 || Crypto() != 0 || Noise() != 0 ||
+      Handshake() != 0 || KeyFile() != 0 || SignupWork() != 0) {
     return 1;
   }
   return 0;

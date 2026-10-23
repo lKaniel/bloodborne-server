@@ -96,6 +96,7 @@ private:
     // passwords refused lately (not hashed again for a while), the links of each address.
     HostedConfig m_hosted;
     Admission::Guard m_guard;
+    Admission::HelloBudget m_helloBudget;
     Admission::SignupWork m_signupWork{0};
     QThreadPool m_signInPool;
     QSet<QByteArray> m_signInPending;
@@ -115,5 +116,6 @@ private:
     qint64 m_busyNs = 0;
     double m_linkLoad = 0;
     QString m_dbPath;
+    QString m_keyError; // the link's key did not read (LinkKeyFile): the link does not start
     std::map<QByteArray, std::unique_ptr<RpcEnd>> m_rpc; // by player id
 };

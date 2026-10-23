@@ -104,26 +104,33 @@ struct Rig {
   }
   // A game linked from `from` as `id`.
   void Link(const Endpoint &from, const QByteArray &id) {
-    LinkAuth::Client
-        game; // link version 3: a cookie first, then the hello that signs in
-    LinkAuth::Nonce nonce{};
-    nonce[0] = static_cast<quint8>(++nonces);
-    game.Restart(nonce);
+    // Link version 4: a cookie first, then the handshake that signs in.
+    LinkAuth::Client game;
     ServerLink::Hello hello;
     hello.online_id = id;
-    hello.nonce =
-        QByteArray(reinterpret_cast<const char *>(game.NonceToSend().data()),
-                   LinkAuth::NonceBytes);
-    for (const auto &send :
-         hub.Receive(from, ServerLink::Encode(hello), link_ms).sends) {
-      if (const auto cookie = ServerLink::DecodeCookie(send.datagram)) {
-        game.TakeCookie(*cookie);
-        hello.secret = "secret";
-        game.ForHello(hello.secret.toStdString(), id.toStdString());
+    hello.secret = "secret";
+    const auto sealed = [&] {
+      if (game.HasCookie()) {
         hello.cookie = QByteArray(
             reinterpret_cast<const char *>(game.CookieToEcho().data()),
             LinkAuth::CookieBytes);
-        hub.Receive(from, ServerLink::Encode(hello), link_ms);
+      }
+      const QByteArray plain = ServerLink::Encode(hello);
+      LinkAuth::Key ephemeral{};
+      ephemeral[1] = static_cast<quint8>(++nonces); // past the bits X25519 clears
+      const auto bytes =
+          game.SealHello({reinterpret_cast<const u8 *>(plain.constData()),
+                          static_cast<size_t>(plain.size())},
+                         ephemeral);
+      return QByteArray(reinterpret_cast<const char *>(bytes.data()),
+                        static_cast<qsizetype>(bytes.size()));
+    };
+    for (const auto &send : hub.Receive(from, sealed(), link_ms).sends) {
+      LinkAuth::Key key{};
+      if (const auto cookie =
+              ServerLink::DecodeCookie(send.datagram, nullptr, &key)) {
+        game.TakeCookie(*cookie, key);
+        hub.Receive(from, sealed(), link_ms);
       }
     }
   }
@@ -321,6 +328,12 @@ int ServerStats() {
   CHECK(stats["worlds"].toInt() == 1);
   CHECK(stats["link_load"].toDouble() == 0.25);
   CHECK(stats.contains("hellos_refused") && stats.contains("bans"));
+  // Link version 4: the server's public key, what the launcher pins.
+  const QString key =
+      QString::fromStdString(LinkAuth::HexOf(rig.hub.PublicKey()));
+  CHECK(stats["link_key"].toString() == key && stats.contains("bad_hellos"));
+  const QJsonObject asked = rig.Run("key").json;
+  CHECK(asked["ok"].toBool() && asked["key"].toString() == key);
   return 0;
 }
 

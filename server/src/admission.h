@@ -107,6 +107,28 @@ private:
     Counters counters;
 };
 
+// Hellos that open an address may send each second, on every server: each costs the link thread
+// Diffie-Hellmans (link version 4), so a flood from one real address would starve the others.
+// Over it a hello is dropped (the game says hello again); nothing is banned.
+class HelloBudget {
+public:
+    explicit HelloBudget(int per_second = 20) : per_second{per_second} {}
+
+    bool Allow(quint32 address, qint64 now_ms) {
+        const qint64 now = now_ms / 1000;
+        if (now != second) {
+            second = now;
+            counts.clear();
+        }
+        return ++counts[address] <= per_second;
+    }
+
+private:
+    int per_second;
+    qint64 second = -1;
+    QHash<quint32, int> counts;
+};
+
 // The zero bits a new account's work needs (coop/link_auth.h): the base, and 2 more for every
 // doubling of the accounts made in the last minute over a baseline (a botnet of many addresses
 // stays within each address's limit), never more than the cap.

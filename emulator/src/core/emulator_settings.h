@@ -139,7 +139,7 @@ struct OverrideItem {
 };
 
 template <typename Struct, typename T>
-inline OverrideItem make_override(const char* key, Setting<T> Struct::* member) {
+inline OverrideItem make_override(const char* key, Setting<T> Struct::*member) {
     return OverrideItem{
         key,
         [member, key](void* base, const nlohmann::json& entry, std::vector<std::string>& changed) {
@@ -212,6 +212,8 @@ struct GeneralSettings {
     Setting<int> big_picture_scale{1000};
     Setting<std::string> shadnet_server{"srv.shadps4.net:31313"};
     Setting<std::string> shadnet_webapi_server{"http://srv.shadps4.net:31315"};
+    // The server link's public key (link version 4: 64 hex digits; empty: trust on first use).
+    Setting<std::string> shadnet_server_key{""};
 
     // return a vector of override descriptors (runtime, but tiny)
     std::vector<OverrideItem> GetOverrideableFields() const {
@@ -234,7 +236,9 @@ struct GeneralSettings {
             make_override<GeneralSettings>("console_language", &GeneralSettings::console_language),
             make_override<GeneralSettings>("shadnet_server", &GeneralSettings::shadnet_server),
             make_override<GeneralSettings>("shadnet_webapi_server",
-                                           &GeneralSettings::shadnet_webapi_server)};
+                                           &GeneralSettings::shadnet_webapi_server),
+            make_override<GeneralSettings>("shadnet_server_key",
+                                           &GeneralSettings::shadnet_server_key)};
     }
 };
 
@@ -244,7 +248,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GeneralSettings, install_dirs, addon_install_
                                    trophy_notification_duration, show_splash,
                                    trophy_notification_side, connected_to_network,
                                    discord_rpc_enabled, show_fps_counter, console_language,
-                                   big_picture_scale, shadnet_server, shadnet_webapi_server)
+                                   big_picture_scale, shadnet_server, shadnet_webapi_server,
+                                   shadnet_server_key)
 
 // -------------------------------
 // Log settings
@@ -678,6 +683,7 @@ public:
     SETTING_FORWARD(m_general, BigPictureScale, big_picture_scale)
     SETTING_FORWARD(m_general, ShadNetServer, shadnet_server)
     SETTING_FORWARD(m_general, ShadNetWebApiServer, shadnet_webapi_server)
+    SETTING_FORWARD(m_general, ShadNetServerKey, shadnet_server_key)
 
     // Log settings
     SETTING_FORWARD_BOOL(m_log, LogAppend, append)

@@ -3,6 +3,7 @@
 #include "server_link.h"
 
 #include <algorithm>
+#include <QFile>
 #include <QRandomGenerator>
 #include <QtEndian>
 #include "coop/packet_routes.h"
@@ -118,15 +119,40 @@ std::array<u8, N> Array(const QByteArray& bytes) {
     return out;
 }
 
-LinkAuth::Session SessionOf(const Hello& hello) {
-    return LinkAuth::ServerSession(LinkAuth::KeysFor(
-        hello.secret.toStdString(), Array<LinkAuth::NonceBytes>(hello.nonce),
-        Array<LinkAuth::CookieBytes>(hello.cookie), hello.online_id.toStdString()));
+std::span<u8> MutableSpan(QByteArray& bytes) {
+    return {reinterpret_cast<u8*>(bytes.data()), static_cast<size_t>(bytes.size())};
+}
+
+QByteArray ToQt(std::span<const u8> bytes) {
+    return QByteArray(reinterpret_cast<const char*>(bytes.data()),
+                      static_cast<qsizetype>(bytes.size()));
 }
 
 void Append(QByteArray& datagram, const LinkAuth::Trailer& trailer) {
     datagram.append(reinterpret_cast<const char*>(trailer.data()),
                     static_cast<qsizetype>(trailer.size()));
+}
+
+LinkAuth::Key RandomKey() {
+    LinkAuth::Key key;
+    QRandomGenerator::system()->fillRange(reinterpret_cast<quint32*>(key.data()),
+                                          static_cast<qsizetype>(key.size() / 4));
+    return key;
+}
+
+// A hello's answer (a welcome, a refusal, a work ask) under a fresh ephemeral key.
+LinkAuth::Responder::Answered AnswerOf(const LinkAuth::Responder& hello, const QByteArray& plain) {
+    return hello.Answer(Span(plain), RandomKey());
+}
+
+// The version and the cookie of a hello as it came (both in clear).
+bool HelloHead(const QByteArray& hello, quint8& version, QByteArray& cookie) {
+    if (hello.size() < static_cast<qsizetype>(LinkAuth::HelloClearBytes)) {
+        return false;
+    }
+    version = static_cast<quint8>(hello[HeaderSize]);
+    cookie = hello.mid(HeaderSize + 1, LinkAuth::CookieBytes);
+    return true;
 }
 
 // The first bytes of a frame, past its vports, in hex.
@@ -169,7 +195,6 @@ QByteArray Encode(const Hello& hello) {
     QByteArray out = Start(Kind::Hello);
     out.append(static_cast<char>(hello.version));
     out.append(Fixed(hello.cookie, LinkAuth::CookieBytes));
-    out.append(Fixed(hello.nonce, LinkAuth::NonceBytes));
     PutText(out, hello.online_id);
     PutText(out, hello.build);
     PutText(out, hello.secret);
@@ -179,23 +204,27 @@ QByteArray Encode(const Hello& hello) {
     return out;
 }
 
-QByteArray EncodeCookie(const LinkAuth::Cookie& cookie, int work_bits) {
+QByteArray EncodeCookie(const LinkAuth::Cookie& cookie, int work_bits, const LinkAuth::Key& key) {
     QByteArray out = Start(Kind::Cookie);
-    out.append(reinterpret_cast<const char*>(cookie.data()), static_cast<qsizetype>(cookie.size()));
+    out.append(ToQt(cookie));
     out.append(static_cast<char>(work_bits));
+    out.append(ToQt(key));
     return out;
 }
 
-std::optional<LinkAuth::Cookie> DecodeCookie(const QByteArray& datagram, int* work_bits) {
+std::optional<LinkAuth::Cookie> DecodeCookie(const QByteArray& datagram, int* work_bits,
+                                             LinkAuth::Key* key) {
     auto body = Body(datagram, Kind::Cookie);
     QByteArray bytes;
-    if (!body || (bytes = body->Rest()).size() < static_cast<int>(LinkAuth::CookieBytes)) {
+    if (!body || (bytes = body->Rest()).size() <
+                     static_cast<int>(LinkAuth::CookieBytes + 1 + LinkAuth::KeyBytes)) {
         return std::nullopt;
     }
     if (work_bits) {
-        *work_bits = bytes.size() > static_cast<int>(LinkAuth::CookieBytes)
-                         ? static_cast<quint8>(bytes[LinkAuth::CookieBytes])
-                         : 0;
+        *work_bits = static_cast<quint8>(bytes[LinkAuth::CookieBytes]);
+    }
+    if (key) {
+        *key = Array<LinkAuth::KeyBytes>(bytes.mid(LinkAuth::CookieBytes + 1));
     }
     return Array<LinkAuth::CookieBytes>(bytes);
 }
@@ -263,16 +292,23 @@ std::optional<Hello> DecodeHello(const QByteArray& datagram) {
     if (hello.version != LinkVersion) {
         return hello; // a game of another build: its version says so
     }
-    hello.cookie = body->Rest().left(LinkAuth::CookieBytes + LinkAuth::NonceBytes);
-    if (hello.cookie.size() < static_cast<int>(LinkAuth::CookieBytes + LinkAuth::NonceBytes)) {
+    hello.cookie = body->Rest().left(LinkAuth::CookieBytes);
+    if (hello.cookie.size() < static_cast<int>(LinkAuth::CookieBytes)) {
         return std::nullopt;
     }
-    hello.nonce = hello.cookie.mid(LinkAuth::CookieBytes);
-    hello.cookie.truncate(LinkAuth::CookieBytes);
-    Reader rest{datagram,
-                HeaderSize + 1 + static_cast<int>(LinkAuth::CookieBytes + LinkAuth::NonceBytes)};
+    Reader rest{datagram, static_cast<int>(LinkAuth::HelloClearBytes)};
     if (!rest.GetText(hello.online_id) || !rest.GetText(hello.build) ||
         !rest.GetText(hello.secret)) {
+        return std::nullopt;
+    }
+    // The id and build go into other games' refusals and every log, where a line break could pass
+    // for a line of the game's own (the launcher reads the game's log).
+    const auto printable = [](const QByteArray& text) {
+        return std::all_of(text.begin(), text.end(), [](char c) {
+            return static_cast<unsigned char>(c) >= 0x20 && c != 0x7f;
+        });
+    };
+    if (!printable(hello.online_id) || !printable(hello.build)) {
         return std::nullopt;
     }
     if (quint64 work = 0; rest.Get(work)) {
@@ -340,22 +376,70 @@ std::optional<QByteArray> DecodeRpc(const QByteArray& datagram) {
     return body->Rest();
 }
 
+std::optional<LinkAuth::Key> KeyFromFile(const QString& path, bool* made, QString* why) {
+    const auto fail = [why](const QString& text) -> std::optional<LinkAuth::Key> {
+        if (why) {
+            *why = text;
+        }
+        return std::nullopt;
+    };
+    if (made) {
+        *made = false;
+    }
+    QFile file{path};
+    if (file.exists()) {
+        if (!file.open(QIODevice::ReadOnly)) {
+            return fail(file.errorString());
+        }
+        const QByteArray bytes = file.read(LinkAuth::KeyBytes + 1);
+        if (bytes.size() != static_cast<qsizetype>(LinkAuth::KeyBytes)) {
+            return fail(QStringLiteral("not a key (%1 bytes, a key is %2)")
+                            .arg(bytes.size())
+                            .arg(LinkAuth::KeyBytes));
+        }
+        return Array<LinkAuth::KeyBytes>(bytes);
+    }
+    // Made with the owner's permissions only, never readable by others for a moment.
+    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly,
+                   QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        return fail(file.errorString());
+    }
+    const LinkAuth::Key key = RandomKey();
+    if (file.write(ToQt(key)) != static_cast<qsizetype>(key.size()) || !file.flush()) {
+        const QString error = file.errorString();
+        file.close();
+        file.remove();
+        return fail(error);
+    }
+    if (made) {
+        *made = true;
+    }
+    return key;
+}
+
 Hub::Hub(qint64 quiet_ms, qint64 gone_ms, qint64 stats_ms, int pair_lines, qint64 lost_ms)
     : quiet_ms{quiet_ms}, gone_ms{gone_ms}, stats_ms{stats_ms}, lost_ms{lost_ms},
       pair_lines{pair_lines} {
     QByteArray key(32, Qt::Uninitialized);
     QRandomGenerator::system()->fillRange(reinterpret_cast<quint32*>(key.data()), 8);
     SetCookieKey(key);
+    SetStaticKey(RandomKey());
 }
 
 void Hub::SetCookieKey(const QByteArray& key) {
     cookie_key = LinkAuth::HmacKey{Span(key)};
 }
 
+void Hub::SetStaticKey(const LinkAuth::Key& secret) {
+    static_key = LinkAuth::ServerKeyOf(secret);
+}
+
 bool Hub::CookieValid(const Endpoint& from, const QByteArray& hello, qint64 now_ms) const {
-    const auto decoded = DecodeHello(hello);
-    return decoded && decoded->version == LinkVersion &&
-           LinkAuth::CookieValid(cookie_key, from.ipv4, from.port, now_ms, Span(decoded->cookie));
+    quint8 version = 0;
+    QByteArray cookie;
+    return KindOf(hello) == Kind::Hello && HelloHead(hello, version, cookie) &&
+           version == LinkVersion &&
+           LinkAuth::CookieValid(cookie_key, from.ipv4, from.port, now_ms, Span(cookie));
 }
 
 std::optional<QByteArray> Hub::Seal(const Endpoint& to, QByteArray datagram) {
@@ -363,7 +447,7 @@ std::optional<QByteArray> Hub::Seal(const Endpoint& to, QByteArray datagram) {
     if (found == members.end() || !found->session) {
         return std::nullopt;
     }
-    Append(datagram, found->session->Seal(Span(datagram)));
+    Append(datagram, found->session->Seal(MutableSpan(datagram)));
     return datagram;
 }
 
@@ -372,10 +456,12 @@ std::optional<QByteArray> Hub::Refusal(const Endpoint& from, const QByteArray& h
     if (!CookieValid(from, hello, now_ms)) {
         return std::nullopt;
     }
-    LinkAuth::Session session = SessionOf(*DecodeHello(hello));
-    QByteArray datagram = Encode(Welcome{false, text});
-    Append(datagram, session.Seal(Span(datagram)));
-    return datagram;
+    std::vector<u8> plain;
+    const auto opened = LinkAuth::Responder::Open(static_key, Span(hello), plain);
+    if (!opened) {
+        return std::nullopt;
+    }
+    return ToQt(AnswerOf(*opened, Encode(Welcome{false, text})).datagram);
 }
 
 void Hub::SealSends(Result& result) {
@@ -452,11 +538,12 @@ Hub::Result Hub::Receive(const Endpoint& from, const QByteArray& datagram, qint6
         return result;
     }
     Link& link = *found;
-    // Link version 3: its tag and counter, or it never came (a spoofed source, a replay).
+    // Its link's keys open it, or it never came (a spoofed source, a replay).
     if (!link.session) {
         return result;
     }
-    switch (link.session->Open(Span(datagram))) {
+    QByteArray plain = datagram;
+    switch (link.session->Open(MutableSpan(plain))) {
     case LinkAuth::Session::Verdict::Ok:
         break;
     case LinkAuth::Session::Verdict::Replay:
@@ -466,7 +553,7 @@ Hub::Result Hub::Receive(const Endpoint& from, const QByteArray& datagram, qint6
         ++bad_tags;
         return result;
     }
-    const QByteArray plain = datagram.left(datagram.size() - LinkAuth::TrailerBytes);
+    plain.chop(LinkAuth::TrailerBytes);
     if (admit && !admit(from, datagram.size())) {
         return result;
     }
@@ -504,33 +591,44 @@ void Hub::Dispatch(Link& link, Kind kind, const QByteArray& datagram, Result& re
 }
 
 void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_ms, Result& result) {
-    const auto hello = DecodeHello(datagram);
-    if (!hello) {
+    quint8 version = 0;
+    QByteArray cookie;
+    if (!HelloHead(datagram, version, cookie)) {
         return;
     }
-    // A game of another link version cannot read a tagged answer, and an untagged one would go to
-    // any source: it hears nothing (the launcher says the release to install).
-    if (hello->version != LinkVersion) {
+    // A game of another link version cannot read a sealed answer, and a plain one would go to any
+    // source: it hears nothing (the launcher says the release to install).
+    if (version != LinkVersion) {
         if (old_versions++ < DropsLogged) {
             result.log.append(QStringLiteral("server link: a hello of link version %1 from %2 "
                                              "(this server speaks %3): dropped")
-                                  .arg(hello->version)
+                                  .arg(version)
                                   .arg(from.Text())
                                   .arg(LinkVersion));
         }
         return;
     }
-    // No cookie of this source yet: only one back, no larger than the hello, nothing kept.
-    if (!LinkAuth::CookieValid(cookie_key, from.ipv4, from.port, now_ms, Span(hello->cookie))) {
-        ++cookies_sent;
-        result.sends.append({from,
-                             EncodeCookie(LinkAuth::CookieFor(cookie_key, from.ipv4, from.port,
-                                                              now_ms / LinkAuth::CookieBucketMs),
-                                          signup_work),
-                             true});
+    // No cookie of this source yet: only one back, smaller than the hello, nothing kept.
+    if (!LinkAuth::CookieValid(cookie_key, from.ipv4, from.port, now_ms, Span(cookie))) {
+        if (datagram.size() >= static_cast<qsizetype>(LinkAuth::FirstHelloBytes)) {
+            ++cookies_sent;
+            result.sends.append(
+                {from,
+                 EncodeCookie(LinkAuth::CookieFor(cookie_key, from.ipv4, from.port,
+                                                  now_ms / LinkAuth::CookieBucketMs),
+                              signup_work, static_key.pub),
+                 true});
+        }
         return;
     }
-    LinkAuth::Session session = SessionOf(*hello);
+    // The handshake's first message: it opens with this server's key, or it was not for it.
+    std::vector<u8> opened;
+    const auto responder = LinkAuth::Responder::Open(static_key, Span(datagram), opened);
+    const auto hello = responder ? DecodeHello(ToQt(opened)) : std::nullopt;
+    if (!hello) {
+        ++bad_hellos;
+        return;
+    }
     QByteArray refusal;
     if (!required_build.isEmpty() && !hello->build.isEmpty() && hello->build != required_build) {
         refusal = "another build: everyone needs the same release (this game runs " + hello->build +
@@ -560,9 +658,8 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
         }
         if (signed_in->work && !paid) {
             ++work_asked;
-            QByteArray asked = EncodeWork(signup_work);
-            Append(asked, session.Seal(Span(asked)));
-            result.sends.append({from, asked, true});
+            result.sends.append(
+                {from, ToQt(AnswerOf(*responder, EncodeWork(signup_work)).datagram), true});
             return;
         }
         if (!signed_in->accepted) {
@@ -582,9 +679,8 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
         }
     }
     if (!refusal.isEmpty()) {
-        QByteArray refused = Encode(Welcome{false, refusal});
-        Append(refused, session.Seal(Span(refused)));
-        result.sends.append({from, refused, true});
+        result.sends.append(
+            {from, ToQt(AnswerOf(*responder, Encode(Welcome{false, refusal})).datagram), true});
         result.log.append(
             QStringLiteral("server link: refused %1 (%2): %3")
                 .arg(QString::fromUtf8(hello->online_id), from.Text(), QString::fromUtf8(refusal)));
@@ -618,11 +714,16 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
     link.build = hello->build;
     link.last_heard_ms = now_ms;
     link.quiet = false;
-    // The same game and nonce again (its hello repeated): the session and its counters stay.
-    if (!link.session || !link.session->SameKeys(session)) {
-        link.session.emplace(std::move(session));
+    // The same hello again (its welcome lost, or late): the same welcome, the session and its
+    // counters stay. A new one (the game's next link) gets a new handshake's.
+    if (!link.session || link.welcome.isEmpty() ||
+        !LinkAuth::SameBytes(link.hello_key, responder->GameKey())) {
+        auto answered = AnswerOf(*responder, Encode(Welcome{true, {}}));
+        link.session.emplace(std::move(answered.session));
+        link.hello_key = responder->GameKey();
+        link.welcome = ToQt(answered.datagram);
     }
-    result.sends.append({from, Encode(Welcome{true, {}})});
+    result.sends.append({from, link.welcome, true});
     result.linked.append({link.online_id, link.virtual_endpoint, link.endpoint});
     result.log.append(
         QStringLiteral("server link: %1 %2, build %3, %4 linked")
@@ -828,11 +929,13 @@ Hub::Result Hub::Tick(qint64 now_ms) {
             link.frames_in = link.bytes_in = link.frames_out = link.bytes_out = 0;
             link.pings = 0;
         }
-        if (bad_tags != 0 || replays != 0) {
+        if (bad_tags != 0 || replays != 0 || bad_hellos != 0) {
             result.log.append(QStringLiteral("server link: %1 datagrams dropped for a bad tag, %2 "
-                                             "replayed, %3 cookies sent")
+                                             "replayed, %3 hellos that did not open, %4 cookies "
+                                             "sent")
                                   .arg(bad_tags)
                                   .arg(replays)
+                                  .arg(bad_hellos)
                                   .arg(cookies_sent));
         }
     }

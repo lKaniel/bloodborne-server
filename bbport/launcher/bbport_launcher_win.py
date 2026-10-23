@@ -4339,7 +4339,8 @@ class Launcher:
                 raise RuntimeError(_(bbport_coop.UNKNOWN_SERVER_TEXT).format(settings['host_ip']))
             # The id for this server: its own when it refused the player's one id (coop_watch_line).
             account, secret = bbport_coop.player_id_for(settings, settings['host_ip'])
-            settings = dict(settings, host_ip=address, server=settings['host_ip'], account=account, password=secret)
+            settings = dict(settings, host_ip=address, server=settings['host_ip'], account=account, password=secret,
+                            link_key=bbport_coop.link_key_for(settings, settings['host_ip']))
             user = PORT_DIR / 'user'
             user.mkdir(parents=True, exist_ok=True)
             (user / 'host_overrides.custom.json').write_text(bbport_coop.host_overrides(settings['host_ip']),
@@ -4385,6 +4386,21 @@ class Launcher:
         has (docs/HOSTED_SERVER.md): the launcher then makes a new id for that server, saves it and starts the
         game again, NEW_ID_TRIES times; after that it stops the game and the status line says why."""
         if not getattr(self, 'coop_playing', None) or getattr(self, 'coop_new_id', None):
+            return
+        # Link version 4: the key the game trusted at its first link with this server is kept for it.
+        key = bbport_coop.learned_key(line)
+        if key:
+            learned = bbport_coop.learn_link_key(self.coop, self.coop_playing[0]['server'], key)
+            if learned is None:
+                return
+            self.coop = learned
+            try:
+                bbport_coop.save_settings(PORT_DIR, self.coop)
+            except OSError:
+                pass
+            return
+        if bbport_coop.other_key(line):
+            self.status.configure(text=_(bbport_coop.OTHER_KEY_TEXT), fg=BAD)
             return
         tries = getattr(self, 'coop_id_tries', 0)
         what = bbport_coop.id_retry(line, tries)
