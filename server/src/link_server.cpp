@@ -49,6 +49,13 @@ LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_
         [this](const ServerLink::Endpoint& from, const ServerLink::Endpoint& to, quint32 channel) {
             return m_world.RoutesPacket(from, to, channel);
         });
+    // Hosted: a link's rates count its datagrams once their tag is good (a spoofed flood from a
+    // player's address must not get that address banned).
+    m_link.SetAdmit([this](const ServerLink::Endpoint& from, qsizetype bytes) {
+        return !m_hosted.enabled ||
+               m_guard.AllowDatagram(from.Key(), from.ipv4, static_cast<int>(bytes),
+                                     m_clock.elapsed());
+    });
     m_clock.start();
     // Hosted (docs/HOSTED_SERVER.md): limits on who comes in, a fixed build, passwords checked on
     // their own thread (a flood of new ids must not stop the games' relay).
@@ -267,14 +274,18 @@ bool LinkServer::Admit(const QByteArray& datagram, ServerLink::Kind kind, quint3
     // big.
     if (datagram.size() > 16384 || m_guard.Banned(address, now))
         return false;
-    const bool known = m_link.VirtualOf(from).has_value();
     if (kind == ServerLink::Kind::Hello) {
+        // Without a cookie of its source the hub only sends one back (no larger, nothing kept):
+        // a spoofed flood of hellos must not use up a player's address's hellos.
+        if (!m_link.CookieValid(from, datagram, now))
+            return true;
         if (!m_guard.AllowHello(address, now))
             return false;
+        const bool known = m_link.VirtualOf(from).has_value();
         if (!known && !m_guard.AllowLink(address, m_addressLinks.value(address))) {
-            m_socket->writeDatagram(
-                ServerLink::Encode(ServerLink::Welcome{false, "too many games from your address"}),
-                QHostAddress(from.ipv4), from.port);
+            if (const auto refusal =
+                    m_link.Refusal(from, datagram, "too many games from your address", now))
+                m_socket->writeDatagram(*refusal, QHostAddress(from.ipv4), from.port);
             return false;
         }
         if (const auto hello = ServerLink::DecodeHello(datagram);
@@ -283,8 +294,8 @@ bool LinkServer::Admit(const QByteArray& datagram, ServerLink::Kind kind, quint3
         }
         return true;
     }
-    // A link's datagrams within its rate (a datagram of no link the hub drops itself).
-    return !known || m_guard.AllowDatagram(from.Key(), address, datagram.size(), now);
+    // A link's datagrams: their rates once their tag is checked (the hub's admit).
+    return true;
 }
 
 void LinkServer::OnLinkTick() {
@@ -496,10 +507,10 @@ void LinkServer::CloseRpc(RpcEnd& end) {
 
 void LinkServer::FlushRpc(RpcEnd& end) {
     for (const auto& body : end.tunnel->Flush(m_clock.elapsed())) {
-        m_socket->writeDatagram(
-            ServerLink::EncodeRpc(QByteArray(reinterpret_cast<const char*>(body.data()),
-                                             static_cast<qsizetype>(body.size()))),
-            QHostAddress(end.to.ipv4), end.to.port);
+        if (const auto sealed = m_link.Seal(
+                end.to, ServerLink::EncodeRpc(QByteArray(reinterpret_cast<const char*>(body.data()),
+                                                         static_cast<qsizetype>(body.size())))))
+            m_socket->writeDatagram(*sealed, QHostAddress(end.to.ipv4), end.to.port);
     }
 }
 
@@ -561,8 +572,8 @@ void LinkServer::Apply(const ServerLink::Hub::Result& result) {
 
 void LinkServer::Apply(const BloodborneWorld::Service::Result& result) {
     for (const auto& send : result.sends)
-        m_socket->writeDatagram(ServerLink::EncodeCoop(send.body), QHostAddress(send.to.ipv4),
-                                send.to.port);
+        if (const auto sealed = m_link.Seal(send.to, ServerLink::EncodeCoop(send.body)))
+            m_socket->writeDatagram(*sealed, QHostAddress(send.to.ipv4), send.to.port);
     for (const auto& line : result.log)
         qInfo().noquote() << line;
 }

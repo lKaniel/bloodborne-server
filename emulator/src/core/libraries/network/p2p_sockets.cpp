@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <limits>
+#include <random>
 #include <span>
 #include <string>
 #include <string_view>
@@ -403,7 +404,11 @@ public:
         // The server link: the frame goes to shadNet, which hands it to the peer.
         if (const auto server = LinkServer();
             Link::RoutesThroughServer(server, dest_addr_nbo, dest_port_nbo)) {
-            framed = Link::EncodeData(dest_addr_nbo, dest_port_nbo, framed);
+            auto sealed = SealLink(Link::EncodeData(dest_addr_nbo, dest_port_nbo, framed));
+            if (!sealed) {
+                return -1; // no link yet: the game sends its own again
+            }
+            framed = std::move(*sealed);
             dest.sin_addr.s_addr = server.addr_nbo;
             dest.sin_port = server.port_nbo;
         }
@@ -457,6 +462,8 @@ public:
             link_secret = std::move(secret);
             link_welcomed = false;
             link_hello_ms.reset();
+            link_auth = {};
+            link_auth.Restart(FreshNonce());
         }
         LOG_INFO(Lib_Net, "Server link: every frame for a peer goes through the server at {:#x}:{}",
                  ntohl(server_addr_nbo), ntohs(server_port_nbo));
@@ -480,7 +487,8 @@ public:
         dest.sin_family = AF_INET;
         dest.sin_addr.s_addr = server.addr_nbo;
         dest.sin_port = server.port_nbo;
-        return Transmit(dest, Link::EncodeCoop(body));
+        auto sealed = SealLink(Link::EncodeCoop(body));
+        return sealed && Transmit(dest, std::move(*sealed));
     }
 
     // Phase 11: a frame of the Rpc tunnel's stream for the server (before its welcome too: the
@@ -494,7 +502,24 @@ public:
         dest.sin_family = AF_INET;
         dest.sin_addr.s_addr = server.addr_nbo;
         dest.sin_port = server.port_nbo;
-        return Transmit(dest, Link::EncodeRpc(body));
+        auto sealed = SealLink(Link::EncodeRpc(body));
+        return sealed && Transmit(dest, std::move(*sealed));
+    }
+
+    // Link version 3 (net_link.h): a datagram for the server with its link's counter and tag;
+    // nothing before the server's cookie came (the server would drop it).
+    std::optional<std::vector<u8>> SealLink(std::vector<u8> datagram) {
+        std::lock_guard lock(link_mutex);
+        return Link::Sealed(link_auth, std::move(datagram));
+    }
+
+    static LinkAuth::Nonce FreshNonce() {
+        std::random_device device;
+        LinkAuth::Nonce nonce;
+        for (u8& byte : nonce) {
+            byte = static_cast<u8>(device());
+        }
+        return nonce;
     }
 
     bool LinkWelcomed() {
@@ -774,8 +799,33 @@ private:
 
     // A datagram from the server's link: a relayed frame, the hello's answer, a pong, news of
     // another member's link.
-    void OnLinkDatagram(Link::Kind kind, std::span<const u8> datagram) {
+    void OnLinkDatagram(Link::Kind kind, std::span<const u8> tagged) {
         const s64 now_ms = P2PNowMs();
+        std::span<const u8> datagram;
+        {
+            std::lock_guard lock(link_mutex);
+            if (kind == Link::Kind::Cookie) {
+                // The hello's answer without a cookie of ours: echoed in the next hello at once.
+                // Never tagged, so taken only while there is a hello to answer.
+                if (const auto cookie = Link::DecodeCookie(tagged); cookie && !link_welcomed) {
+                    link_auth.TakeCookie(*cookie);
+                    link_hello_ms.reset();
+                }
+                return;
+            }
+            const auto opened = Link::Opened(link_auth, tagged);
+            if (!opened) {
+                // Not from the server (a spoofed source), or a replay: dropped.
+                if (link_untagged++ < 20) {
+                    LOG_INFO(Lib_Net,
+                             "Server link: a datagram of kind {} whose tag does not open: "
+                             "dropped",
+                             static_cast<int>(kind));
+                }
+                return;
+            }
+            datagram = *opened;
+        }
         switch (kind) {
         case Link::Kind::Data:
             if (const auto data = Link::DecodeData(datagram)) {
@@ -905,16 +955,20 @@ private:
             }
             if (Link::HelloDue(link_welcomed, link_hello_ms, !link_refusal.empty(), now_ms)) {
                 link_hello_ms = now_ms;
-                datagrams.push_back(Link::Encode(Link::Hello{
-                    .online_id = link_online_id, .build = link_build, .secret = link_secret}));
+                datagrams.push_back(Link::Encode(
+                    Link::HelloFor(link_auth, link_online_id, link_build, link_secret)));
             }
             if (const auto ping = ping_meter.Due(now_ms)) {
-                datagrams.push_back(Link::Encode(Link::Kind::Ping, *ping));
+                if (auto sealed = Link::Sealed(link_auth, Link::Encode(Link::Kind::Ping, *ping))) {
+                    datagrams.push_back(std::move(*sealed));
+                }
             }
             quiet = ping_meter.Check(now_ms);
             if (quiet) {
-                // The server may have restarted and forgotten this game: say hello again.
+                // The server may have restarted and forgotten this game: say hello again, on a
+                // new session (the old one stays in use until the server welcomes it).
                 link_welcomed = false;
+                link_auth.Restart(FreshNonce());
             }
             summary = ping_meter.TakeSummary(now_ms);
         }
@@ -998,6 +1052,8 @@ private:
     bool link_welcomed{false};
     std::string link_refusal;
     std::optional<s64> link_hello_ms;
+    LinkAuth::Client link_auth; // link version 3: the cookie and the link's session
+    u32 link_untagged{0};
     Link::PingMeter ping_meter;
     s64 link_tick_ms{0};
     std::atomic<ServerLinkObserver> link_observer{nullptr};

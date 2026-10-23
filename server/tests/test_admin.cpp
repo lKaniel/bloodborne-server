@@ -18,6 +18,7 @@
 #include "admission.h"
 #include "bloodborne_world.h"
 #include "coop.pb.h"
+#include "coop/link_auth.h"
 #include "server_link.h"
 
 namespace {
@@ -103,10 +104,28 @@ struct Rig {
   }
   // A game linked from `from` as `id`.
   void Link(const Endpoint &from, const QByteArray &id) {
+    LinkAuth::Client
+        game; // link version 3: a cookie first, then the hello that signs in
+    LinkAuth::Nonce nonce{};
+    nonce[0] = static_cast<quint8>(++nonces);
+    game.Restart(nonce);
     ServerLink::Hello hello;
     hello.online_id = id;
-    hello.secret = "secret";
-    hub.Receive(from, ServerLink::Encode(hello), link_ms);
+    hello.nonce =
+        QByteArray(reinterpret_cast<const char *>(game.NonceToSend().data()),
+                   LinkAuth::NonceBytes);
+    for (const auto &send :
+         hub.Receive(from, ServerLink::Encode(hello), link_ms).sends) {
+      if (const auto cookie = ServerLink::DecodeCookie(send.datagram)) {
+        game.TakeCookie(*cookie);
+        hello.secret = "secret";
+        game.ForHello(hello.secret.toStdString(), id.toStdString());
+        hello.cookie = QByteArray(
+            reinterpret_cast<const char *>(game.CookieToEcho().data()),
+            LinkAuth::CookieBytes);
+        hub.Receive(from, ServerLink::Encode(hello), link_ms);
+      }
+    }
   }
 
   ServerLink::Hub hub;
@@ -115,6 +134,7 @@ struct Rig {
   QString bans;
   qint64 link_ms = 1000;
   qint64 retire_ms = 0;
+  int nonces = 0;
 };
 
 const Endpoint Alice{0xCB007107, 5000}; // 203.0.113.7

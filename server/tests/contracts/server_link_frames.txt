@@ -4,8 +4,10 @@
 # format change on one side that the other does not follow fails one of them.
 #
 # One datagram per line: <name><TAB><hex>. The values are:
-#   hello            link version 2, online id "Kaniel", build "92829ac4 events 1f protocol 9",
-#                    secret "s3cr3t" (phase 11: the hello signs the player in)
+#   hello            link version 3, cookie 16 x 0x11, nonce 16 x 0x22, online id "Kaniel",
+#                    build "92829ac4 events 1f protocol 9", secret "s3cr3t" (phase 11: the hello
+#                    signs the player in)
+#   cookie           the server's answer to a hello without a valid cookie: 16 x 0x11
 #   welcome.ok       accepted, no text
 #   welcome.refused  refused, "another build: 13ddd14d"
 #   data             address 127.0.0.1, port 0x1234 (both as sent: network byte order), and the
@@ -14,7 +16,10 @@
 #   member.*         Ada at 127.0.0.1:0x1234: quiet for 3500 ms, back after 4200 ms, gone
 #                    after 60000 ms
 #   rpc              the body 0102 (phase 11: the link's second stream, the old TCP calls)
-hello	ffffffff53484c4b0102064b616e69656c1d3932383239616334206576656e74732031662070726f746f636f6c203906733363723374
+#   ping.tagged      the ping above, the game's first datagram of the link the hello above makes
+#                    (server/coop/link_auth.h): counter 1, then HMAC-SHA256 over the ping and the
+#                    counter with the "up" key, its first 16 bytes
+hello	ffffffff53484c4b01031111111111111111111111111111111122222222222222222222222222222222064b616e69656c1d3932383239616334206576656e74732031662070726f746f636f6c203906733363723374
 welcome.ok	ffffffff53484c4b020100
 welcome.refused	ffffffff53484c4b020017616e6f74686572206275696c643a203133646464313464
 data	ffffffff53484c4b037f0000011234753075310700000002000000abcd
@@ -24,3 +29,5 @@ member.quiet	ffffffff53484c4b0600ac0d00007f000001123403416461
 member.back	ffffffff53484c4b0601681000007f000001123403416461
 member.gone	ffffffff53484c4b060260ea00007f000001123403416461
 rpc	ffffffff53484c4b080102
+cookie	ffffffff53484c4b0911111111111111111111111111111111
+ping.tagged	ffffffff53484c4b0407000000e8030000000000000100000000000000de089f908e4c61edf4fce1aa9933dc81

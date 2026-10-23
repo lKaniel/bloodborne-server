@@ -19,7 +19,7 @@ import unittest
 
 SHADNET = os.environ.get("SHADNET_EXE", "")
 HEADER = b"\xff\xff\xff\xffSHLK"
-HELLO, WELCOME = 1, 2
+HELLO, WELCOME, COOKIE = 1, 2, 9
 BUILD = b"gatetest"
 
 
@@ -42,8 +42,11 @@ def text(value):
     return bytes([len(value)]) + value
 
 
-def hello(online_id, secret):
-    return HEADER + bytes([HELLO, 2]) + text(online_id) + text(BUILD) + text(secret)
+def hello(online_id, secret, cookie=b""):
+    # Link version 3 (coop/link_auth.h): the cookie the server gave, a nonce, and the secret
+    # once there is a cookie.
+    return (HEADER + bytes([HELLO, 3]) + cookie.ljust(16, b"\0") + b"\x01" * 16 +
+            text(online_id) + text(BUILD) + text(secret if cookie else b""))
 
 
 class Response:
@@ -108,12 +111,16 @@ class HostedHttpGate(unittest.TestCase):
         cls.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         cls.udp.bind(("127.0.0.1", 0))
         cls.udp.settimeout(0.5)
+        cookie = b""
         for _ in range(40):
-            cls.udp.sendto(hello(b"pgate01", b"secret-of-pgate01"), ("127.0.0.1", cls.link))
+            cls.udp.sendto(hello(b"pgate01", b"secret-of-pgate01", cookie),
+                           ("127.0.0.1", cls.link))
             try:
                 answer = cls.udp.recv(2048)
             except socket.timeout:
                 continue
+            if answer.startswith(HEADER) and answer[8] == COOKIE:
+                cookie = answer[9:25]
             if answer.startswith(HEADER) and answer[8] == WELCOME and answer[9] == 1:
                 break
         else:

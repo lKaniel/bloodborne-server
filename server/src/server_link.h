@@ -27,11 +27,13 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include "coop/link_auth.h"
 
 namespace ServerLink {
 
 // 2 (phase 11): the hello carries the player's secret and signs it in.
-constexpr quint8 LinkVersion = 2;
+// 3: a cookie first, then every datagram after the hello tagged (coop/link_auth.h).
+constexpr quint8 LinkVersion = 3;
 enum class Kind : quint8 {
     Hello = 1,
     Welcome = 2,
@@ -45,6 +47,8 @@ enum class Kind : quint8 {
     // Phase 11: the calls that went over shadNet's TCP port (friends, scores, the NP sign-in), in
     // a second reliable stream (coop/coop_stream.h) of the link, so a host opens one UDP port.
     Rpc = 8,
+    // Link version 3: the answer to a hello without a valid cookie (coop/link_auth.h).
+    Cookie = 9,
 };
 enum class MemberState : quint8 { Quiet = 0, Back = 1, Gone = 2 };
 
@@ -71,11 +75,15 @@ struct SignInVerdict {
     QByteArray refusal;
 };
 
+// Link version 3: the version, the cookie (16 bytes, zeros before the server gave one), the game's
+// nonce (16 bytes), the id, the build and the secret (empty without a cookie).
 struct Hello {
     quint8 version = LinkVersion;
     QByteArray online_id;
     QByteArray build;
     QByteArray secret; // phase 11: the player id's secret (the launcher made it)
+    QByteArray cookie; // 16 bytes on the wire
+    QByteArray nonce;  // 16 bytes on the wire
 };
 struct Welcome {
     bool accepted = false;
@@ -99,6 +107,8 @@ struct Member {
 // The kind of a link datagram, or nothing for anything else (the STUN ping).
 std::optional<Kind> KindOf(const QByteArray& datagram);
 QByteArray Encode(const Hello& hello);
+QByteArray EncodeCookie(const LinkAuth::Cookie& cookie);
+std::optional<LinkAuth::Cookie> DecodeCookie(const QByteArray& datagram);
 QByteArray Encode(const Welcome& welcome);
 QByteArray Encode(const Data& data);
 QByteArray Encode(Kind kind, const Ping& ping);
@@ -112,15 +122,19 @@ std::optional<Ping> DecodePing(Kind kind, const QByteArray& datagram);
 std::optional<Member> DecodeMember(const QByteArray& datagram);
 std::optional<QByteArray> DecodeCoop(const QByteArray& datagram);
 std::optional<QByteArray> DecodeRpc(const QByteArray& datagram);
+// A hello of another link version decodes to its version only.
 
 // The links of the games on this server, without sockets or clocks: the socket
 // hands it each datagram and calls Tick now and then; it says what to send and
-// what to log.
+// what to log. Link version 3 (coop/link_auth.h): a hello needs a cookie of its
+// source, and every datagram after it carries its link's tag; what it says to
+// send is tagged already.
 class Hub {
 public:
     struct Send {
         Endpoint to;
         QByteArray datagram;
+        bool sealed = false; // tagged already (or a cookie, never tagged)
     };
     // A Coop datagram's body for the party's world (bloodborne_world.h), from a linked game.
     struct Coop {
@@ -152,6 +166,32 @@ public:
     Result Receive(const Endpoint& from, const QByteArray& datagram, qint64 now_ms);
     // Links newly quiet (told to the others), gone (forgotten) and the counters.
     Result Tick(qint64 now_ms);
+
+    // The key of the cookies (random per hub; a restart makes the games ask again).
+    void SetCookieKey(const QByteArray& key);
+    // Whether a hello datagram echoes a cookie of its source.
+    bool CookieValid(const Endpoint& from, const QByteArray& hello, qint64 now_ms) const;
+    // A datagram for the game linked at `to`, tagged; nothing when none is.
+    std::optional<QByteArray> Seal(const Endpoint& to, QByteArray datagram);
+    // A refusal for a hello with a valid cookie, tagged for its game; nothing otherwise.
+    std::optional<QByteArray> Refusal(const Endpoint& from, const QByteArray& hello,
+                                      const QByteArray& text, qint64 now_ms) const;
+    // Whether a linked game's datagram, its tag good, goes on (hosted: its rates, admission.h).
+    // A datagram's tag is checked first: a spoofed one never counts against its address.
+    using Admit = std::function<bool(const Endpoint& from, qsizetype bytes)>;
+    void SetAdmit(Admit admit) {
+        this->admit = std::move(admit);
+    }
+    // Datagrams dropped for a bad tag, and for a counter seen already (or too old).
+    quint64 BadTags() const {
+        return bad_tags;
+    }
+    quint64 Replays() const {
+        return replays;
+    }
+    quint64 CookiesSent() const {
+        return cookies_sent;
+    }
 
     // Phase 7: each link's team (its party, empty before the game said which). Once set, a frame
     // and a member notice go only to games of the sender's team, never to one in no team.
@@ -219,9 +259,13 @@ private:
         quint64 bytes_out = 0;
         quint32 pings = 0;
         std::map<quint32, quint64> refused; // game packets not forwarded, per channel
+        std::optional<LinkAuth::Session> session;
     };
 
     void OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_ms, Result& result);
+    // Tags every send of `result` not tagged yet; one for a game not linked is dropped.
+    void SealSends(Result& result);
+    void Dispatch(Link& link, Kind kind, const QByteArray& datagram, Result& result);
     void OnData(Link& sender, const QByteArray& datagram, Result& result);
     void Heard(Link& link, qint64 now_ms, Result& result);
     void Unlink(quint64 key);
@@ -243,6 +287,12 @@ private:
     QHash<quint64, quint64> by_virtual; // a link's virtual address -> its real one (keys)
     QHash<QPair<quint64, quint64>, quint64> pair_frames;
     quint64 dropped = 0;
+    LinkAuth::HmacKey cookie_key;
+    quint64 bad_tags = 0;
+    quint64 replays = 0;
+    quint64 cookies_sent = 0;
+    quint64 old_versions = 0;
+    Admit admit;
     PartyOf party_of;
     PacketRoutes packet_routes;
     SignIn sign_in;
