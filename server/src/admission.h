@@ -13,6 +13,7 @@
 // - Bans by address or player id, from the operator (banned.txt) or the strikes above.
 #pragma once
 
+#include <algorithm>
 #include <QByteArray>
 #include <QHash>
 #include <QSet>
@@ -104,6 +105,30 @@ private:
     QSet<quint32> banned_addresses;
     QSet<QByteArray> banned_ids;
     Counters counters;
+};
+
+// The zero bits a new account's work needs (coop/link_auth.h): the base, and 2 more for every
+// doubling of the accounts made in the last minute over a baseline (a botnet of many addresses
+// stays within each address's limit), never more than the cap.
+class SignupWork {
+public:
+    SignupWork(int base_bits = 20, int max_bits = 20, int baseline_per_minute = 60)
+        : base_bits{base_bits}, max_bits{std::max(base_bits, max_bits)},
+          baseline{std::max(1, baseline_per_minute)} {}
+
+    void Made(qint64 now_ms);
+    int Bits(qint64 now_ms);
+
+private:
+    static constexpr int Slots = 60; // one a second
+    void Advance(qint64 now_ms);
+
+    int base_bits;
+    int max_bits;
+    int baseline;
+    int counts[Slots] = {};
+    qint64 second = 0; // the newest slot's
+    int total = 0;
 };
 
 // One address or id a line of an operator's ban list (banned.txt), '#' comments; a line may end

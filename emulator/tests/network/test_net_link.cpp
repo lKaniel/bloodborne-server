@@ -49,13 +49,16 @@ const std::vector<u8> GameFrame{0x75, 0x30, 0x75, 0x31, 0x07, 0x00, 0x00,
 
 TEST(NetLink, EncodesTheContractsDatagrams) {
     const auto datagrams = ContractDatagrams();
-    ASSERT_EQ(datagrams.size(), 12u) << BLOODBORNE_SERVER_LINK_CONTRACTS;
+    ASSERT_EQ(datagrams.size(), 14u) << BLOODBORNE_SERVER_LINK_CONTRACTS;
     Hello hello{
         .online_id = "Kaniel", .build = "92829ac4 events 1f protocol 9", .secret = "s3cr3t"};
     hello.cookie.fill(0x11);
     hello.nonce.fill(0x22);
     EXPECT_EQ(Encode(hello), datagrams.at("hello"));
-    EXPECT_EQ(EncodeCookie(hello.cookie), datagrams.at("cookie"));
+    EXPECT_EQ(EncodeCookie(hello.cookie, 20), datagrams.at("cookie"));
+    EXPECT_EQ(EncodeWork(20), datagrams.at("work"));
+    hello.work = 0x0807060504030201;
+    EXPECT_EQ(Encode(hello), datagrams.at("hello.work"));
     const std::vector<u8> rpc_body{0x01, 0x02};
     EXPECT_EQ(EncodeRpc(rpc_body), datagrams.at("rpc"));
     EXPECT_EQ(Encode(Welcome{.accepted = true}), datagrams.at("welcome.ok"));
@@ -84,9 +87,15 @@ TEST(NetLink, DecodesTheContractsDatagrams) {
     EXPECT_EQ(hello->secret, "s3cr3t");
     EXPECT_EQ(hello->cookie[15], 0x11);
     EXPECT_EQ(hello->nonce[0], 0x22);
-    const auto cookie = DecodeCookie(datagrams.at("cookie"));
+    EXPECT_FALSE(hello->work.has_value());
+    int work_bits = 0;
+    const auto cookie = DecodeCookie(datagrams.at("cookie"), &work_bits);
     ASSERT_TRUE(cookie.has_value());
     EXPECT_EQ((*cookie)[0], 0x11);
+    EXPECT_EQ(work_bits, 20);
+    EXPECT_EQ(DecodeHello(datagrams.at("hello.work"))->work, 0x0807060504030201u);
+    EXPECT_EQ(DecodeWork(datagrams.at("work")), 20);
+    EXPECT_EQ(KindOf(datagrams.at("work")), Kind::Work);
     const auto rpc = DecodeRpc(datagrams.at("rpc"));
     ASSERT_TRUE(rpc.has_value());
     EXPECT_EQ(std::vector<u8>(rpc->begin(), rpc->end()), (std::vector<u8>{0x01, 0x02}));
@@ -131,9 +140,13 @@ TEST(NetLink, EveryCutDatagramIsRefused) {
             if (name == "ping.tagged" && size >= 9 + 12) {
                 continue; // a ping with bytes after it
             }
+            if ((name == "hello.work" && size >= ContractDatagrams().at("hello").size()) ||
+                (name == "cookie" && size >= 9 + 16)) {
+                continue; // without the work, or its bits (none asked)
+            }
             EXPECT_FALSE(DecodeHello(cut) || DecodeWelcome(cut) || DecodeData(cut) ||
                          DecodeCookie(cut) || DecodePing(Kind::Ping, cut) ||
-                         DecodePing(Kind::Pong, cut) || DecodeMember(cut))
+                         DecodePing(Kind::Pong, cut) || DecodeMember(cut) || DecodeWork(cut))
                 << name << " cut to " << size;
         }
     }
@@ -329,4 +342,54 @@ TEST(NetLink, OnlyTheServersTaggedDatagramsOpen) {
     welcome_again.insert(welcome_again.end(), trailer.begin(), trailer.end());
     EXPECT_TRUE(Opened(auth, welcome_again).has_value());
     EXPECT_FALSE(Opened(auth, seal(EncodeCoop(body))).has_value()) << "the old one is over";
+}
+
+// A hosted server's first sign-in: the server's tagged Work answer, the work done for the cookie
+// (under a new nonce: the old session took the answer's counter), and the hello that carries it.
+TEST(NetLink, AFirstSignInDoesTheWorkTheServerAsks) {
+    LinkAuth::Nonce nonce{};
+    nonce[0] = 5;
+    LinkAuth::Cookie cookie{};
+    cookie[0] = 7;
+    LinkAuth::Client auth;
+    auth.Restart(nonce);
+    auth.TakeCookie(cookie);
+    EXPECT_FALSE(HelloFor(auth, "Ada", "b", "pw").work.has_value());
+    LinkAuth::Session server =
+        LinkAuth::ServerSession(LinkAuth::KeysFor("pw", nonce, cookie, "Ada"));
+    auto asked = EncodeWork(12);
+    const auto trailer = server.Seal(asked);
+    asked.insert(asked.end(), trailer.begin(), trailer.end());
+    const auto opened = Opened(auth, asked);
+    ASSERT_TRUE(opened.has_value());
+    EXPECT_EQ(DecodeWork(*opened), 12);
+    EXPECT_FALSE(Opened(auth, EncodeWork(30)).has_value()) << "untagged: nobody's to obey";
+
+    LinkAuth::Nonce fresh = nonce;
+    fresh[1] = 1;
+    ASSERT_TRUE(auth.WorkAsked(12, fresh));
+    EXPECT_TRUE(auth.Working());
+    EXPECT_FALSE(auth.WorkAsked(12, fresh)) << "asked again while under way";
+    EXPECT_EQ(auth.NonceToSend(), fresh);
+    const auto work = LinkAuth::SolveWork(cookie, "Ada", 12, 0, u64{1} << 24);
+    ASSERT_TRUE(work.has_value());
+    auth.TakeWork(cookie, 12, work);
+    EXPECT_FALSE(auth.Working());
+    const Hello hello = HelloFor(auth, "Ada", "b", "pw");
+    ASSERT_TRUE(hello.work.has_value());
+    EXPECT_TRUE(LinkAuth::WorkDone(cookie, "Ada", *hello.work, 12));
+    EXPECT_EQ(DecodeHello(Encode(hello))->work, hello.work);
+    // The welcome under the new nonce's session opens.
+    LinkAuth::Session renewed =
+        LinkAuth::ServerSession(LinkAuth::KeysFor("pw", fresh, cookie, "Ada"));
+    auto welcome = Encode(Welcome{.accepted = true});
+    const auto welcome_trailer = renewed.Seal(welcome);
+    welcome.insert(welcome.end(), welcome_trailer.begin(), welcome_trailer.end());
+    EXPECT_TRUE(Opened(auth, welcome).has_value());
+    // A new cookie (the old one ran out): the work is for the old one only.
+    LinkAuth::Cookie later = cookie;
+    later[1] = 1;
+    auth.TakeCookie(later);
+    EXPECT_FALSE(HelloFor(auth, "Ada", "b", "pw").work.has_value());
+    EXPECT_TRUE(auth.WorkAsked(12, nonce)) << "asked again for the new cookie";
 }

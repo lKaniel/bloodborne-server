@@ -7,7 +7,12 @@
 #   hello            link version 3, cookie 16 x 0x11, nonce 16 x 0x22, online id "Kaniel",
 #                    build "92829ac4 events 1f protocol 9", secret "s3cr3t" (phase 11: the hello
 #                    signs the player in)
-#   cookie           the server's answer to a hello without a valid cookie: 16 x 0x11
+#   cookie           the server's answer to a hello without a valid cookie: 16 x 0x11, then the
+#                    bits a new account's work needs: 20 (hosted; 0 elsewhere)
+#   hello.work       the hello above with the work nonce 0x0807060504030201 (hosted: a new
+#                    account's, after the secret, only when there is one)
+#   work             hosted: a hello's answer when its id has no account and it did no work:
+#                    20 bits (sent tagged, as the hello's other answers)
 #   welcome.ok       accepted, no text
 #   welcome.refused  refused, "another build: 13ddd14d"
 #   data             address 127.0.0.1, port 0x1234 (both as sent: network byte order), and the
@@ -29,5 +34,7 @@ member.quiet	ffffffff53484c4b0600ac0d00007f000001123403416461
 member.back	ffffffff53484c4b0601681000007f000001123403416461
 member.gone	ffffffff53484c4b060260ea00007f000001123403416461
 rpc	ffffffff53484c4b080102
-cookie	ffffffff53484c4b0911111111111111111111111111111111
+cookie	ffffffff53484c4b091111111111111111111111111111111114
 ping.tagged	ffffffff53484c4b0407000000e8030000000000000100000000000000de089f908e4c61edf4fce1aa9933dc81
+hello.work	ffffffff53484c4b01031111111111111111111111111111111122222222222222222222222222222222064b616e69656c1d3932383239616334206576656e74732031662070726f746f636f6c2039067333637233740102030405060708
+work	ffffffff53484c4b0a14

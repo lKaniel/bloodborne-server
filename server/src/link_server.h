@@ -43,7 +43,7 @@ private:
     void Apply(const ServerLink::Hub::Result& result);
     void Apply(const BloodborneWorld::Service::Result& result);
     std::optional<ServerLink::SignInVerdict> SignIn(const QByteArray& online_id,
-                                                    const QByteArray& secret);
+                                                    const QByteArray& secret, bool paid);
     // Hosted: a password checked on the sign-in thread (its account made if it may be).
     // `counted`: it counted as an account made when it was queued (Admission::Guard::Made).
     void SignedIn(const QByteArray& online_id, const QByteArray& hash, bool accepted, bool made,
@@ -96,6 +96,7 @@ private:
     // passwords refused lately (not hashed again for a while), the links of each address.
     HostedConfig m_hosted;
     Admission::Guard m_guard;
+    Admission::SignupWork m_signupWork{0};
     QThreadPool m_signInPool;
     QSet<QByteArray> m_signInPending;
     struct Refused {

@@ -10,6 +10,7 @@
 #include <tuple>
 #include <vector>
 
+#include <QCryptographicHash>
 #include <QMessageAuthenticationCode>
 
 #include "coop/link_auth.h"
@@ -182,7 +183,7 @@ private:
 
 int Contracts() {
   const auto datagrams = ReadContracts(BLOODBORNE_SERVER_LINK_CONTRACTS);
-  CHECK(datagrams.size() == 12);
+  CHECK(datagrams.size() == 14);
   const auto datagram = [&](const char *name) { return datagrams.at(name); };
 
   const QByteArray cookie(16, '\x11');
@@ -197,8 +198,18 @@ int Contracts() {
   // the hello's secret, nonce, cookie and id; the game's first datagram).
   LinkAuth::Cookie cookie_bytes;
   cookie_bytes.fill(0x11);
-  CHECK(EncodeCookie(cookie_bytes) == datagram("cookie"));
-  CHECK(DecodeCookie(datagram("cookie")) == cookie_bytes);
+  CHECK(EncodeCookie(cookie_bytes, 20) == datagram("cookie"));
+  int work_bits = 0;
+  CHECK(DecodeCookie(datagram("cookie"), &work_bits) == cookie_bytes &&
+        work_bits == 20);
+  // Hosted: a new account's work, and the answer that asks for it.
+  Hello worked{LinkVersion, "Kaniel", Build, "s3cr3t", cookie, nonce};
+  worked.work = 0x0807060504030201;
+  CHECK(Encode(worked) == datagram("hello.work"));
+  CHECK(DecodeHello(datagram("hello.work"))->work == 0x0807060504030201);
+  CHECK(!hello->work);
+  CHECK(EncodeWork(20) == datagram("work"));
+  CHECK(DecodeWork(datagram("work")) == 20 && !DecodeWork(datagram("rpc")));
   LinkAuth::Nonce nonce_bytes;
   nonce_bytes.fill(0x22);
   const auto keys =
@@ -252,9 +263,14 @@ int Contracts() {
       if (name == "ping.tagged" && size >= 21) {
         continue; // a ping with bytes after it
       }
+      if ((name == "hello.work" && size >= datagram("hello").size()) ||
+          (name == "cookie" && size >= 25)) {
+        continue; // without the work, or its bits (none asked)
+      }
       CHECK(!DecodeHello(cut) && !DecodeWelcome(cut) && !DecodeData(cut) &&
             !DecodeCookie(cut) && !DecodePing(Kind::Ping, cut) &&
-            !DecodePing(Kind::Pong, cut) && !DecodeMember(cut));
+            !DecodePing(Kind::Pong, cut) && !DecodeMember(cut) &&
+            !DecodeWork(cut));
     }
   }
   // The STUN ping shares the header.
@@ -328,13 +344,14 @@ int HelloAndBuilds() {
 int SignsIn() {
   Net hub;
   QList<QByteArray> asked;
-  hub->SetSignIn([&](const QByteArray &online_id, const QByteArray &secret) {
-    asked.append(online_id);
-    if (online_id == "Squatter") {
-      return SignInVerdict{false, "address taken: make a new id"};
-    }
-    return SignInVerdict{online_id == "Kaniel" && secret == "right", {}};
-  });
+  hub->SetSignIn(
+      [&](const QByteArray &online_id, const QByteArray &secret, bool) {
+        asked.append(online_id);
+        if (online_id == "Squatter") {
+          return SignInVerdict{false, "address taken: make a new id"};
+        }
+        return SignInVerdict{online_id == "Kaniel" && secret == "right", {}};
+      });
   auto result = hub.Receive(Kaniel, HelloFrom("Kaniel", Build, "wrong"), 0);
   const auto refused = DecodeWelcome(SentTo(result, Kaniel).value(0));
   CHECK(refused && !refused->accepted && refused->text.contains("sign-in"));
@@ -725,7 +742,7 @@ int Crypto() {
 int Handshake() {
   Hub hub;
   int checks = 0;
-  hub.SetSignIn([&](const QByteArray &, const QByteArray &) {
+  hub.SetSignIn([&](const QByteArray &, const QByteArray &, bool) {
     ++checks;
     return SignInVerdict{true, {}};
   });
@@ -847,13 +864,162 @@ int Handshake() {
   std::cout << "server link handshake: ok\n";
   return 0;
 }
+// Hosted: a hello for an id with no account must carry work (coop/link_auth.h)
+// for its cookie and id; the hub checks it with one hash before the sign-in,
+// an account already made never pays, and a hello without it hears how much.
+int SignupWork() {
+  const auto hex = [](const LinkAuth::Digest &digest) {
+    return QByteArray(reinterpret_cast<const char *>(digest.data()), 32)
+        .toHex();
+  };
+  LinkAuth::Digest digest{};
+  CHECK(LinkAuth::LeadingZeroBits(digest) == 256);
+  digest[0] = 0x01;
+  CHECK(LinkAuth::LeadingZeroBits(digest) == 7);
+  digest[0] = 0;
+  digest[1] = 0x20;
+  CHECK(LinkAuth::LeadingZeroBits(digest) == 10);
+  LinkAuth::Cookie some{};
+  some.fill(0x11);
+  // SHA-256 of the cookie, the id and the nonce (8 bytes, little-endian).
+  CHECK(hex(LinkAuth::WorkDigest(LinkAuth::WorkPrefix(some, "Kaniel"),
+                                 0x0807060504030201)) ==
+        QCryptographicHash::hash(QByteArray(16, 0x11) + "Kaniel" +
+                                     QByteArray::fromHex("0102030405060708"),
+                                 QCryptographicHash::Sha256)
+            .toHex());
+  const auto solved = LinkAuth::SolveWork(some, "Kaniel", 12, 0, 1 << 22);
+  CHECK(solved && LinkAuth::WorkDone(some, "Kaniel", *solved, 12));
+  CHECK(!LinkAuth::WorkDone(some, "Ada", *solved, 12) ||
+        !LinkAuth::WorkDone(some, "Ada", *solved + 1, 12));
+  CHECK(!LinkAuth::SolveWork(some, "Kaniel", 41, 0, 1 << 20));
+  CHECK(LinkAuth::WorkDone(some, "Kaniel", 123, 0));
+
+  Hub hub;
+  hub.SetSignupWork(10);
+  QList<std::tuple<QByteArray, bool>> asked;
+  hub.SetSignIn([&](const QByteArray &online_id, const QByteArray &,
+                    bool paid) -> std::optional<SignInVerdict> {
+    asked.append({online_id, paid});
+    if (online_id == "Kaniel") {
+      return SignInVerdict{true, {}}; // an account already
+    }
+    if (!paid) {
+      return SignInVerdict{false, {}, true};
+    }
+    return SignInVerdict{true, {}};
+  });
+  LinkAuth::Client game;
+  LinkAuth::Nonce nonce{};
+  nonce[0] = 1;
+  game.Restart(nonce);
+  const auto hello = [&](const char *who, std::optional<quint64> work) {
+    Hello said{LinkVersion, who, Build, {}, {}, {}};
+    if (game.HasCookie()) {
+      game.ForHello("s3cr3t", who);
+      said.secret = "s3cr3t";
+      said.cookie = QByteArray(
+          reinterpret_cast<const char *>(game.CookieToEcho().data()), 16);
+      said.work = work;
+    }
+    said.nonce = QByteArray(
+        reinterpret_cast<const char *>(game.NonceToSend().data()), 16);
+    return Encode(said);
+  };
+
+  // The cookie says the work a new account needs.
+  auto result = hub.Receive(Ada, hello("Ada", {}), 1000);
+  int bits = -1;
+  const auto cookie = DecodeCookie(SentTo(result, Ada).value(0), &bits);
+  CHECK(cookie && bits == 10 && asked.isEmpty());
+  game.TakeCookie(*cookie);
+
+  // No work: the game hears how much, tagged for its hello (a spoofed one
+  // cannot make a game spend its CPU); no account, no link.
+  result = hub.Receive(Ada, hello("Ada", {}), 1100);
+  CHECK(
+      (asked.size() == 1 && asked[0] == std::tuple{QByteArray{"Ada"}, false}));
+  QByteArray answer = SentTo(result, Ada).value(0);
+  CHECK(game.Open(Span(answer)) == LinkAuth::Client::From::Pending);
+  CHECK(DecodeWork(answer.left(answer.size() - 24)) == 10);
+  CHECK(hub.Members() == 0 && hub.WorkAsked() == 1);
+  LinkAuth::Nonce fresh{};
+  fresh[0] = 2;
+  CHECK(game.WorkAsked(10, fresh) && game.Working());
+  CHECK(!game.WorkAsked(10, fresh)); // asked again while under way
+
+  // Work not done (a wrong nonce, or one for another id): not paid.
+  const auto right = *LinkAuth::SolveWork(*cookie, "Ada", 10, 0, 1 << 22);
+  quint64 wrong = 0;
+  while (LinkAuth::WorkDone(*cookie, "Ada", wrong, 10)) {
+    ++wrong;
+  }
+  const auto other_id = *LinkAuth::SolveWork(*cookie, "Eileen", 10, 0, 1 << 22);
+  result = hub.Receive(Ada, hello("Ada", wrong), 1200);
+  CHECK(std::get<1>(asked.last()) == false && hub.WorkAsked() == 2);
+  if (!LinkAuth::WorkDone(*cookie, "Ada", other_id, 10)) {
+    result = hub.Receive(Ada, hello("Ada", other_id), 1250);
+    CHECK(std::get<1>(asked.last()) == false && hub.Members() == 0);
+  }
+  // Done for another source's cookie: that cookie is not this source's.
+  game.TakeWork(*cookie, 10, right);
+  CHECK(!game.Working() && game.WorkToSend() == right);
+  result = hub.Receive(Eileen, hello("Ada", right), 1300);
+  CHECK(DecodeCookie(SentTo(result, Eileen).value(0)) && hub.Members() == 0);
+
+  // The work done: paid, signed in, welcomed under the hello's new nonce.
+  const int before = static_cast<int>(asked.size());
+  result = hub.Receive(Ada, hello("Ada", game.WorkToSend()), 1400);
+  CHECK((asked.size() == before + 1 &&
+         asked.last() == std::tuple{QByteArray{"Ada"}, true}));
+  answer = SentTo(result, Ada).value(0);
+  CHECK(game.Open(Span(answer)) == LinkAuth::Client::From::Pending);
+  CHECK(DecodeWelcome(answer.left(answer.size() - 24))->accepted);
+  CHECK(hub.Members() == 1);
+
+  // An account already made: no work asked, welcomed at once.
+  LinkAuth::Client kaniel;
+  kaniel.Restart(nonce);
+  result = hub.Receive(Kaniel, HelloFrom("Kaniel"), 2000);
+  kaniel.TakeCookie(*DecodeCookie(SentTo(result, Kaniel).value(0)));
+  kaniel.ForHello("s3cr3t", "Kaniel");
+  Hello said{LinkVersion, "Kaniel", Build, "s3cr3t", {}, {}};
+  said.cookie = QByteArray(
+      reinterpret_cast<const char *>(kaniel.CookieToEcho().data()), 16);
+  said.nonce = QByteArray(reinterpret_cast<const char *>(nonce.data()), 16);
+  result = hub.Receive(Kaniel, Encode(said), 2100);
+  answer = SentTo(result, Kaniel).value(0);
+  CHECK(kaniel.Open(Span(answer)) == LinkAuth::Client::From::Pending);
+  CHECK(DecodeWelcome(answer.left(answer.size() - 24))->accepted);
+  CHECK((asked.last() == std::tuple{QByteArray{"Kaniel"}, false}));
+  CHECK(hub.WorkAsked() == 2 || hub.WorkAsked() == 3);
+
+  // No work asked (a host's own server): every hello may make its account.
+  Hub open;
+  bool paid = false;
+  open.SetSignIn([&](const QByteArray &, const QByteArray &, bool p) {
+    paid = p;
+    return SignInVerdict{true, {}};
+  });
+  result = open.Receive(Kaniel, HelloFrom("Kaniel"), 0);
+  bits = -1;
+  CHECK(DecodeCookie(SentTo(result, Kaniel).value(0), &bits) && bits == 0);
+  said.cookie = QByteArray(reinterpret_cast<const char *>(
+                               DecodeCookie(SentTo(result, Kaniel)[0])->data()),
+                           16);
+  open.Receive(Kaniel, Encode(said), 10);
+  CHECK(paid && open.Members() == 1);
+  std::cout << "server link signup work: ok\n";
+  return 0;
+}
 } // namespace
 
 int main() {
   if (Contracts() != 0 || HelloAndBuilds() != 0 || Relays() != 0 ||
       Liveness() != 0 || TeamOnly() != 0 || VirtualMembers() != 0 ||
       RoutesGamePackets() != 0 || SignsIn() != 0 ||
-      ALongSilenceEndsTheSignIn() != 0 || Crypto() != 0 || Handshake() != 0) {
+      ALongSilenceEndsTheSignIn() != 0 || Crypto() != 0 || Handshake() != 0 ||
+      SignupWork() != 0) {
     return 1;
   }
   return 0;

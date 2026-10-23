@@ -7,7 +7,9 @@
         hellos with a new player id each, from one loopback address (or spread over many, as a
         botnet would): every new id is an account to make and a password to hash
         (link version 3: each address does the cookie round trip first, as a real one can;
-        --no-cookie sends only first hellos, all a spoofed source can do)
+        --no-cookie sends only first hellos, all a spoofed source can do; hosted, a new id's
+        hello must carry work (coop/link_auth.h): without --work the bots skip it, with it
+        each does it, as a game does, on this one thread)
     attack.py packet-flood --rate 20000 --seconds 30 [--bad-tags]
         one signed-in game sending datagrams as fast as it can (--bad-tags: from its address with
         tags that do not open, as someone injecting into its link would)
@@ -24,7 +26,7 @@ import struct
 import time
 
 HEADER = b"\xff\xff\xff\xffSHLK"
-HELLO, WELCOME, DATA, PING, PONG, COOKIE = 1, 2, 3, 4, 5, 9
+HELLO, WELCOME, DATA, PING, PONG, COOKIE, WORK = 1, 2, 3, 4, 5, 9, 10
 LINK_VERSION = 3
 
 
@@ -33,10 +35,24 @@ def text(value: bytes) -> bytes:
 
 
 def hello(online_id: bytes, secret: bytes, build: bytes = b"bbload", cookie: bytes = b"",
-          nonce: bytes = b"\0" * 16) -> bytes:
+          nonce: bytes = b"\0" * 16, work=None) -> bytes:
     cookie = cookie.ljust(16, b"\0")
     return (HEADER + bytes([HELLO, LINK_VERSION]) + cookie + nonce + text(online_id) +
-            text(build) + text(secret if cookie.strip(b"\0") else b""))
+            text(build) + text(secret if cookie.strip(b"\0") else b"") +
+            (b"" if work is None else struct.pack("<Q", work)))
+
+
+def solve_work(cookie: bytes, online_id: bytes, bits: int) -> int:
+    """A nonce whose SHA-256(cookie, id, nonce) starts with `bits` zero bits."""
+    prefix = hashlib.sha256(cookie + online_id)
+    limit = 1 << (256 - bits)
+    nonce = 0
+    while True:
+        h = prefix.copy()
+        h.update(struct.pack("<Q", nonce))
+        if int.from_bytes(h.digest(), "big") < limit:
+            return nonce
+        nonce += 1
 
 
 def cookie_of(datagram: bytes):
@@ -86,10 +102,12 @@ def signin_flood(args):
         s.bind((f"127.200.{index // 250}.{index % 250 + 2}", 0))
         s.setblocking(False)
         sockets.append(s)
-    sent = welcomed = refused = cookies = 0
+    sent = welcomed = refused = cookies = work_asked = worked = 0
+    work_seconds = 0.0
     reasons = {}
     last_ids = {}  # socket index -> the id of its last first hello (its cookie answers that one)
     sessions = {}  # socket index -> the session of its last hello with a cookie
+    cookies_of = {}  # socket index -> its cookie
     start = time.time()
     interval = 1.0 / args.rate
     next_at = start
@@ -115,11 +133,28 @@ def signin_flood(args):
                             nonce = os.urandom(16)
                             secret = b"pw-" + online_id
                             sessions[index] = Session(secret, nonce, cookie, online_id)
+                            cookies_of[index] = cookie
                             s.sendto(hello(online_id, secret, cookie=cookie, nonce=nonce),
                                      (args.server, args.port))
                         continue
                     session = sessions.get(index)
                     body = session.open(datagram) if session else None
+                    if body and body[8] == WORK:
+                        work_asked += 1
+                        if args.work:
+                            # What a game does: the work, then the hello again with it, under
+                            # a new nonce.
+                            online_id = last_ids[index]
+                            secret = b"pw-" + online_id
+                            began = time.time()
+                            nonce_work = solve_work(cookies_of[index], online_id, body[9])
+                            work_seconds += time.time() - began
+                            worked += 1
+                            nonce = os.urandom(16)
+                            sessions[index] = Session(secret, nonce, cookies_of[index], online_id)
+                            s.sendto(hello(online_id, secret, cookie=cookies_of[index], nonce=nonce,
+                                           work=nonce_work), (args.server, args.port))
+                        continue
                     answer = welcome_of(body) if body else None
                     if answer:
                         if answer[0]:
@@ -133,7 +168,9 @@ def signin_flood(args):
         if wait > 0:
             time.sleep(min(0.001, wait))
     return {"attack": "signin-flood", "addresses": args.addresses, "hellos_sent": sent,
-            "cookies": cookies, "welcomed": welcomed, "refused": refused, "reasons": reasons,
+            "cookies": cookies, "work_asked": work_asked, "worked": worked,
+            "work_seconds": round(work_seconds, 1), "welcomed": welcomed, "refused": refused,
+            "reasons": reasons,
             "seconds": round(time.time() - start, 1)}
 
 
@@ -210,6 +247,8 @@ def main():
     parser.add_argument("--addresses", type=int, default=1)
     parser.add_argument("--no-cookie", action="store_true", help="signin-flood: first hellos only")
     parser.add_argument("--bad-tags", action="store_true", help="packet-flood: tags that fail")
+    parser.add_argument("--work", action="store_true",
+                        help="signin-flood: do the work a new account needs (hosted)")
     args = parser.parse_args()
     result = signin_flood(args) if args.attack == "signin-flood" else packet_flood(args)
     print(json.dumps(result))

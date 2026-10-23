@@ -36,8 +36,8 @@ LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_
     if (!m_db.Open(db_path))
         qCritical() << "Link: the accounts did not open:" << m_db.lastError();
     // Phase 11: the hello signs the player in (its id's account is made the first time).
-    m_link.SetSignIn([this](const QByteArray& online_id, const QByteArray& secret) {
-        return SignIn(online_id, secret);
+    m_link.SetSignIn([this](const QByteArray& online_id, const QByteArray& secret, bool paid) {
+        return SignIn(online_id, secret, paid);
     });
     connect(m_socket, &QUdpSocket::readyRead, this, &LinkServer::OnReadyRead);
     connect(m_linkTimer, &QTimer::timeout, this, &LinkServer::OnLinkTick);
@@ -72,6 +72,11 @@ LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_
         limits.byte_burst = m_hosted.bytesPerSecond * 2.5;
         m_guard = Admission::Guard{limits};
         m_link.SetRequiredBuild(m_hosted.build.toUtf8());
+        // A new account's work (coop/link_auth.h): a botnet's many addresses each stay within
+        // their accounts an hour, but each account costs it a CPU's while.
+        m_signupWork = Admission::SignupWork{m_hosted.signupWorkBits, m_hosted.signupWorkMaxBits,
+                                             m_hosted.signupsPerMinute};
+        m_link.SetSignupWork(m_signupWork.Bits(m_clock.elapsed()));
         BloodborneWorld::HostedRules rules;
         rules.enabled = true;
         rules.lobby_players = static_cast<size_t>(std::max(0, m_hosted.lobbyPlayers));
@@ -111,14 +116,16 @@ LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_
         }
         qInfo().noquote() << QStringLiteral(
                                  "Hosted: %1 links an address, %2 hellos/s, %3 new accounts/h, "
-                                 "%4 datagrams/s and %5 bytes/s a link, build %6")
+                                 "%4 datagrams/s and %5 bytes/s a link, build %6, new accounts' "
+                                 "work %7 bits")
                                  .arg(limits.links_per_address)
                                  .arg(limits.hellos_per_second)
                                  .arg(limits.new_accounts_per_hour)
                                  .arg(limits.datagrams_per_second)
                                  .arg(limits.bytes_per_second)
                                  .arg(m_hosted.build.isEmpty() ? QStringLiteral("any")
-                                                               : m_hosted.build);
+                                                               : m_hosted.build)
+                                 .arg(m_link.SignupWork());
     }
     m_dbPath = db_path;
     m_linkTimer->start(500);
@@ -299,6 +306,8 @@ bool LinkServer::Admit(const QByteArray& datagram, ServerLink::Kind kind, quint3
 }
 
 void LinkServer::OnLinkTick() {
+    if (m_hosted.enabled)
+        m_link.SetSignupWork(m_signupWork.Bits(m_clock.elapsed()));
     QElapsedTimer busy;
     busy.start();
     Apply(m_link.Tick(m_clock.elapsed()));
@@ -316,7 +325,7 @@ void LinkServer::OnWorldTick() {
 }
 
 std::optional<ServerLink::SignInVerdict> LinkServer::SignIn(const QByteArray& online_id,
-                                                            const QByteArray& secret) {
+                                                            const QByteArray& secret, bool paid) {
     // A hello comes again every second until it is welcomed, and after every outage: the
     // password's hash (100k rounds) only the first time.
     const QByteArray hash = QCryptographicHash::hash(secret, QCryptographicHash::Sha256);
@@ -340,6 +349,13 @@ std::optional<ServerLink::SignInVerdict> LinkServer::SignIn(const QByteArray& on
         return ServerLink::SignInVerdict{false, refused->refusal};
     if (m_signInPending.contains(online_id))
         return std::nullopt;
+    // A hello without the work (hub.SetSignupWork) makes no account: one for an id that has one
+    // goes on, the others hear how much work, before any password is hashed.
+    if (!paid && make) {
+        if (!m_db.GetUserId(QString::fromUtf8(online_id)))
+            return ServerLink::SignInVerdict{false, {}, true};
+        make = false;
+    }
     // A flood of new ids from many addresses: no more checks queued than the pool clears in a few
     // seconds; the others' games say hello again in a second.
     if (m_signInPending.size() >= 512)
@@ -386,6 +402,10 @@ void LinkServer::SignedIn(const QByteArray& online_id, const QByteArray& hash, b
         m_signInRefused.remove(online_id);
         if (counted && !made)
             m_guard.Unmade(address);
+        if (made) {
+            m_signupWork.Made(now);
+            m_link.SetSignupWork(m_signupWork.Bits(now));
+        }
     } else {
         if (counted)
             m_guard.Unmade(address);
