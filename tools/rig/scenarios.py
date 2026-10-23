@@ -1564,7 +1564,7 @@ SCENARIOS = {
                  "alone from the Dream",
         "roles": {
             "host": [START, "wait-session 2 300", "wait 10", f"travel {HUNTERS_DREAM}",
-                     "wait 50", f"travel {CENTRAL_YHARNAM_LAMP}", "wait 20", "census 60",
+                     "wait 25", "wait 25", f"travel {CENTRAL_YHARNAM_LAMP}", "wait 20", "census 60",
                      "done"],
             "guest": [START, "wait-session 2 300", "wait 15", f"travel {HUNTERS_DREAM}",
                       "wait 15", f"travel {CENTRAL_YHARNAM_LAMP}", "wait 12", "census 60",
@@ -1625,7 +1625,7 @@ SCENARIOS = {
             "host": [START, "wait-session 3 300", "wait 10", f"travel {HUNTERS_DREAM}", "wait 30",
                      "wait 30", f"travel {CENTRAL_YHARNAM_LAMP}", "wait 15",
                      f"expect-flag {TEAM_WORLD_FLAG} 1", "done"],
-            "guest": [START, "wait-session 3 300", "wait 35", f"set-flag {TEAM_WORLD_FLAG} 1",
+            "guest": [START, "wait-session 3 300", "wait 30", "wait 5", f"set-flag {TEAM_WORLD_FLAG} 1",
                       "wait 30", "wait 30", f"expect-flag {TEAM_WORLD_FLAG} 1", "done"],
             "guest2": [START, "wait-session 3 300", "wait 10", f"travel {HUNTERS_DREAM}",
                        "wait 30", "wait 30", f"travel {CENTRAL_YHARNAM_LAMP}", "wait 15",
@@ -1639,7 +1639,7 @@ SCENARIOS = {
         "about": "a map flag the host set while both guests were in the Dream is on for both when "
                  "they come back",
         "roles": {
-            "host": [START, "wait-session 3 300", "wait 35", f"set-flag {TEAM_WORLD_FLAG} 1",
+            "host": [START, "wait-session 3 300", "wait 30", "wait 5", f"set-flag {TEAM_WORLD_FLAG} 1",
                      "wait 30", "wait 30", f"expect-flag {TEAM_WORLD_FLAG} 1", "done"],
             "guest": [START, "wait-session 3 300", "wait 10", f"travel {HUNTERS_DREAM}",
                       "wait 30", "wait 30", f"travel {CENTRAL_YHARNAM_LAMP}", "wait 15",
