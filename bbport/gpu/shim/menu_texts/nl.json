@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Verticaal gezichtsveld in graden; de camera van het spel heeft 43. Elke camera wordt evenveel verbreed. Geldt na het herstarten van het spel.",
  "Mute in the background": "Geluid uit op de achtergrond",
  "The game is silent while its window is not the active one.": "Het spel is stil zolang het venster niet het actieve is.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "De knoppen die het spel op het scherm toont. Automatisch volgt waarmee je speelt: de hieronder toegewezen toetsen zolang je toetsenbord en muis gebruikt, de knoppen van de controller (PlayStation, Xbox of Switch) zolang je er een gebruikt, en wisselt mee. Een wijziging hier geldt na een herstart."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "De knoppen die het spel op het scherm toont. Automatisch volgt waarmee je speelt: de hieronder toegewezen toetsen zolang je toetsenbord en muis gebruikt, de knoppen van de controller (PlayStation, Xbox of Switch) zolang je er een gebruikt, en wisselt mee. Een wijziging hier geldt na een herstart.",
+ "Invaders: allowed": "Indringers: toegestaan",
+ "Invaders: off": "Indringers: uit",
+ "Leave the invasion": "Invasie verlaten",
+ "Invade a hunt": "Een jacht binnenvallen",
+ "Invader defeated": "Indringer verslagen",
+ "You were defeated": "Je bent verslagen",
+ "The invader prevailed": "De indringer heeft gewonnen",
+ "Your prey has fallen": "Je prooi is gevallen",
+ "No world to invade was found": "Geen wereld gevonden om binnen te vallen",
+ "The server refused the invasion": "De server heeft de invasie geweigerd",
+ "The invasion is over": "De invasie is voorbij",
+ "Looking for a world to invade": "Zoeken naar een wereld om binnen te vallen",
+ "An invader approaches: %d": "Een indringer nadert: %d",
+ "Invading in %d": "Invasie over %d",
+ "Invaded by %s": "Binnengevallen door %s",
+ "Invading the world of %s": "De wereld van %s binnenvallen",
+ "Returning home": "Terug naar huis"
 }

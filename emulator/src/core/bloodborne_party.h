@@ -3315,6 +3315,13 @@ struct MemberVitals {
     // Kaniel 2026-10-18: its Blood Vials and Quicksilver Bullets (the server only, as cutscene).
     u32 vials = 0;
     u32 bullets = 0;
+    // Invasions (docs/INVASIONS.md, the server only): this character's level and whether a boss
+    // fight runs in its world (posted), its death followed an invader's hit (posted), and on the
+    // board the invader's line (bloodborne_invasion.h: never a teammate).
+    u32 level = 0;
+    bool boss = false;
+    bool killed_by_invader = false;
+    bool hostile = false;
     bool operator==(const MemberVitals&) const = default;
 };
 // Where the team's host stands (up or down, on a map) on the vitals board, as a resume point.
@@ -3533,8 +3540,12 @@ public:
     static constexpr s32 Unchangeable = 6;
     // `downed`: the bodies of downed members in this world, with their team now; `present`: all
     // the other players' bodies in this world. Returns the teams to write.
+    // Invasions: `invaders`, the invader's bodies (handles), are never taken or given a team back
+    // (its own is the invaders' already: a downed member's saved team handed to it would make it
+    // a friend); with `make_hostile` (invasion_fallback_switch) they always get Hostile.
     std::vector<CopyTeam> Tick(const std::vector<CopyTeam>& downed,
-                               const std::vector<CopyTeam>& present);
+                               const std::vector<CopyTeam>& present,
+                               std::span<const u32> invaders = {}, bool make_hostile = false);
 
 private:
     std::vector<CopyTeam> saved; // each taken body's own team

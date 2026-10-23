@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Champ de vision vertical en degrés ; la caméra du jeu en a 43. Chaque caméra est élargie d'autant. S'applique après le redémarrage du jeu.",
  "Mute in the background": "Muet en arrière-plan",
  "The game is silent while its window is not the active one.": "Le jeu reste silencieux tant que sa fenêtre n'est pas active.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Les boutons que le jeu affiche à l'écran. Automatique suit ce avec quoi vous jouez : les touches attribuées ci-dessous au clavier et à la souris, les boutons de la manette (PlayStation, Xbox ou Switch) quand vous en utilisez une, et change dès que vous changez. Un changement ici s'applique après un redémarrage."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Les boutons que le jeu affiche à l'écran. Automatique suit ce avec quoi vous jouez : les touches attribuées ci-dessous au clavier et à la souris, les boutons de la manette (PlayStation, Xbox ou Switch) quand vous en utilisez une, et change dès que vous changez. Un changement ici s'applique après un redémarrage.",
+ "Invaders: allowed": "Envahisseurs : autorisés",
+ "Invaders: off": "Envahisseurs : interdits",
+ "Leave the invasion": "Quitter l'invasion",
+ "Invade a hunt": "Envahir une chasse",
+ "Invader defeated": "Envahisseur vaincu",
+ "You were defeated": "Vous avez été vaincu",
+ "The invader prevailed": "L'envahisseur l'a emporté",
+ "Your prey has fallen": "Votre proie est tombée",
+ "No world to invade was found": "Aucun monde à envahir n'a été trouvé",
+ "The server refused the invasion": "Le serveur a refusé l'invasion",
+ "The invasion is over": "L'invasion est terminée",
+ "Looking for a world to invade": "Recherche d'un monde à envahir",
+ "An invader approaches: %d": "Un envahisseur approche : %d",
+ "Invading in %d": "Invasion dans %d",
+ "Invaded by %s": "Envahi par %s",
+ "Invading the world of %s": "Invasion du monde de %s",
+ "Returning home": "Retour chez soi"
 }

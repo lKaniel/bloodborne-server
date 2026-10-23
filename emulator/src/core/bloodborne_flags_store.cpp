@@ -1162,7 +1162,8 @@ void PS4_SYSV_ABI KeepLocalFlagsFromOthers(u64, GuestRegisterSnapshot* registers
         registers->r15 = (registers->r15 & ~u64{0xFF}) | (*lit ? 1 : 0);
         return;
     }
-    if (!KeepsLocalFlag(party_controller.has_value(), flag)) {
+    // Invasions: the invaded world's flags never go into the invader's (every one stays its own).
+    if (!KeepsLocalFlag(party_controller.has_value(), flag) && !Invading()) {
         return;
     }
     const bool local = EventFlagOn(flag);
@@ -1188,7 +1189,7 @@ void PS4_SYSV_ABI KeepLocalEventsFromOthers(u64, GuestRegisterSnapshot* register
         LOG_INFO(Debug, "Bloodborne party: the other player ends event {} (slot {})", event,
                  static_cast<s32>(registers->r14));
     }
-    if (KeepsLocalFlag(party_controller.has_value(), event)) {
+    if (KeepsLocalFlag(party_controller.has_value(), event) || Invading()) {
         LOG_INFO(Debug, "Bloodborne party: kept event {} running against the other player's end",
                  event);
         registers->r15 = (registers->r15 & ~u64{0xFFFFFFFF}) | u64{0xFFFFFFFF};

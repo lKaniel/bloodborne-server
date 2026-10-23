@@ -125,7 +125,9 @@ Trace a retail Sinister Resonant Bell invasion on the shadPS4 path, using
 
 ## What the game still has to do
 
-None of this is in the games yet (the emulator and bbport are untouched).
+The port's games do this now, untested in game (`docs/invasions/GAME_SIDE_PLAN.md`, "Status"):
+all but the Sinister bell, with the native kind/sign (the fallback behind
+`invasion_fallback_switch`) and phase 0 still to settle the placeholders. shadPS4 does none of it.
 
 1. **The way in.** Bring back the Sinister Resonant Bell (goods 225) for players in no team: keep
    it out of `BellGoods`. Or add an "Invade" entry to the team or System menu. Either sends

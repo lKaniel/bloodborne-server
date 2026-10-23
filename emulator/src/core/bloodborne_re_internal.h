@@ -10,6 +10,7 @@
 
 #include "coop.pb.h"
 #include "core/bloodborne_crash_dump.h"
+#include "core/bloodborne_invasion.h"
 #include "core/bloodborne_party.h"
 #include "core/bloodborne_re.h"
 #include "core/bloodborne_team.h"
@@ -899,6 +900,34 @@ std::string TeamLobbyMember();
 // when the lobby does not know it.
 std::string CharacterNameOf(std::string_view member);
 void TeamLobbyRequest(bbcoop::TeamRequest::Action action, const std::string& id);
+// Invasions (bloodborne_invasion.h; bloodborne_server_world.cpp). The menu's "Invade a hunt" and
+// "Leave the invasion" (InvadeRequest, `cancel`), and the leader's "Allow invaders"; what the
+// notice shows; whether the team allows invaders now.
+void InvasionRequest(bool cancel);
+void TeamAllowInvaders(bool allow);
+InvasionView InvasionViewNow();
+bool TeamAllowsInvaders();
+// This game is in a world it invades, or on its way in or home: that world is not its own (its
+// flags, lamps, echoes and save stay its own).
+bool Invading();
+// The invader's board name in this team's world now, "" without one.
+std::string InvaderInWorld();
+// Each party controller tick, before the team's join (game thread): the invader's trip.
+void TickInvasion();
+// A save's load: an invasion's own world kept aside and not put back (a crash mid-visit) comes
+// back first.
+void RestoreInvasionHomeOnLoad();
+// Party death's side (bloodborne_party_death.cpp): the invader's bodies here (the presence tick
+// finds them, InvaderBodies), its hits on the local player (the hit hook), whether a lethal check
+// lets the death through, and the invader's own death in the target's world (revived in place,
+// InvaderGoHome takes it home).
+void SetInvaderHandles(std::vector<u32> handles);
+std::vector<u32> InvaderHandles();
+bool IsInvaderHandle(u32 handle);
+void NoteInvaderHit();
+bool InvaderHitFresh();
+bool TakeInvaderDeath();
+void ReviveInvaderInPlace();
 // This member's part of each board (bloodborne_boards.cpp's rounds send them).
 void SendServerMap(u32 map);
 void SendServerRest(s32 lamp, const std::optional<LampPosition>& at);
@@ -980,6 +1009,8 @@ void ReviveGuestAfterGhostDeath();
 extern std::mutex vitals_mutex;
 void NoteCutsceneVote(u32 state);
 extern VitalsBoard vitals_board;
+// The invader's lines of the server's vitals board (TakeHostileLines): only presence reads them.
+extern std::vector<MemberVitals> hostile_vitals;
 extern std::string vitals_member;
 extern std::optional<std::chrono::steady_clock::time_point> vitals_heard_at;
 

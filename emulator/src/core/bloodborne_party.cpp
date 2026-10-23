@@ -5926,10 +5926,22 @@ void ReviveHits::Hit(std::string_view target, u32 down, u32 damage) {
 }
 
 std::vector<CopyTeam> DownedTeams::Tick(const std::vector<CopyTeam>& downed,
-                                        const std::vector<CopyTeam>& present) {
+                                        const std::vector<CopyTeam>& present,
+                                        std::span<const u32> invaders, bool make_hostile) {
     std::vector<CopyTeam> writes;
+    const auto invader = [&](u32 handle) {
+        return std::ranges::find(invaders, handle) != invaders.end();
+    };
+    std::erase_if(saved, [&](const CopyTeam& own) { return invader(own.handle); });
+    if (make_hostile) {
+        for (const CopyTeam& body : present) {
+            if (invader(body.handle) && body.team != Hostile && body.team != Unchangeable) {
+                writes.push_back(CopyTeam{body.handle, Hostile});
+            }
+        }
+    }
     for (const CopyTeam& body : downed) {
-        if (body.team == Unchangeable) {
+        if (body.team == Unchangeable || invader(body.handle)) {
             continue;
         }
         if (std::ranges::find(saved, body.handle, &CopyTeam::handle) == saved.end()) {

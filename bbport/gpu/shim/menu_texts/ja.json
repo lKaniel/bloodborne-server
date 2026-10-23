@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "縦の視野角 (度)。ゲームのカメラは 43 です。すべてのカメラが同じだけ広がります。ゲームの再起動後に反映されます。",
  "Mute in the background": "バックグラウンドで消音",
  "The game is silent while its window is not the active one.": "ゲームのウィンドウがアクティブでない間は音を出しません。",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "ゲームが画面に表示するボタンです。自動では、プレイ中の入力に合わせます。キーボードとマウスの間は下で割り当てたキー、コントローラーの間はそのボタン (PlayStation、Xbox、Switch) を表示し、持ち替えると切り替わります。ここでの変更は再起動後に反映されます。"
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "ゲームが画面に表示するボタンです。自動では、プレイ中の入力に合わせます。キーボードとマウスの間は下で割り当てたキー、コントローラーの間はそのボタン (PlayStation、Xbox、Switch) を表示し、持ち替えると切り替わります。ここでの変更は再起動後に反映されます。",
+ "Invaders: allowed": "侵入者: 許可",
+ "Invaders: off": "侵入者: 拒否",
+ "Leave the invasion": "侵入をやめる",
+ "Invade a hunt": "狩りに侵入する",
+ "Invader defeated": "侵入者を撃退した",
+ "You were defeated": "あなたは倒された",
+ "The invader prevailed": "侵入者が勝利した",
+ "Your prey has fallen": "獲物は倒れた",
+ "No world to invade was found": "侵入できる世界が見つからなかった",
+ "The server refused the invasion": "サーバーが侵入を拒否した",
+ "The invasion is over": "侵入は終わった",
+ "Looking for a world to invade": "侵入先の世界を探しています",
+ "An invader approaches: %d": "侵入者が迫っている: %d",
+ "Invading in %d": "侵入まで %d",
+ "Invaded by %s": "%s に侵入された",
+ "Invading the world of %s": "%s の世界に侵入中",
+ "Returning home": "帰還中"
 }

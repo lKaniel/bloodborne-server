@@ -66,6 +66,33 @@
 namespace Core::Bloodborne {
 namespace {
 
+// Invasions (bloodborne_invasion.h): the invader's bodies here as of the last presence tick (the
+// hit hook reads them), its last hit on the local player, and whether this death followed one
+// (the vitals say killed_by_invader until the player is up again).
+std::mutex invader_handles_mutex;
+std::vector<u32> invader_handles;
+std::atomic<s64> invader_hit_ms{-1};
+std::atomic<bool> died_to_invader{false};
+// The invader's own death, from the death scripts' hooks (InvaderTrip's `dead`).
+std::atomic<bool> invader_death_noted{false};
+
+// The character's level (PlayerGameData +0x90, as the port's save editor reads it), 0 unknown.
+u32 OwnCharacterLevel() {
+    const u64 data = OwnGameData();
+    if (data < 0x10000 || !HasMemoryAccess(data + 0x90, 4, MemoryProt::CpuRead)) {
+        return 0;
+    }
+    const s32 level = ReadValue<s32>(data, 0x90);
+    return level > 0 && level < 1000 ? static_cast<u32>(level) : 0;
+}
+
+// A boss fight on (event flag 4000; the death processing sets it too, so only while alive).
+constexpr s32 BossFightFlag = 4000;
+
+} // namespace
+
+namespace {
+
 // Event script bindings ReviveDeadPartyGuest calls.
 constexpr u64 IsWhiteGhostOffset = 0x01331D80;
 constexpr u64 UpDateBloodMarkOffset = 0x013308B0;
@@ -534,11 +561,25 @@ namespace Coop {
 // A party guest that died gets up again where the game would show the "returned to your world"
 // menu (the warp home behind it is patched out, see GhostDeathKeepSessionPatches).
 void ReviveGuestAfterGhostDeath() {
+    if (Invading()) {
+        ReviveInvaderInPlace();
+        return;
+    }
     const bool revived = ReviveDeadPartyGuest(MakeReviveCalls());
     const u64 player = GetLocalPlayer();
     LOG_INFO(Debug, "Bloodborne party guest died; revived in place={} type={} flags1e3={:#x}",
              revived, player >= 0x10000 ? ReadValue<s32>(player, 0x78) : -1,
              player >= 0x10000 ? ReadValue<u8>(player, 0x1E3) : 0xFF);
+}
+
+// Invasions: the invader dead in the target's world gets up where it fell, with no lamp of the
+// target's (ReviveInPlace without its warp): InvaderGoHome takes it to its own lamp.
+void ReviveInvaderInPlace() {
+    GhostDeathCalls calls = MakeReviveCalls();
+    calls.warp_to_last_lamp = [] {};
+    ReviveDeadPartyHost(calls);
+    invader_death_noted.store(true);
+    LOG_INFO(Debug, "Co-op invasion: the invader died in the target's world; revived to go home");
 }
 
 // Replaces native SoloPlayDeath_2 (bloodstain, then the reload at the lamp) for a host with a
@@ -587,6 +628,10 @@ bool PS4_SYSV_ABI StayWhenTheHostLeaves(u64, const GuestRegisterSnapshot* regist
 }
 
 bool PS4_SYSV_ABI OverrideHostDeathRespawn(u64, const GuestRegisterSnapshot*) {
+    if (Invading()) {
+        ReviveInvaderInPlace();
+        return true;
+    }
     const u64 multi_play = GetMatchingState();
     const s32 matching_state =
         multi_play >= 0x10000 && HasMemoryAccess(multi_play, 0x128, MemoryProt::CpuRead)
@@ -716,10 +761,14 @@ struct DownedBody {
 std::vector<DownedBody> DownedBodies(DownedBodyPicker& picker, std::span<const MemberVitals> board,
                                      std::string_view self, u32 map,
                                      std::span<const OtherPlayer> players) {
+    // The invader's body is never a downed member's (the nearest body to a downed member's spot
+    // can be the invader standing over its kill).
+    const std::vector<u32> invaders = InvaderHandles();
     std::vector<BodyPosition> positions;
     for (const OtherPlayer& other : players) {
-        if (other.at) {
-            positions.push_back(BodyPosition{ReadValue<u32>(other.character, 0x08), *other.at});
+        const u32 handle = ReadValue<u32>(other.character, 0x08);
+        if (other.at && std::ranges::find(invaders, handle) == invaders.end()) {
+            positions.push_back(BodyPosition{handle, *other.at});
         }
     }
     std::vector<DownedBody> bodies;
@@ -771,7 +820,17 @@ void PS4_SYSV_ABI RecordReviveHit(u64, const GuestRegisterSnapshot* registers) {
     }
     const u64 attacker = ReadValue<u64>(registers->rbp + HitAttackerFrameOffset, 0);
     const u64 victim = ReadValue<u64>(module, 0x08);
-    if (attacker < 0x10000 || victim < 0x10000 || attacker != GetLocalPlayer()) {
+    if (attacker < 0x10000 || victim < 0x10000) {
+        return;
+    }
+    // Invasions: the invader's hit on the local player (its lethal check lets the death through,
+    // KeepPartyMemberUp).
+    if (victim == GetLocalPlayer() && attacker != victim &&
+        IsInvaderHandle(ReadValue<u32>(attacker, 0x08))) {
+        NoteInvaderHit();
+        return;
+    }
+    if (attacker != GetLocalPlayer()) {
         return;
     }
     const u32 handle = ReadValue<u32>(victim, 0x08);
@@ -810,7 +869,9 @@ void SetDownedTeams(PartyDeathRun& run, std::span<const DownedBody> bodies,
         present.push_back(CopyTeam{ReadValue<u32>(other.character, 0x08),
                                    ReadValue<s32>(other.character, CharacterTeamOffset)});
     }
-    for (const CopyTeam& write : run.downed_teams.Tick(downed, present)) {
+    const std::vector<u32> invaders = InvaderHandles();
+    for (const CopyTeam& write :
+         run.downed_teams.Tick(downed, present, invaders, invasion_fallback_switch)) {
         for (const OtherPlayer& other : players) {
             if (ReadValue<u32>(other.character, 0x08) == write.handle &&
                 HasMemoryAccess(other.character + CharacterTeamOffset, 4, MemoryProt::CpuWrite)) {
@@ -934,6 +995,11 @@ void PS4_SYSV_ABI KeepPartyMemberUp(u64, GuestRegisterSnapshot* registers) {
     }
     const bool answer = (registers->r14 & 0xFF) != 0;
     const bool down = party_death_down.load(std::memory_order_relaxed);
+    // Invasions: the invader's kill is a real death, not a down (its vitals then say so).
+    if (!answer && InvaderKillGoesThrough(check, InvaderHitFresh(), down)) {
+        died_to_invader.store(true, std::memory_order_relaxed);
+        return;
+    }
     if (answer ||
         !KeepsPlayerAlive(check, party_death_armed.load(std::memory_order_relaxed), down, answer)) {
         return;
@@ -954,6 +1020,42 @@ namespace Coop {
 
 VitalsBoard vitals_board;
 std::optional<std::chrono::steady_clock::time_point> vitals_heard_at;
+std::vector<MemberVitals> hostile_vitals;
+
+} // namespace Coop
+
+namespace Coop {
+
+void SetInvaderHandles(std::vector<u32> handles) {
+    std::scoped_lock lock{invader_handles_mutex};
+    invader_handles = std::move(handles);
+}
+
+std::vector<u32> InvaderHandles() {
+    std::scoped_lock lock{invader_handles_mutex};
+    return invader_handles;
+}
+
+bool IsInvaderHandle(u32 handle) {
+    std::scoped_lock lock{invader_handles_mutex};
+    return std::ranges::find(invader_handles, handle) != invader_handles.end();
+}
+
+void NoteInvaderHit() {
+    invader_hit_ms.store(SteadyMilliseconds(), std::memory_order_relaxed);
+}
+
+bool InvaderHitFresh() {
+    InvaderHitWindow window;
+    if (const s64 hit = invader_hit_ms.load(std::memory_order_relaxed); hit >= 0) {
+        window.Hit(hit);
+    }
+    return window.Fresh(SteadyMilliseconds());
+}
+
+bool TakeInvaderDeath() {
+    return invader_death_noted.exchange(false);
+}
 
 } // namespace Coop
 
@@ -982,8 +1084,11 @@ bool InPartyHere() {
 // The other session members' board names (SessionBoardNames), read again every second, nothing
 // out of a session or while one of them is not found: the lines of members out of this session
 // are dropped from the board (OnlySessionMembers).
+// Invasions: the invader is in the session too; its line (`hostile`) is a candidate, and its name
+// is left out of the answer.
 std::optional<std::vector<std::string>> SessionNames(std::span<const MemberVitals> board,
-                                                     std::string_view self) {
+                                                     std::string_view self,
+                                                     std::span<const MemberVitals> hostile) {
     static s64 read_at = std::numeric_limits<s64>::min();
     static std::optional<std::vector<std::string>> names;
     const s64 now = SteadyMilliseconds();
@@ -996,10 +1101,12 @@ std::optional<std::vector<std::string>> SessionNames(std::span<const MemberVital
         return names;
     }
     std::vector<std::string> online_ids;
-    for (const MemberVitals& member : board) {
-        if (std::string id = OnlineIdOfBoardMember(member.member);
-            member.member != self && !id.empty()) {
-            online_ids.push_back(std::move(id));
+    for (const auto* lines : {&board, &hostile}) {
+        for (const MemberVitals& member : *lines) {
+            if (std::string id = OnlineIdOfBoardMember(member.member);
+                member.member != self && !id.empty()) {
+                online_ids.push_back(std::move(id));
+            }
         }
     }
     std::vector<std::optional<std::string>> found;
@@ -1007,6 +1114,11 @@ std::optional<std::vector<std::string>> SessionNames(std::span<const MemberVital
         found.push_back(SessionMemberBoardName(member, online_ids));
     }
     names = SessionBoardNames(found);
+    if (names) {
+        std::erase_if(*names, [&](const std::string& name) {
+            return std::ranges::find(hostile, name, &MemberVitals::member) != hostile.end();
+        });
+    }
     return names;
 }
 
@@ -1016,9 +1128,11 @@ namespace Coop {
 
 VitalsView ReadVitalsBoard() {
     VitalsView view;
+    std::vector<MemberVitals> hostile;
     {
         std::scoped_lock lock{vitals_mutex};
         view = VitalsView{vitals_board, vitals_member};
+        hostile = hostile_vitals;
         if (vitals_heard_at) {
             view.age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now() - *vitals_heard_at)
@@ -1035,8 +1149,13 @@ VitalsView ReadVitalsBoard() {
         view.board = MergeDirectVitals(view.board, direct);
         view.age_ms = std::min<s64>(view.age_ms, 0);
     }
+    // An invader's line never counts, even straight from its game (the server keeps those apart).
+    if (const std::string invader = InvaderInWorld(); !invader.empty()) {
+        std::erase_if(view.board.members,
+                      [&](const MemberVitals& member) { return member.member == invader; });
+    }
     view.board.members = OnlySessionMembers(view.board.members, view.member,
-                                            SessionNames(view.board.members, view.member));
+                                            SessionNames(view.board.members, view.member, hostile));
     return view;
 }
 PartyDeathRun party_death_run;
@@ -1406,6 +1525,9 @@ void PostVitalsAndPanel(PartyDeathRun& run, const DeathTick& tick) {
             .landed = run.downed.DamageLanded(),
             .needed = run.downed.DamageNeeded(),
             .at = at.value_or(LampPosition{}),
+            .level = OwnCharacterLevel(),
+            .boss = tick.alive && EventFlagOn(BossFightFlag),
+            .killed_by_invader = run.downed.Current() == Vital::Dead && died_to_invader.load(),
         },
         run.revive_hits.Totals(tick.board, tick.view.Fresh()));
 
@@ -1489,6 +1611,10 @@ void TickPartyDeath() {
         run.grace_flags = 0;
     }
 
+    // An invader's hit that killed nobody counts for no later death.
+    if (tick.alive && run.downed.Current() != Vital::Dead && !InvaderHitFresh()) {
+        died_to_invader.store(false, std::memory_order_relaxed);
+    }
     switch (run.downed.Current()) {
     case Vital::Off:
     case Vital::Up:
@@ -1500,6 +1626,7 @@ void TickPartyDeath() {
     case Vital::Dead:
         if (tick.alive) {
             run.downed.Alive(tick.now);
+            died_to_invader.store(false, std::memory_order_relaxed);
             party_death_reset.Cancel();
             LOG_INFO(Debug, "Bloodborne party death: up again after a real death");
         }
@@ -2015,12 +2142,15 @@ void InstallPartyDeath(u64 base, u64 image_size) {
         coop_features.Skipped("no damage number on downed bodies",
                               SiteFailure(base, image_size, EnemyBarDamageOffset));
     }
+    // The hit hook also notes the invader's hits (an invasion's kill is a real death), so it goes
+    // in with the presses too; only the revive counting follows the setting.
     const char* hits = std::getenv("SHADPS4_BLOODBORNE_REVIVE_HITS");
+    const bool hit_hook = HitDamageStoredOffset + HitDamageStored.size() <= image_size &&
+                          InstallCoopHook(reinterpret_cast<void*>(base + HitDamageStoredOffset),
+                                          HitDamageStored, 0, RecordReviveHit);
     if (hits != nullptr && std::string_view{hits} == "presses") {
         coop_features.Skipped("real revive hits", "SHADPS4_BLOODBORNE_REVIVE_HITS=presses");
-    } else if (HitDamageStoredOffset + HitDamageStored.size() <= image_size &&
-               InstallCoopHook(reinterpret_cast<void*>(base + HitDamageStoredOffset),
-                               HitDamageStored, 0, RecordReviveHit)) {
+    } else if (hit_hook) {
         real_hits_installed.store(true);
         coop_features.On("real revive hits");
     } else {

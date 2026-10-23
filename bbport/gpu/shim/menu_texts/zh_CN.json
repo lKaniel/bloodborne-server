@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "垂直视野角度；游戏的镜头为 43。所有镜头按相同幅度放宽。重启游戏后生效。",
  "Mute in the background": "后台时静音",
  "The game is silent while its window is not the active one.": "游戏窗口不是当前窗口时，游戏不发出声音。",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "游戏在屏幕上显示的按键。自动会跟随你正在使用的设备：使用键盘和鼠标时显示下方绑定的按键，使用手柄时显示手柄自己的按键（PlayStation、Xbox 或 Switch），切换设备时随之切换。此处的更改在重启后生效。"
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "游戏在屏幕上显示的按键。自动会跟随你正在使用的设备：使用键盘和鼠标时显示下方绑定的按键，使用手柄时显示手柄自己的按键（PlayStation、Xbox 或 Switch），切换设备时随之切换。此处的更改在重启后生效。",
+ "Invaders: allowed": "入侵者：允许",
+ "Invaders: off": "入侵者：关闭",
+ "Leave the invasion": "离开入侵",
+ "Invade a hunt": "入侵狩猎",
+ "Invader defeated": "击退入侵者",
+ "You were defeated": "你被击败了",
+ "The invader prevailed": "入侵者获胜",
+ "Your prey has fallen": "你的猎物倒下了",
+ "No world to invade was found": "找不到可入侵的世界",
+ "The server refused the invasion": "服务器拒绝了入侵",
+ "The invasion is over": "入侵已结束",
+ "Looking for a world to invade": "正在寻找可入侵的世界",
+ "An invader approaches: %d": "入侵者正在接近：%d",
+ "Invading in %d": "%d 后入侵",
+ "Invaded by %s": "遭 %s 入侵",
+ "Invading the world of %s": "正在入侵 %s 的世界",
+ "Returning home": "正在返回"
 }

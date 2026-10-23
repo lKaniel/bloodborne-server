@@ -31,6 +31,7 @@
 #include "common/path_util.h"
 #include "coop/coop_messages.h"
 #include "coop/coop_stream.h"
+#include "core/bloodborne_invasion.h"
 #include "core/bloodborne_team.h"
 #include "core/libraries/network/server_link.h"
 #include "core/libraries/np/np_matching2/np_matching2.h"
@@ -167,6 +168,16 @@ TeamMenuBack team_menu_back;
 // on the guest, the same for every co-operator (rig 2026-10-14: 0xFFFFFFFF and 7).
 constexpr u32 TeamSessionKind = 0xFFFFFFFFu;
 constexpr u32 TeamSessionSign = 7;
+// Invasions (bloodborne_invasion.h): this game invading (the stream's thread hands it the
+// server's messages, the game thread ticks it) or its team's world invaded; both team_mutex. A
+// game in no team has no party hello, so its outbox never goes: while it invades, its map and
+// vitals go without one (the server takes nothing else from an invader).
+InvaderTrip invader_trip;
+InvadedTeam invaded_team;
+std::atomic<bool> invader_link{false};
+// invader_trip.AwayFromHome(), for the hooks that ask many times a frame (Invading): only the game
+// thread's tick changes it.
+std::atomic<bool> invader_away{false};
 
 std::string PartyKey() {
     if (team_switch) {
@@ -267,6 +278,64 @@ bool TakeLobbyMessage(const bbcoop::Envelope& envelope) {
             LOG_INFO(Debug, "Co-op team join: the session host moved to {}", session.host());
         }
         team_session = session;
+        return true;
+    }
+    if (envelope.has_invasion_notice()) {
+        const bbcoop::InvasionNotice& notice = envelope.invasion_notice();
+        std::scoped_lock lock{team_mutex};
+        const bool mine = notice.invader() == lobby_member || invader_trip.Active();
+        LOG_INFO(Debug, "Co-op invasion {}: {} approaches {} in {} ms ({})", notice.id(),
+                 notice.invader(), notice.target(), notice.in_ms(),
+                 mine ? "this game invades" : "this team's world");
+        if (mine) {
+            invader_trip.TakeNotice(notice, SteadyMilliseconds());
+        } else {
+            invaded_team.TakeNotice(notice, SteadyMilliseconds());
+        }
+        return true;
+    }
+    if (envelope.has_invasion_start()) {
+        const bbcoop::InvasionStart& start = envelope.invasion_start();
+        std::scoped_lock lock{team_mutex};
+        const bool taken = invader_trip.TakeStart(start, SteadyMilliseconds());
+        LOG_INFO(Debug,
+                 "Co-op invasion {}: start: {}'s session (kind {:#x}, sign {}), map {:#x} at ({}, "
+                 "{}, {}){}",
+                 start.id(), start.session().host(), start.session().kind(), start.session().sign(),
+                 start.map(), start.at().x(), start.at().y(), start.at().z(),
+                 taken ? "" : " (no invasion of this game waits: ignored)");
+        if (taken && start.has_owners()) {
+            // The target world's enemy owners: this game follows them there (EnemyRoleOn).
+            std::vector<EnemyOwnerEntry> owners;
+            for (const bbcoop::EnemyOwner& owner : start.owners().owners()) {
+                owners.push_back({owner.map(), owner.member(), owner.epoch()});
+            }
+            std::scoped_lock owners_lock{owners_mutex};
+            server_owners = std::move(owners);
+            owners_heard_ms = SteadyMilliseconds();
+        }
+        return true;
+    }
+    if (envelope.has_invader_joined()) {
+        const bbcoop::InvaderJoined& joined = envelope.invader_joined();
+        LOG_INFO(Debug, "Co-op invasion {}: {} (\"{}\") joined, hunting {}", joined.id(),
+                 joined.member(), joined.name(), joined.target());
+        std::scoped_lock lock{team_mutex};
+        invaded_team.TakeJoined(joined, SteadyMilliseconds());
+        return true;
+    }
+    if (envelope.has_invasion_end()) {
+        const bbcoop::InvasionEnd& end = envelope.invasion_end();
+        LOG_INFO(Debug, "Co-op invasion {}: over ({}, {}){}", end.id(),
+                 bbcoop::InvasionEnd::Reason_Name(end.reason()),
+                 InvasionEndReasonName(end.reason()),
+                 end.text().empty() ? "" : fmt::format(": {}", end.text()));
+        std::scoped_lock lock{team_mutex};
+        if (invader_trip.Active()) {
+            invader_trip.TakeEnd(end, SteadyMilliseconds());
+        } else {
+            invaded_team.TakeEnd(end, SteadyMilliseconds());
+        }
         return true;
     }
     if (envelope.has_team_start()) {
@@ -386,7 +455,11 @@ void TakeBoard(const bbcoop::Envelope& envelope) {
                              .revive_damage = entry.revive_damage(),
                              .cutscene = vitals.cutscene(),
                              .vials = vitals.vials(),
-                             .bullets = vitals.bullets()});
+                             .bullets = vitals.bullets(),
+                             .level = vitals.level(),
+                             .boss = vitals.boss(),
+                             .killed_by_invader = vitals.killed_by_invader(),
+                             .hostile = entry.hostile()});
         }
         for (const auto& wipe : envelope.vitals_board().wipes()) {
             board.wipes.push_back(
@@ -481,6 +554,17 @@ void StreamTick(s64 now_ms) {
             for (const bbcoop::Envelope& envelope : outbox) {
                 stream->Send(EncodeEnvelope(envelope), now_ms);
             }
+            outbox.clear();
+        } else if (invader_link.load()) {
+            // Only the newest of each: a game in no team queued them unsent until now.
+            const auto newest = [&](auto has) {
+                const auto found = std::find_if(outbox.rbegin(), outbox.rend(), has);
+                if (found != outbox.rend()) {
+                    stream->Send(EncodeEnvelope(*found), now_ms);
+                }
+            };
+            newest([](const bbcoop::Envelope& envelope) { return envelope.has_map(); });
+            newest([](const bbcoop::Envelope& envelope) { return envelope.has_vitals(); });
             outbox.clear();
         }
         out = stream->Flush(now_ms);
@@ -717,8 +801,11 @@ bool TakeServerWorldNews() {
 }
 
 std::vector<EnemyOwnerEntry> ServerEnemyOwners(s64 now_ms) {
+    // Invasions: an invader hears the target world's owners only as they change (a member hears
+    // them with every answer to its map): its last list stands for the visit.
+    const bool invading = Invading();
     std::scoped_lock lock{owners_mutex};
-    if (owners_heard_ms == 0 || now_ms - owners_heard_ms > EnemyOwnersFreshMs) {
+    if (owners_heard_ms == 0 || (now_ms - owners_heard_ms > EnemyOwnersFreshMs && !invading)) {
         return {};
     }
     return server_owners;
@@ -975,6 +1062,9 @@ void SendServerVitals(const MemberVitals& mine, std::span<const ReviveHitTotal> 
     vitals.set_cutscene(mine.cutscene);
     vitals.set_vials(mine.vials);
     vitals.set_bullets(mine.bullets);
+    vitals.set_level(mine.level);
+    vitals.set_boss(mine.boss);
+    vitals.set_killed_by_invader(mine.killed_by_invader);
     PutPosition(mine.at, vitals.mutable_at());
     for (const ReviveHitTotal& hit : hits) {
         bbcoop::ReviveHit* out = vitals.add_hits();
@@ -1647,7 +1737,7 @@ bool TickTeamJoin(bool ready) {
         .session_known = session.has_value() && !session->join().empty(),
         .room_owner = Libraries::Np::NpMatching2::OwnsItsRoom(),
         .room_has_others = Libraries::Np::NpMatching2::OwnedRoomHasOthers(),
-        .session_members = SessionMembers(),
+        .session_members = TeamSessionMembers(SessionMembers(), !InvaderInWorld().empty()),
         .standing = party_death_run.downed.Current() == Vital::Up ||
                     party_death_run.downed.Current() == Vital::Off,
         .now_ms = SteadyMilliseconds(),
@@ -1857,6 +1947,12 @@ size_t SetWorldFlags(const WorldStore& world, const WorldFlags& target) {
 
 void ApplyTeamWorldOnLoad(bool trip) {
     if (!team_switch) {
+        return;
+    }
+    // Invasions: an invasion's own world kept aside and never put back (the game stopped
+    // mid-visit) comes back first; an invader takes no team's world into its save.
+    RestoreInvasionHomeOnLoad();
+    if (Invading()) {
         return;
     }
     std::optional<bbcoop::TeamWorld> world;
@@ -2260,8 +2356,14 @@ bool RunTeamTitleVerb(const AutoplayCommand& command, bool begun, double elapsed
 bool RunTeamMenuVerb(const AutoplayCommand& command, bool begun, double elapsed,
                      std::string& failure) {
     // menu-invite <online id> [timeout], menu-kick <online id> [timeout], menu-join [timeout],
-    // menu-leave [timeout].
-    const size_t timeout_arg = command.verb == "menu-invite" || command.verb == "menu-kick" ? 1 : 0;
+    // menu-leave [timeout]. Invasions: menu-invade [timeout] (in the target's world),
+    // menu-invade-leave [timeout] (home), menu-allow-invaders <0|1> [timeout] (the leader's
+    // toggle), wait-invader <0|1> [timeout] (an invader in this team's world or not).
+    const size_t timeout_arg = command.verb == "menu-invite" || command.verb == "menu-kick" ||
+                                       command.verb == "menu-allow-invaders" ||
+                                       command.verb == "wait-invader"
+                                   ? 1
+                                   : 0;
     const double timeout =
         command.args.size() > timeout_arg ? std::atof(command.args[timeout_arg].c_str()) : 180.0;
     std::optional<bbcoop::LobbyState> lobby;
@@ -2314,6 +2416,27 @@ bool RunTeamMenuVerb(const AutoplayCommand& command, bool begun, double elapsed,
             asked_at = elapsed;
             TeamLobbyRequest(bbcoop::TeamRequest::LEAVE, {});
         }
+    } else if (command.verb == "menu-invade" || command.verb == "menu-invade-leave") {
+        const bool leave = command.verb == "menu-invade-leave";
+        bool active = false;
+        {
+            std::scoped_lock lock{team_mutex};
+            active = invader_trip.Active();
+            done = leave ? !active : invader_trip.Current() == InvaderTrip::Phase::Visiting;
+        }
+        if (!done && ask && active == leave) {
+            asked_at = elapsed;
+            InvasionRequest(leave);
+        }
+    } else if (command.verb == "menu-allow-invaders" && !command.args.empty()) {
+        const bool allow = command.args[0] != "0";
+        done = TeamAllowsInvaders() == allow;
+        if (!done && lobby && lobby->has_team() && ask) {
+            asked_at = elapsed;
+            TeamAllowInvaders(allow);
+        }
+    } else if (command.verb == "wait-invader" && !command.args.empty()) {
+        done = InvaderInWorld().empty() == (command.args[0] == "0");
     } else {
         failure = "unknown team menu verb";
         return false;
@@ -2322,6 +2445,395 @@ bool RunTeamMenuVerb(const AutoplayCommand& command, bool begun, double elapsed,
         failure = "timed out in the team menu";
     }
     return done;
+}
+
+} // namespace Coop
+
+// Invasions (bloodborne_invasion.h, docs/invasions/GAME_SIDE_PLAN.md): the invader's trip on the
+// game thread, its own world kept aside for the visit, and what the menu and the notice need.
+namespace {
+
+std::filesystem::path InvasionHomeFile(int slot) {
+    return Common::FS::GetUserPath(Common::FS::PathType::UserDir) /
+           SlotFileName("invasion_home", slot);
+}
+
+// The invader's own world before the visit (its respawn lamp, every flag), to its slot's file
+// before anything changes: a crash mid-visit puts it back at the next load. A file still there
+// from an earlier visit is that world already (never written over).
+bool SaveInvasionHome() {
+    const int slot = character_slot.load();
+    const u64 global = GetGlobalState();
+    if (slot < 0 || global < 0x10000) {
+        return false;
+    }
+    const std::filesystem::path path = InvasionHomeFile(slot);
+    std::error_code error;
+    if (std::filesystem::exists(path, error)) {
+        LOG_INFO(Debug, "Co-op invasion: slot {}'s own world is kept aside already", slot);
+        return true;
+    }
+    const std::optional<WorldStore> store = ReadWorldStore();
+    if (!store) {
+        return false;
+    }
+    const InvasionHome home{ReadValue<s32>(global, 0x1528),
+                            CaptureWorldFlags(store->store.flags_per_block, store->blocks, true)};
+    WriteWholeFile(path, FormatInvasionHome(home));
+    LOG_INFO(Debug,
+             "Co-op invasion: slot {}'s own world kept aside for the visit (respawn {}, {} "
+             "flags on in {} blocks)",
+             slot, home.respawn, home.flags.on.size(), home.flags.blocks.size());
+    return true;
+}
+
+// Puts the invader's own world back (its flags; its respawn lamp with `respawn`) and forgets the
+// file. False while the flags cannot be read (a load).
+bool RestoreInvasionHome(bool respawn) {
+    const int slot = character_slot.load();
+    if (slot < 0) {
+        return false;
+    }
+    const std::filesystem::path path = InvasionHomeFile(slot);
+    const std::string text = ReadWholeFile(path);
+    if (text.empty()) {
+        return true;
+    }
+    std::error_code error;
+    const std::optional<InvasionHome> home = ParseInvasionHome(text);
+    if (!home) {
+        LOG_WARNING(Debug, "Co-op invasion: slot {}'s kept world does not read: left", slot);
+        std::filesystem::remove(path, error);
+        return true;
+    }
+    const std::optional<WorldStore> store = ReadWorldStore();
+    const u64 global = GetGlobalState();
+    if (!store || global < 0x10000) {
+        return false;
+    }
+    using SetFlag = void PS4_SYSV_ABI (*)(u64, s32, bool);
+    const auto changes =
+        WorldFlagChanges(store->store.flags_per_block, store->blocks, home->flags, true);
+    for (const auto& [flag, on] : changes) {
+        reinterpret_cast<SetFlag>(image_base + PartyGhostSetEventFlagOffset)(0, flag, on);
+    }
+    if (respawn) {
+        WriteValue(global, 0x1528, home->respawn);
+    }
+    std::filesystem::remove(path, error);
+    LOG_INFO(Debug, "Co-op invasion: slot {}'s own world is back ({} flags changed, respawn {})",
+             slot, changes.size(), home->respawn);
+    return true;
+}
+
+void SendInvadeRequest(bool cancel) {
+    bbcoop::Envelope envelope;
+    envelope.mutable_invade_request()->set_cancel(cancel);
+    if (!cancel) {
+        const u64 data = OwnGameData();
+        const s32 level = data >= 0x10000 && HasMemoryAccess(data + 0x90, 4, MemoryProt::CpuRead)
+                              ? ReadValue<s32>(data, 0x90)
+                              : 0;
+        envelope.mutable_invade_request()->set_level(level > 0 && level < 1000 ? level : 0);
+    }
+    QueueLobby(std::move(envelope));
+}
+
+// The invader goes home (GAME_SIDE_PLAN.md section 7): out of the target's session, a live player
+// again, to its own respawn lamp (the kept world's); its flags come back once there. A dead
+// invader first gets up where it fell (its death script's hook, ReviveInvaderInPlace).
+void InvaderGoHome(bool died, bool tell_server) {
+    {
+        // The target world's enemy owners are not its own world's.
+        std::scoped_lock lock{owners_mutex};
+        server_owners.clear();
+        owners_heard_ms = 0;
+    }
+    const u64 manager = GetMatchingState();
+    if (InPartySession() && manager >= 0x10000) {
+        reinterpret_cast<void PS4_SYSV_ABI (*)(u64)>(image_base +
+                                                     MultiPlayStopRequestOffset)(manager);
+    }
+    const u64 player = GetLocalPlayer();
+    if (player >= 0x10000 && HasMemoryAccess(player, 0x7C, MemoryProt::CpuRead) &&
+        ReadValue<s32>(player, 0x78) != 0) {
+        reinterpret_cast<void PS4_SYSV_ABI (*)(u64, s32, s32)>(image_base + SetChrTypeOffset)(
+            0, LocalPlayerEntity, 0);
+    }
+    const int slot = character_slot.load();
+    const auto home =
+        slot >= 0 ? ParseInvasionHome(ReadWholeFile(InvasionHomeFile(slot))) : std::nullopt;
+    if (home && home->respawn != 0) {
+        // A moment later: the session's stop goes first (as party death's respawn trip).
+        guest_trip_point = home->respawn;
+        guest_lamp_trip_at = std::chrono::steady_clock::now() + std::chrono::milliseconds{1'500};
+    }
+    if (tell_server) {
+        SendInvadeRequest(true);
+    }
+    LOG_INFO(Debug, "Co-op invasion: going home ({}{}), to lamp {}", died ? "died" : "ended",
+             tell_server ? ", the server told" : "", home ? home->respawn : 0);
+}
+
+// How long a dead invader waits for its death script's hook before it is revived by us.
+constexpr s64 InvaderReviveWaitMs = 8'000;
+
+} // namespace
+
+namespace Coop {
+
+void InvasionRequest(bool cancel) {
+    if (!team_switch) {
+        return;
+    }
+    bool send = false;
+    {
+        std::scoped_lock lock{team_mutex};
+        if (!cancel && team_gate.Lobby() && team_gate.Lobby()->has_team()) {
+            LOG_INFO(Debug, "Co-op invasion: a player in a team does not invade");
+            return;
+        }
+        send = cancel ? invader_trip.Cancel(SteadyMilliseconds())
+                      : invader_trip.Ask(SteadyMilliseconds());
+        if (cancel && send && invader_trip.Current() == InvaderTrip::Phase::GoingHome) {
+            send = false; // InvaderGoHome tells the server
+        }
+    }
+    LOG_INFO(Debug, "Co-op invasion: the menu {} ({})", cancel ? "leaves" : "asks to invade",
+             send ? "to the server" : "nothing to send");
+    if (send) {
+        SendInvadeRequest(cancel);
+    }
+}
+
+void TeamAllowInvaders(bool allow) {
+    bbcoop::Envelope envelope;
+    envelope.mutable_team_request()->set_action(bbcoop::TeamRequest::INVADERS);
+    envelope.mutable_team_request()->set_allow(allow);
+    LOG_INFO(Debug, "Co-op team lobby: the leader {} invaders", allow ? "allows" : "turns off");
+    QueueLobby(std::move(envelope));
+}
+
+bool TeamAllowsInvaders() {
+    std::scoped_lock lock{team_mutex};
+    const auto lobby = team_gate.Lobby();
+    return lobby && lobby->has_team() && lobby->team().allow_invaders();
+}
+
+InvasionView InvasionViewNow() {
+    std::scoped_lock lock{team_mutex};
+    return InvasionViewOf(invader_trip, invaded_team, SteadyMilliseconds());
+}
+
+bool Invading() {
+    return team_switch && invader_away.load(std::memory_order_relaxed);
+}
+
+std::string InvaderInWorld() {
+    if (!team_switch) {
+        return {};
+    }
+    std::scoped_lock lock{team_mutex};
+    return invaded_team.Invader();
+}
+
+void RestoreInvasionHomeOnLoad() {
+    if (!team_switch) {
+        return;
+    }
+    {
+        std::scoped_lock lock{team_mutex};
+        if (invader_trip.Active()) {
+            return; // its own trip puts it back once home
+        }
+    }
+    const int slot = character_slot.load();
+    std::error_code error;
+    if (slot >= 0 && std::filesystem::exists(InvasionHomeFile(slot), error) &&
+        RestoreInvasionHome(true)) {
+        LOG_WARNING(Debug,
+                    "Co-op invasion: slot {} loaded with its world still kept aside (the "
+                    "game stopped mid-visit): put back",
+                    slot);
+    }
+}
+
+void TickInvasion() {
+    if (!team_switch) {
+        return;
+    }
+    static s64 stable_since = -1;
+    static u32 stable_map = 0;
+    static bool home_kept = false; // its own world is in the file (SaveInvasionHome)
+    static s64 going_home_ms = -1; // InvaderGoHome ran
+    static s64 revive_due_ms = -1; // dead: going home once revived (or at this time)
+    static bool home_tells_server = false;
+    static bool late_cancel_sent = false; // its death: the server never said the end
+    const s64 now_ms = SteadyMilliseconds();
+    {
+        std::scoped_lock lock{team_mutex};
+        invaded_team.Tick(now_ms);
+        if (!invader_trip.Active() && !home_kept) {
+            invader_link.store(false);
+            invader_away.store(false);
+            return;
+        }
+    }
+    // Settled: loaded, on a usable map, not on a trip, for 3 s (as the guest's resume).
+    const u64 global = GetGlobalState();
+    const bool loading = global < 0x10000 || ReadValue<u8>(global, 0x08) != 0;
+    const u32 map = GetCurrentPackedMap();
+    const auto at = LocalPlayerPosition();
+    const bool ready = !loading && IsUsablePackedMap(map) && at && !PartyTripActive() &&
+                       !guest_lamp_trip_at.has_value();
+    if (!ready || map != stable_map) {
+        stable_since = ready ? now_ms : -1;
+        stable_map = ready ? map : 0;
+    }
+    const bool alive = party_death_run.downed.Current() != Vital::Dead;
+    const bool revived = TakeInvaderDeath();
+    const InvaderTrip::Frame frame{
+        .now_ms = now_ms,
+        .map = ready ? map : 0,
+        .settled = ready && stable_since >= 0 && now_ms - stable_since >= 3'000,
+        .in_session = InPartySession(),
+        .dead = revived || !alive,
+        .boss_fog = alive && EventFlagOn(4000),
+    };
+    InvaderTrip::Action action = InvaderTrip::Action::None;
+    InvaderTrip::Phase phase = InvaderTrip::Phase::None;
+    std::optional<bbcoop::InvasionStart> start;
+    InvasionJoin join;
+    bool died = false;
+    bool tell = false;
+    bbcoop::InvasionEnd::Reason reason = bbcoop::InvasionEnd::NONE;
+    {
+        std::scoped_lock lock{team_mutex};
+        // The invader's own world kept aside before its trip changes anything.
+        if (invader_trip.Current() == InvaderTrip::Phase::Travelling && !home_kept) {
+            home_kept = SaveInvasionHome();
+            if (!home_kept) {
+                return; // the flags are not readable yet: no trip before the file is written
+            }
+        }
+        action = invader_trip.Tick(frame);
+        invader_away.store(invader_trip.AwayFromHome());
+        phase = invader_trip.Current();
+        start = invader_trip.Start();
+        join = invader_trip.Join(invasion_fallback_switch, TeamSessionKind);
+        died = invader_trip.Died();
+        tell = invader_trip.TellsServer();
+        reason = invader_trip.EndReason();
+    }
+    invader_link.store(phase == InvaderTrip::Phase::Joining ||
+                       phase == InvaderTrip::Phase::Visiting ||
+                       phase == InvaderTrip::Phase::GoingHome);
+    if (phase == InvaderTrip::Phase::None) {
+        // Over before it left home (a refusal, nothing found, an end during the notice or its
+        // trip there, its death on the way): its own world was not touched but by the lamp trip.
+        if (home_kept) {
+            RestoreInvasionHome(true);
+        }
+        if (tell) {
+            SendInvadeRequest(true);
+        }
+        home_kept = false;
+        going_home_ms = -1;
+        revive_due_ms = -1;
+        LOG_INFO(Debug, "Co-op invasion: over before the join ({})", InvasionEndReasonName(reason));
+        return;
+    }
+    switch (action) {
+    case InvaderTrip::Action::None:
+        break;
+    case InvaderTrip::Action::Travel: {
+        const ResumePoint point{start->map(), PositionOf(start->at()), 0};
+        const ResumeStep step = ChooseResumeStep(point, map, *at, 0);
+        if (step.kind == ResumeStep::Kind::Travel) {
+            guest_trip_point = step.warp_point;
+            guest_lamp_trip_at = std::chrono::steady_clock::now();
+        }
+        LOG_INFO(Debug, "Co-op invasion: travelling to the target's map {:#x} (lamp {})",
+                 start->map(), step.kind == ResumeStep::Kind::Travel ? step.warp_point : 0);
+        break;
+    }
+    case InvaderTrip::Action::Join: {
+        const std::string& data = start->session().join();
+        const bool joined = JoinTeamSession({reinterpret_cast<const u8*>(data.data()), data.size()},
+                                            join.kind, join.sign);
+        LOG_INFO(Debug, "Co-op invasion: joining {}'s session (kind {:#x}, sign {}{}): {}",
+                 start->session().host(), join.kind, join.sign,
+                 join.make_hostile ? ", the fallback" : "", joined ? "joined" : "not joined");
+        if (joined && join.make_hostile) {
+            reinterpret_cast<void PS4_SYSV_ABI (*)(u64, s32, s32)>(image_base + SetChrTypeOffset)(
+                0, LocalPlayerEntity, InvaderCharacterType);
+        }
+        break;
+    }
+    case InvaderTrip::Action::Place:
+        if (start->has_at()) {
+            TeleportLocalPlayer(PositionOf(start->at()));
+        }
+        LOG_INFO(Debug, "Co-op invasion: in {}'s world, hunting {}", start->session().host(),
+                 start->target());
+        break;
+    case InvaderTrip::Action::GoHome:
+        home_tells_server = tell;
+        if (died && !revived) {
+            // Dead: its death script's hook revives it in place (ReviveInvaderInPlace); then home.
+            revive_due_ms = now_ms + InvaderReviveWaitMs;
+        } else {
+            InvaderGoHome(died, tell);
+            going_home_ms = now_ms;
+        }
+        break;
+    }
+    if (revive_due_ms >= 0 && going_home_ms < 0) {
+        const bool hooked = revived && action != InvaderTrip::Action::GoHome;
+        if (hooked || now_ms >= revive_due_ms) {
+            if (!hooked && !alive) {
+                ReviveInvaderInPlace(); // no death script's hook came
+                TakeInvaderDeath();
+            }
+            revive_due_ms = -1;
+            InvaderGoHome(true, home_tells_server);
+            going_home_ms = now_ms;
+        }
+    }
+    if (phase == InvaderTrip::Phase::Visiting && invasion_fallback_switch && frame.settled) {
+        // The game sets the type back on its loads (PhantomHome): kept for the whole visit.
+        const u64 player = GetLocalPlayer();
+        if (player >= 0x10000 && HasMemoryAccess(player, 0x7C, MemoryProt::CpuRead) &&
+            ReadValue<s32>(player, 0x78) != InvaderCharacterType) {
+            reinterpret_cast<void PS4_SYSV_ABI (*)(u64, s32, s32)>(image_base + SetChrTypeOffset)(
+                0, LocalPlayerEntity, InvaderCharacterType);
+        }
+    }
+    // Its death ends the invasion on the server (its vitals): if no end came after a while (the
+    // vitals lost), it says it left.
+    if (phase == InvaderTrip::Phase::GoingHome && going_home_ms >= 0 && !home_tells_server &&
+        !late_cancel_sent && reason == bbcoop::InvasionEnd::NONE &&
+        now_ms - going_home_ms > 10'000) {
+        late_cancel_sent = true;
+        SendInvadeRequest(true);
+        LOG_INFO(Debug, "Co-op invasion: no end from the server after the death; told it");
+    }
+    // Home: out of the session and settled after the trip (or the trip never came): its own world
+    // back, and the trip is over.
+    if (phase == InvaderTrip::Phase::GoingHome && going_home_ms >= 0 && !frame.in_session &&
+        ((frame.settled && now_ms - going_home_ms >= 5'000) || now_ms - going_home_ms > 120'000) &&
+        RestoreInvasionHome(false)) {
+        if (!home_tells_server && !late_cancel_sent && reason == bbcoop::InvasionEnd::NONE) {
+            SendInvadeRequest(true); // home before the server's end came (see above)
+        }
+        std::scoped_lock lock{team_mutex};
+        invader_trip.Home();
+        invader_away.store(invader_trip.AwayFromHome());
+        home_kept = false;
+        going_home_ms = -1;
+        late_cancel_sent = false;
+        LOG_INFO(Debug, "Co-op invasion: home");
+    }
 }
 
 } // namespace Coop

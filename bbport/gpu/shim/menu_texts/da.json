@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Lodret synsfelt i grader; spillets kamera har 43. Hvert kamera udvides lige meget. Træder i kraft, når spillet genstartes.",
  "Mute in the background": "Lydløs i baggrunden",
  "The game is silent while its window is not the active one.": "Spillet er stille, mens dets vindue ikke er det aktive.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Knapperne, spillet viser på skærmen. Automatisk følger det, du spiller med: tasterne nedenfor, mens du bruger tastatur og mus, controllerens egne knapper (PlayStation, Xbox eller Switch), mens du bruger en, og skifter undervejs. En ændring her træder i kraft efter en genstart."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Knapperne, spillet viser på skærmen. Automatisk følger det, du spiller med: tasterne nedenfor, mens du bruger tastatur og mus, controllerens egne knapper (PlayStation, Xbox eller Switch), mens du bruger en, og skifter undervejs. En ændring her træder i kraft efter en genstart.",
+ "Invaders: allowed": "Indtrængere: tilladt",
+ "Invaders: off": "Indtrængere: fra",
+ "Leave the invasion": "Forlad invasionen",
+ "Invade a hunt": "Invader en jagt",
+ "Invader defeated": "Indtrængeren besejret",
+ "You were defeated": "Du blev besejret",
+ "The invader prevailed": "Indtrængeren sejrede",
+ "Your prey has fallen": "Dit bytte er faldet",
+ "No world to invade was found": "Ingen verden at invadere blev fundet",
+ "The server refused the invasion": "Serveren afviste invasionen",
+ "The invasion is over": "Invasionen er forbi",
+ "Looking for a world to invade": "Leder efter en verden at invadere",
+ "An invader approaches: %d": "En indtrænger nærmer sig: %d",
+ "Invading in %d": "Invasion om %d",
+ "Invaded by %s": "Invaderet af %s",
+ "Invading the world of %s": "Invaderer %ss verden",
+ "Returning home": "Vender hjem"
 }

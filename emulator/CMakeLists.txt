@@ -978,6 +978,8 @@ if (ARCHITECTURE STREQUAL "x86_64")
              src/core/bloodborne_world_log.cpp
              src/core/bloodborne_server_world.cpp
              src/core/bloodborne_team.cpp
+             src/core/bloodborne_invasion.cpp
+             src/core/bloodborne_invasion.h
              src/core/bloodborne_trade.cpp
              src/core/bloodborne_trade.h
              ${CMAKE_CURRENT_SOURCE_DIR}/../server/coop/world_log.cpp

@@ -359,6 +359,7 @@ add_custom_command(
 add_executable(shadps4_bloodborne_test
     ${CMAKE_SOURCE_DIR}/src/core/bloodborne_party.cpp
     ${CMAKE_SOURCE_DIR}/src/core/bloodborne_team.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/bloodborne_invasion.cpp
     ${CMAKE_SOURCE_DIR}/../server/coop/world_log.cpp
     ${CMAKE_SOURCE_DIR}/../server/coop/coop_messages.cpp
     "${COOP_TEST_PROTO_OUT}/coop.pb.cc"
@@ -396,6 +397,7 @@ add_executable(shadps4_bloodborne_test
     bloodborne/test_bloodborne_game_link.cpp
     bloodborne/test_bloodborne_server_world.cpp
     bloodborne/test_bloodborne_team.cpp
+    bloodborne/test_bloodborne_invasion.cpp
     bloodborne/test_bloodborne_send_pace.cpp
     bloodborne/test_bloodborne_region_url.cpp
     bloodborne/coop_trace_replay.cpp

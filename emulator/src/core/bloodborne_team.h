@@ -178,12 +178,15 @@ struct FlagBlockBits {
     u32 id = 0;
     std::span<const u8> bytes;
 };
-WorldFlags CaptureWorldFlags(u32 flags_per_block, std::span<const FlagBlockBits> blocks);
-// What to set so the store's world flags are `target`'s, in the blocks both have (a block the
-// target does not cover keeps its flags): each flag and its value, in order.
+// `all`: every flag, not only the world's (an invader's own world kept aside for its visit,
+// bloodborne_invasion.h).
+WorldFlags CaptureWorldFlags(u32 flags_per_block, std::span<const FlagBlockBits> blocks,
+                             bool all = false);
+// What to set so the store's world flags (`all`: every flag) are `target`'s, in the blocks both
+// have (a block the target does not cover keeps its flags): each flag and its value, in order.
 std::vector<std::pair<s32, bool>> WorldFlagChanges(u32 flags_per_block,
                                                    std::span<const FlagBlockBits> blocks,
-                                                   const WorldFlags& target);
+                                                   const WorldFlags& target, bool all = false);
 // Whether a load takes the team's world in `block`: one the team's world covers (`covered`,
 // sorted) that no earlier load took (`taken`), or on a guest's trip (`guest_trip`) every one. A
 // trip's load gives the guest's game its own saved world back (Kaniel's play test 2026-10-18:

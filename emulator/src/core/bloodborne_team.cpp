@@ -299,7 +299,8 @@ bool IsWorldFlag(s32 flag) {
 namespace {
 
 // The world flags on in one block.
-void OnInBlock(u32 flags_per_block, const FlagBlockBits& block, std::vector<s32>& out) {
+void OnInBlock(u32 flags_per_block, const FlagBlockBits& block, std::vector<s32>& out,
+               bool all = false) {
     for (size_t byte = 0; byte < block.bytes.size(); ++byte) {
         const u8 bits = block.bytes[byte];
         if (bits == 0) {
@@ -310,7 +311,7 @@ void OnInBlock(u32 flags_per_block, const FlagBlockBits& block, std::vector<s32>
                 continue;
             }
             const s32 flag = static_cast<s32>(block.id * flags_per_block + byte * 8 + bit);
-            if (IsWorldFlag(flag)) {
+            if (all || IsWorldFlag(flag)) {
                 out.push_back(flag);
             }
         }
@@ -319,11 +320,11 @@ void OnInBlock(u32 flags_per_block, const FlagBlockBits& block, std::vector<s32>
 
 } // namespace
 
-WorldFlags CaptureWorldFlags(u32 flags_per_block, std::span<const FlagBlockBits> blocks) {
+WorldFlags CaptureWorldFlags(u32 flags_per_block, std::span<const FlagBlockBits> blocks, bool all) {
     WorldFlags world;
     for (const FlagBlockBits& block : blocks) {
         world.blocks.push_back(block.id);
-        OnInBlock(flags_per_block, block, world.on);
+        OnInBlock(flags_per_block, block, world.on, all);
     }
     std::sort(world.blocks.begin(), world.blocks.end());
     std::sort(world.on.begin(), world.on.end());
@@ -332,7 +333,7 @@ WorldFlags CaptureWorldFlags(u32 flags_per_block, std::span<const FlagBlockBits>
 
 std::vector<std::pair<s32, bool>> WorldFlagChanges(u32 flags_per_block,
                                                    std::span<const FlagBlockBits> blocks,
-                                                   const WorldFlags& target) {
+                                                   const WorldFlags& target, bool all) {
     std::vector<std::pair<s32, bool>> changes;
     if (flags_per_block == 0) {
         return changes;
@@ -342,13 +343,14 @@ std::vector<std::pair<s32, bool>> WorldFlagChanges(u32 flags_per_block,
             continue;
         }
         std::vector<s32> on;
-        OnInBlock(flags_per_block, block, on);
+        OnInBlock(flags_per_block, block, on, all);
         const s32 first = static_cast<s32>(block.id * flags_per_block);
         const s32 end = first + static_cast<s32>(block.bytes.size() * 8);
         const auto lo = std::lower_bound(target.on.begin(), target.on.end(), first);
         const auto hi = std::lower_bound(target.on.begin(), target.on.end(), end);
         std::vector<s32> wanted;
-        std::copy_if(lo, hi, std::back_inserter(wanted), IsWorldFlag);
+        std::copy_if(lo, hi, std::back_inserter(wanted),
+                     [&](s32 flag) { return all || IsWorldFlag(flag); });
         std::vector<s32> off_now, on_now;
         std::set_difference(on.begin(), on.end(), wanted.begin(), wanted.end(),
                             std::back_inserter(off_now));

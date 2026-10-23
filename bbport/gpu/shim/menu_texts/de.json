@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Vertikales Sichtfeld in Grad; die Kamera des Spiels hat 43. Jede Kamera wird um denselben Betrag erweitert. Gilt nach einem Neustart des Spiels.",
  "Mute in the background": "Im Hintergrund stumm",
  "The game is silent while its window is not the active one.": "Das Spiel ist still, solange sein Fenster nicht das aktive ist.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Die Tasten, die das Spiel auf dem Bildschirm zeigt. Automatisch folgt dem, womit du spielst: den unten belegten Tasten, solange du Tastatur und Maus benutzt, den Tasten des Controllers (PlayStation, Xbox oder Switch), solange du einen benutzt, und wechselt mit. Eine Änderung hier gilt nach einem Neustart."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Die Tasten, die das Spiel auf dem Bildschirm zeigt. Automatisch folgt dem, womit du spielst: den unten belegten Tasten, solange du Tastatur und Maus benutzt, den Tasten des Controllers (PlayStation, Xbox oder Switch), solange du einen benutzt, und wechselt mit. Eine Änderung hier gilt nach einem Neustart.",
+ "Invaders: allowed": "Eindringlinge: erlaubt",
+ "Invaders: off": "Eindringlinge: aus",
+ "Leave the invasion": "Invasion verlassen",
+ "Invade a hunt": "In eine Jagd eindringen",
+ "Invader defeated": "Eindringling besiegt",
+ "You were defeated": "Du wurdest besiegt",
+ "The invader prevailed": "Der Eindringling hat gesiegt",
+ "Your prey has fallen": "Deine Beute ist gefallen",
+ "No world to invade was found": "Keine Welt zum Eindringen gefunden",
+ "The server refused the invasion": "Der Server hat die Invasion abgelehnt",
+ "The invasion is over": "Die Invasion ist vorbei",
+ "Looking for a world to invade": "Suche eine Welt zum Eindringen",
+ "An invader approaches: %d": "Ein Eindringling naht: %d",
+ "Invading in %d": "Invasion in %d",
+ "Invaded by %s": "Eingedrungen: %s",
+ "Invading the world of %s": "Invasion in die Welt von %s",
+ "Returning home": "Rückkehr nach Hause"
 }

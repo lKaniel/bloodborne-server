@@ -1378,6 +1378,11 @@ void ApplyHealingFountainHostAvailability(const GuestRegisterSnapshot& registers
         return;
     }
 
+    // Invasions: an invader uses no lamp of the world it invades (as in the retail game).
+    if (Invading()) {
+        record.result = "invader";
+        return;
+    }
     record.player = GetLocalPlayer();
     record.host_effect = HasPlayerEffect(record.player, 9001);
     // A party session (either role, see InstallLampsAsCampfires) uses its lamps too, also one

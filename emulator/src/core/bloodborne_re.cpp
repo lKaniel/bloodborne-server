@@ -748,17 +748,20 @@ void ReconcileMemberPresence() {
                     ReadValue<u32>(character, 0x08), identities[i]);
     }
     std::vector<MemberVitals> board;
+    std::vector<MemberVitals> hostile;
     std::string self;
     bool fresh = false;
     {
         std::scoped_lock lock{vitals_mutex};
         board = vitals_board.members;
+        hostile = hostile_vitals;
         self = vitals_member;
         fresh = vitals_heard_at &&
                 std::chrono::steady_clock::now() - *vitals_heard_at < std::chrono::seconds{5};
     }
     const u32 map = CurrentPlace().map;
     if (!InPartySession() || !fresh || map == 0) {
+        SetInvaderHandles({});
         // Out of a session (or nothing known): everyone as the game has them (a stale second copy
         // of a member stays hidden).
         for (const u64 character : hidden) {
@@ -774,6 +777,19 @@ void ReconcileMemberPresence() {
     for (const OtherPlayer& other : others) {
         positions.push_back(other.at);
     }
+    // Invasions: the invader's line keeps its body shown too; which body is its (the hit hook and
+    // party death read them).
+    std::vector<u32> invaders;
+    if (!hostile.empty()) {
+        const std::vector<bool> invader = InvaderBodies(positions, board, hostile, self, map);
+        for (size_t i = 0; i < others.size(); ++i) {
+            if (invader[i]) {
+                invaders.push_back(ReadValue<u32>(others[i].character, 0x08));
+            }
+        }
+        board.insert(board.end(), hostile.begin(), hostile.end());
+    }
+    SetInvaderHandles(std::move(invaders));
     const std::vector<bool> shown = ShownOtherPlayers(positions, board, self, map);
     for (size_t i = 0; i < others.size(); ++i) {
         const u64 character = others[i].character;
@@ -1027,6 +1043,8 @@ void TickPartyController() {
                      observation.white_phantom, party_controller->Waiting());
         }
     }
+    // Invasions: the invader's trip (a solo player's: TickTeamJoin returns before it).
+    TickInvasion();
     if (TickTeamJoin(action == PartyAction::StartSearch)) {
         return;
     }

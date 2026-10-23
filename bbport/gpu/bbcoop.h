@@ -236,6 +236,8 @@ typedef struct bbcoop_lobby {
      * world. */
     int world_count, world;
     bbcoop_lobby_world worlds[BBCOOP_LOBBY_WORLDS];
+    /* Invasions (docs/INVASIONS.md): the team's leader allows invaders into its world. */
+    int allow_invaders;
 } bbcoop_lobby;
 /* Fills `lobby`; 0 when the team lobby is off. */
 int bbcoop_lobby_view(bbcoop_lobby *lobby);
@@ -248,6 +250,27 @@ enum { BBCOOP_TEAM_CREATE = 1, BBCOOP_TEAM_INVITE = 2, BBCOOP_TEAM_ACCEPT = 3,
 void bbcoop_lobby_request(int action, const char *id);
 /* The title holds a save's load for the team: the team screen is up (bbport_overlay.cpp). */
 int bbcoop_team_screen(void);
+/* Invasions (docs/INVASIONS.md; the server's Invasions setting, off by default): a player in no
+ * team asks to invade a team's world (1) or leaves the search or the invasion (0); a team's leader
+ * allows invaders into its world (1) or not (0). The notice as the overlay shows it: 0 when there
+ * is nothing to show. */
+enum { BBCOOP_INVASION_NONE, BBCOOP_INVASION_TARGET, BBCOOP_INVASION_INVADER };
+enum { BBCOOP_INVASION_SEARCHING = 1, BBCOOP_INVASION_APPROACHING, BBCOOP_INVASION_ACTIVE,
+       BBCOOP_INVASION_RETURNING, BBCOOP_INVASION_ENDED };
+/* How it ended (bbcoop::InvasionEnd::Reason). */
+enum { BBCOOP_INVASION_INVADER_DIED = 1, BBCOOP_INVASION_TARGET_KILLED = 2,
+       BBCOOP_INVASION_PARTY_WIPED = 3, BBCOOP_INVASION_NOT_FOUND = 9,
+       BBCOOP_INVASION_REFUSED = 10 };
+typedef struct bbcoop_invasion {
+    int role;    /* BBCOOP_INVASION_TARGET (this team's world) or _INVADER */
+    int phase;   /* BBCOOP_INVASION_SEARCHING .. _ENDED */
+    int seconds; /* the countdown while approaching */
+    int reason;  /* once ended */
+    char name[40]; /* the other side: the invader's name, or the hunted host's */
+} bbcoop_invasion;
+void bbcoop_invade(int on);
+void bbcoop_team_allow_invaders(int allow);
+int bbcoop_invasion_view(bbcoop_invasion *view);
 /* Kaniel 2026-10-16: the team menu in game. The System menu's "Co-op Team" page opens the team
  * screen over the game (1) and its buttons close it (0); a moment after it closed the pad presses
  * Circle for the game (1 while held) so the page under it closes too. The port's Insert menu opens

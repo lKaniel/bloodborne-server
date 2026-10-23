@@ -865,6 +865,10 @@ void PS4_SYSV_ABI NoteAddSouls(u64, const GuestRegisterSnapshot* registers) {
     if (amount <= 0 || caller < image_base || !SharesKillEchoes(caller - image_base, true)) {
         return;
     }
+    // Invasions: an invader shares no kill echoes (it is in no party; the server drops them too).
+    if (Invading()) {
+        return;
+    }
     const KillEchoes kill{amount, CurrentPlace().map};
     const bool posts = PostsKillEchoesInSession();
     std::scoped_lock lock{echo_board_mutex};

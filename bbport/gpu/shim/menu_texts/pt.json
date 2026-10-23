@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Campo de visão vertical em graus; a câmara do jogo tem 43. Todas as câmaras são alargadas na mesma medida. Aplica-se depois de reiniciar o jogo.",
  "Mute in the background": "Sem som em segundo plano",
  "The game is silent while its window is not the active one.": "O jogo fica em silêncio enquanto a sua janela não for a ativa.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Os botões que o jogo mostra no ecrã. Automático segue aquilo com que jogas: as teclas atribuídas abaixo enquanto usas teclado e rato, os botões do comando (PlayStation, Xbox ou Switch) enquanto usas um, e muda quando mudas. Uma alteração aqui aplica-se depois de reiniciar."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Os botões que o jogo mostra no ecrã. Automático segue aquilo com que jogas: as teclas atribuídas abaixo enquanto usas teclado e rato, os botões do comando (PlayStation, Xbox ou Switch) enquanto usas um, e muda quando mudas. Uma alteração aqui aplica-se depois de reiniciar.",
+ "Invaders: allowed": "Invasores: permitidos",
+ "Invaders: off": "Invasores: não",
+ "Leave the invasion": "Sair da invasão",
+ "Invade a hunt": "Invadir uma caçada",
+ "Invader defeated": "Invasor derrotado",
+ "You were defeated": "Foste derrotado",
+ "The invader prevailed": "O invasor venceu",
+ "Your prey has fallen": "A tua presa caiu",
+ "No world to invade was found": "Nenhum mundo para invadir foi encontrado",
+ "The server refused the invasion": "O servidor recusou a invasão",
+ "The invasion is over": "A invasão terminou",
+ "Looking for a world to invade": "À procura de um mundo para invadir",
+ "An invader approaches: %d": "Um invasor aproxima-se: %d",
+ "Invading in %d": "Invasão em %d",
+ "Invaded by %s": "Invadido por %s",
+ "Invading the world of %s": "A invadir o mundo de %s",
+ "Returning home": "A regressar a casa"
 }

@@ -1713,7 +1713,8 @@ bool AutoplayTeamVerb(const AutoplayStep&) {
 }
 
 // Kaniel 2026-10-16: the team menu in game, what its buttons do (menu-invite <online id>,
-// menu-kick <online id>, menu-join, menu-leave; each [timeout]).
+// menu-kick <online id>, menu-join, menu-leave; each [timeout]). Invasions: menu-invade,
+// menu-invade-leave, menu-allow-invaders <0|1>, wait-invader <0|1> (RunTeamMenuVerb).
 bool AutoplayTeamMenuVerb(const AutoplayStep& step) {
     return Coop::RunTeamMenuVerb(step.command, step.begun, step.elapsed, step.failure);
 }
@@ -2012,6 +2013,10 @@ constexpr auto AutoplayVerbs = std::to_array<std::pair<std::string_view, Autopla
     {"menu-kick", AutoplayTeamMenuVerb},
     {"menu-join", AutoplayTeamMenuVerb},
     {"menu-leave", AutoplayTeamMenuVerb},
+    {"menu-invade", AutoplayTeamMenuVerb},
+    {"menu-invade-leave", AutoplayTeamMenuVerb},
+    {"menu-allow-invaders", AutoplayTeamMenuVerb},
+    {"wait-invader", AutoplayTeamMenuVerb},
     {"keys", AutoplayKeys},
     {"done", AutoplayDone},
     {"trade-give", AutoplayTradeGive},

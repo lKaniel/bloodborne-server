@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Pionowe pole widzenia w stopniach; kamera gry ma 43. Każda kamera jest poszerzana o tyle samo. Działa po ponownym uruchomieniu gry.",
  "Mute in the background": "Wycisz w tle",
  "The game is silent while its window is not the active one.": "Gra milczy, dopóki jej okno nie jest aktywne.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Przyciski, które gra pokazuje na ekranie. Automatycznie podąża za tym, czym grasz: klawisze przypisane poniżej, gdy używasz klawiatury i myszy, przyciski kontrolera (PlayStation, Xbox lub Switch), gdy używasz kontrolera, i zmienia się na bieżąco. Zmiana tutaj działa po ponownym uruchomieniu."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Przyciski, które gra pokazuje na ekranie. Automatycznie podąża za tym, czym grasz: klawisze przypisane poniżej, gdy używasz klawiatury i myszy, przyciski kontrolera (PlayStation, Xbox lub Switch), gdy używasz kontrolera, i zmienia się na bieżąco. Zmiana tutaj działa po ponownym uruchomieniu.",
+ "Invaders: allowed": "Najeźdźcy: dozwoleni",
+ "Invaders: off": "Najeźdźcy: wyłączeni",
+ "Leave the invasion": "Opuść inwazję",
+ "Invade a hunt": "Najedź łowy",
+ "Invader defeated": "Najeźdźca pokonany",
+ "You were defeated": "Zostałeś pokonany",
+ "The invader prevailed": "Najeźdźca zwyciężył",
+ "Your prey has fallen": "Twoja ofiara padła",
+ "No world to invade was found": "Nie znaleziono świata do najazdu",
+ "The server refused the invasion": "Serwer odrzucił inwazję",
+ "The invasion is over": "Inwazja dobiegła końca",
+ "Looking for a world to invade": "Szukanie świata do najazdu",
+ "An invader approaches: %d": "Zbliża się najeźdźca: %d",
+ "Invading in %d": "Inwazja za %d",
+ "Invaded by %s": "Najechany przez: %s",
+ "Invading the world of %s": "Najazd na świat: %s",
+ "Returning home": "Powrót do domu"
 }

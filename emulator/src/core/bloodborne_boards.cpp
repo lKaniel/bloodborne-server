@@ -1176,8 +1176,13 @@ void TakeServerEchoes(std::vector<KillEchoes> echoes) {
 }
 
 void TakeServerVitals(VitalsBoard board) {
+    // Invasions: the invader's line is no teammate's: everything that reads the board (the panel,
+    // downs, revives, the cutscene vote, the boss runner) goes without it; presence alone keeps
+    // its body shown.
+    std::vector<MemberVitals> hostile = TakeHostileLines(board);
     std::scoped_lock lock{vitals_mutex};
     vitals_board = std::move(board);
+    hostile_vitals = std::move(hostile);
     vitals_heard_at = std::chrono::steady_clock::now();
 }
 

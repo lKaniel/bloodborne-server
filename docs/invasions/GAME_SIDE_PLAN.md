@@ -1,5 +1,43 @@
 # Seamless red invasions: game-side implementation plan
 
+## Status (branch `invasions-game`, 2026-10-23)
+
+Built in the port's shared sources (`emulator/src/core`, compiled into bbport's `bbnet`), untested
+in game. Everything stays idle unless the server sends invasion messages.
+
+- **Done (sections 1, 2, 4, 5, 7, 8, 9a, 10, 11's verbs):** `bloodborne_invasion.{h,cpp}` (pure,
+  `test_bloodborne_invasion.cpp`): `InvaderTrip` (ask, notice, travel by `ChooseResumeStep`, join
+  with the server's kind/sign, place, home), `InvadedTeam`, `TakeHostileLines` (the hostile line is
+  split off in `TakeServerVitals`, so every board reader goes without it), `InvaderBodies`
+  (presence keeps the body shown and finds its handles), `TeamSessionMembers`, `InvasionJoinOf`,
+  `InvaderHitWindow`, `InvasionHome`. Messages in `TakeLobbyMessage`; `InvadeRequest` and
+  `TeamRequest.INVADERS` through the lobby queue; the invader's map and vitals go without a party
+  hello. `Vitals.level` (PlayerGameData +0x90), `boss` (flag 4000 while alive) and
+  `killed_by_invader`. `DownedTeams` never saves or restores the invader's team; `DownedBodies`
+  skips its body; `SessionNames` counts its line. Hit hook always installed; `KeepPartyMemberUp`
+  lets the invader's kill through. Invader: keeps every own flag, no echoes, no lamps, no team
+  world, keeps the target's enemy owners; death revived in place (`ReviveInvaderInPlace` from the
+  `PartyGhostDeath1.Revive` / `SoloPlayDeath2.Respawn` hooks), then `InvaderGoHome`; boss fog
+  (flag 4000) and a lost session send it home; its flags and lamp kept in `invasion_home_<slot>`
+  before the trip, put back at home or at the next load after a crash. Port UI: "Invade a hunt" /
+  "Leave the invasion", the leader's "Invaders: allowed/off", the notice banner; 18 languages. Rig
+  verbs `menu-invade`, `menu-invade-leave`, `menu-allow-invaders`, `wait-invader`.
+- **Fallback (section 3)** behind `invasion_fallback_switch` (off): co-op kind + server slot,
+  `SetChrType(InvaderCharacterType)` kept for the visit, team 21 written on its body on the team's
+  screens (only while real revive hits are on).
+- **Not done:** phase 0 (kind/sign, `InvaderCharacterType` = 2 is a guess), 9b (the Sinister bell),
+  the nameplate's "Adversary" line, map item pickup refusal, `GiveBackPhantomKeyItems` for the
+  invader, rig scenarios, shadPS4 (section 12: nothing, as recommended).
+- **Riskiest, untested:** whether `JoinTeamSession` with the native kind/sign makes a red phantom;
+  which death script runs for the invader (the 8 s fallback revive); the lamp trip home after
+  `MultiPlayStopRequest`; restoring every flag; flag 4000 as the boss signal; the invader's game
+  keeping the host party role while a session guest.
+- **Compiled:** `shadps4_bloodborne_test` (755 tests pass, clang; built test-only without the
+  emulator's submodules); every touched emulator source and `bbcoop/coop.cpp` syntax-checked with
+  bbnet's flags, with and without `BLOODBORNE_NATIVE_PORT`. `bbport_overlay.cpp` was **not**
+  compiled (no Dear ImGui / SDL3 here). Menu text and rig Python tests pass (2 rig failures,
+  `wait-hp`, were there before).
+
 Repo: `/home/user/bloodborne-server`, branch `hosted-server`, read-only, 2026-10-23.
 Companion to `/mnt/project-files/research/hosted-server/research-invasions.md` (the "research
 report"). The server side (InvadeRequest, InvasionStart/InvaderJoined, InvasionEnd{reason},

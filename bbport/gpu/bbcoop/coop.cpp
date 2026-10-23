@@ -414,6 +414,7 @@ extern "C" int bbcoop_lobby_view(bbcoop_lobby* lobby) {
         lobby->in_team = 1;
         lobby->leader = team.leader() == me;
         lobby->started = team.started();
+        lobby->allow_invaders = team.allow_invaders() ? 1 : 0;
         // The leader first.
         std::vector<const bbcoop::TeamMember*> members;
         for (const bbcoop::TeamMember& m : team.members()) {
@@ -593,6 +594,44 @@ extern "C" int bbcoop_team_menu_back(void) {
 
 extern "C" void bbcoop_team_join_hunt(const char* team) {
     Core::Bloodborne::Coop::TeamJoinHunt(team ? team : "");
+}
+
+extern "C" void bbcoop_invade(int on) {
+    Core::Bloodborne::Coop::InvasionRequest(on == 0);
+}
+
+extern "C" void bbcoop_team_allow_invaders(int allow) {
+    Core::Bloodborne::Coop::TeamAllowInvaders(allow != 0);
+}
+
+static_assert(BBCOOP_INVASION_INVADER_DIED == bbcoop::InvasionEnd::INVADER_DIED &&
+              BBCOOP_INVASION_TARGET_KILLED == bbcoop::InvasionEnd::TARGET_KILLED &&
+              BBCOOP_INVASION_PARTY_WIPED == bbcoop::InvasionEnd::PARTY_WIPED &&
+              BBCOOP_INVASION_NOT_FOUND == bbcoop::InvasionEnd::NOT_FOUND &&
+              BBCOOP_INVASION_REFUSED == bbcoop::InvasionEnd_Reason_REFUSED);
+
+extern "C" int bbcoop_invasion_view(bbcoop_invasion* view) {
+    namespace Coop = Core::Bloodborne::Coop;
+    using Core::Bloodborne::InvasionView;
+    *view = {};
+    if (!Coop::TeamModeOn()) {
+        return 0;
+    }
+    const InvasionView now = Coop::InvasionViewNow();
+    if (now.role == InvasionView::Role::None || now.phase == InvasionView::Phase::None) {
+        return 0;
+    }
+    view->role = now.role == InvasionView::Role::Target ? BBCOOP_INVASION_TARGET
+                                                        : BBCOOP_INVASION_INVADER;
+    static_assert(static_cast<int>(InvasionView::Phase::Searching) == BBCOOP_INVASION_SEARCHING &&
+                  static_cast<int>(InvasionView::Phase::Ended) == BBCOOP_INVASION_ENDED);
+    view->phase = static_cast<int>(now.phase); // the same order
+    view->seconds = now.seconds;
+    view->reason = static_cast<int>(now.reason);
+    // The hunted host is a board name: its character's name where the lobby knows it.
+    const std::string shown = Coop::CharacterNameOf(now.name);
+    CopyName(view->name, sizeof(view->name), shown.empty() ? now.name : shown);
+    return 1;
 }
 
 extern "C" void bbcoop_team_choose(int what) {

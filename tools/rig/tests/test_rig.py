@@ -42,6 +42,7 @@ VERBS = {
     "team-worlds",  # its world list
     "title-press", "title-wait", "title-shot", "title-keys", "keys",  # the port's menu keys
     "menu-invite", "menu-kick", "menu-join", "menu-leave",  # the team menu in game
+    "menu-invade", "menu-invade-leave", "menu-allow-invaders", "wait-invader",  # invasions
     "trade-give", "trade-stock", "trade-offer", "trade-answer", "expect-held", "wait-trade",
     "trade-socket", "expect-socketed",
     "cut-link",  # phase 7: a dropped connection

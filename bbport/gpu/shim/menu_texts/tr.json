@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Derece cinsinden dikey görüş alanı; oyunun kamerası 43. Her kamera aynı ölçüde genişletilir. Oyun yeniden başlatıldıktan sonra uygulanır.",
  "Mute in the background": "Arka planda sessiz",
  "The game is silent while its window is not the active one.": "Oyunun penceresi etkin değilken oyun ses çıkarmaz.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Oyunun ekranda gösterdiği düğmeler. Otomatik, neyle oynadığını izler: klavye ve fare kullanırken aşağıda atanan tuşları, kontrolcü kullanırken onun düğmelerini (PlayStation, Xbox veya Switch) gösterir ve değiştirdiğinde anında değişir. Buradaki bir değişiklik yeniden başlattıktan sonra uygulanır."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Oyunun ekranda gösterdiği düğmeler. Otomatik, neyle oynadığını izler: klavye ve fare kullanırken aşağıda atanan tuşları, kontrolcü kullanırken onun düğmelerini (PlayStation, Xbox veya Switch) gösterir ve değiştirdiğinde anında değişir. Buradaki bir değişiklik yeniden başlattıktan sonra uygulanır.",
+ "Invaders: allowed": "İstilacılar: açık",
+ "Invaders: off": "İstilacılar: kapalı",
+ "Leave the invasion": "İstiladan ayrıl",
+ "Invade a hunt": "Bir avı istila et",
+ "Invader defeated": "İstilacı yenildi",
+ "You were defeated": "Yenildin",
+ "The invader prevailed": "İstilacı kazandı",
+ "Your prey has fallen": "Avın düştü",
+ "No world to invade was found": "İstila edilecek dünya bulunamadı",
+ "The server refused the invasion": "Sunucu istilayı reddetti",
+ "The invasion is over": "İstila sona erdi",
+ "Looking for a world to invade": "İstila edilecek dünya aranıyor",
+ "An invader approaches: %d": "Bir istilacı yaklaşıyor: %d",
+ "Invading in %d": "%d içinde istila",
+ "Invaded by %s": "İstila eden: %s",
+ "Invading the world of %s": "%s dünyası istila ediliyor",
+ "Returning home": "Eve dönülüyor"
 }

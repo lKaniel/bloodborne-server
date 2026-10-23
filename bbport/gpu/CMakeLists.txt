@@ -243,6 +243,7 @@ set(BBCOOP_SOURCES ${BBCOOP_SOURCES}
     ${BB_EMULATOR_SRC}/core/bloodborne_world_log.cpp
     ${BB_EMULATOR_SRC}/core/bloodborne_server_world.cpp
     ${BB_EMULATOR_SRC}/core/bloodborne_team.cpp
+    ${BB_EMULATOR_SRC}/core/bloodborne_invasion.cpp
     ${BB_EMULATOR_SRC}/core/bloodborne_trade.cpp
     ${BB_SERVER_SRC}/coop/world_log.cpp ${BB_SERVER_SRC}/coop/coop_messages.cpp
     ${BB_SERVER_SRC}/coop/trade.cpp

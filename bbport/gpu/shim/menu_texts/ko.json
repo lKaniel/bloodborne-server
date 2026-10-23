@@ -377,5 +377,22 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "세로 시야각(도)입니다. 게임 카메라는 43입니다. 모든 카메라가 같은 만큼 넓어집니다. 게임을 다시 시작하면 적용됩니다.",
  "Mute in the background": "백그라운드에서 음소거",
  "The game is silent while its window is not the active one.": "게임 창이 활성 창이 아닌 동안 소리가 나지 않습니다.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "게임이 화면에 표시하는 버튼입니다. 자동은 지금 사용하는 장치를 따릅니다. 키보드와 마우스를 쓰는 동안에는 아래에서 지정한 키를, 컨트롤러를 쓰는 동안에는 그 버튼(PlayStation, Xbox, Switch)을 보여 주며, 바꾸면 바로 바뀝니다. 여기서 바꾼 설정은 다시 시작한 뒤 적용됩니다."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "게임이 화면에 표시하는 버튼입니다. 자동은 지금 사용하는 장치를 따릅니다. 키보드와 마우스를 쓰는 동안에는 아래에서 지정한 키를, 컨트롤러를 쓰는 동안에는 그 버튼(PlayStation, Xbox, Switch)을 보여 주며, 바꾸면 바로 바뀝니다. 여기서 바꾼 설정은 다시 시작한 뒤 적용됩니다.",
+ "Invaders: allowed": "침입자: 허용",
+ "Invaders: off": "침입자: 거부",
+ "Leave the invasion": "침입 그만두기",
+ "Invade a hunt": "사냥에 침입",
+ "Invader defeated": "침입자 격퇴",
+ "You were defeated": "당신은 쓰러졌다",
+ "The invader prevailed": "침입자가 승리했다",
+ "Your prey has fallen": "사냥감이 쓰러졌다",
+ "No world to invade was found": "침입할 세계를 찾지 못했다",
+ "The server refused the invasion": "서버가 침입을 거부했다",
+ "The invasion is over": "침입이 끝났다",
+ "Looking for a world to invade": "침입할 세계를 찾는 중",
+ "An invader approaches: %d": "침입자가 다가온다: %d",
+ "Invading in %d": "%d 후 침입",
+ "Invaded by %s": "%s의 침입",
+ "Invading the world of %s": "%s의 세계에 침입 중",
+ "Returning home": "귀환 중"
 }
