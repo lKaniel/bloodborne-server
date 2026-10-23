@@ -670,7 +670,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
             props.memoryHeaps[props.memoryTypes[arena_memory_type_index].heapIndex].size,
             block_size);
         if (const char* env = std::getenv("BB_VRAM_RESERVE_MB")) {
-            size = std::min(size, std::strtoull(env, nullptr, 10) << 20) / block_size * block_size;
+            size = std::min<u64>(size, std::strtoull(env, nullptr, 10) << 20) / block_size * block_size;
         }
         if (size != 0) {
             auto reserve = device.allocateMemory(
