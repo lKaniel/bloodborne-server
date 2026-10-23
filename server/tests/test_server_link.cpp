@@ -200,7 +200,7 @@ private:
 
 int Contracts() {
   const auto datagrams = ReadContracts(BLOODBORNE_SERVER_LINK_CONTRACTS);
-  CHECK(datagrams.size() == 17);
+  CHECK(datagrams.size() == 19);
   const auto datagram = [&](const char *name) { return datagrams.at(name); };
 
   const QByteArray cookie(16, '\x11');
@@ -296,13 +296,14 @@ int Contracts() {
       if (name == "data" && size >= 15) {
         continue; // a shorter frame is still a frame
       }
-      if (name == "hello.work" && size >= datagram("hello").size()) {
-        continue; // without the work
+      if ((name == "hello.work" || name == "hello.ticket") &&
+          size >= datagram("hello").size()) {
+        continue; // without the work, or the ticket
       }
       CHECK(!DecodeHello(cut) && !DecodeWelcome(cut) && !DecodeData(cut) &&
             !DecodeCookie(cut) && !DecodePing(Kind::Ping, cut) &&
             !DecodePing(Kind::Pong, cut) && !DecodeMember(cut) &&
-            !DecodeWork(cut));
+            !DecodeWork(cut) && !DecodeRedirect(cut));
     }
   }
   // The STUN ping shares the header.

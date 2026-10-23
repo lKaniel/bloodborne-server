@@ -27,6 +27,7 @@ Off by default: a host's own server behaves as before. On (`shadnet.cfg`):
 | The operator's commands on a UNIX-domain socket only the server's user opens (`HostedAdminSocket`, never a network port; `server/hosting/admin.sh`): list players, kick, ban/unban by id or address with an optional end (written to `banned.txt`, so restarts keep them), list worlds (members, last played, bytes on disk, measured off the link thread) and those put aside, restore one (its folder moved back at once), stats (players, worlds, link thread load, refusals); a second server started on a live socket is refused it instead of taking it | `admin.h`, `link_server.cpp` | only `banned.txt` and a restart before; a forgotten world could only come back by hand |
 | Worlds nobody started for `HostedRetireDays` days (0, the default: never) are put aside once a day, as a forgotten world's folder (writer thread, logged, never deleted); a world put aside keeps its line beside it (`kept_world.pb`, with the players it had when it went: a forgotten one names its last player), so `restore` gives it back to them | `bloodborne_world.cpp` `Service::Retire` | every world ever played stays on disk and on its players' lists |
 | A summon request (create, get, delete, request) must name its player (`UserId`) | `webapi_routes_bloodborne.cpp` `Refused` | one naming nobody passed the gate and could remove or claim another player's sign by its `SessionId` |
+| A region (`DirectoryUrl` / `DIRECTORY_URL`, `ShardName`, `ShardPublicAddress`, `DirectoryToken`; [SCALING.md](SCALING.md)): heartbeats to the directory, new ids claimed region-wide, a game's link sent on (Redirect, with a signed region ticket) to the shard of the team code it joins, the friend it invites or accepts, the world it starts, or when this shard is full or draining | `link_server.cpp` `SetupRegion`, `region.h`, `team_lobby.cpp` | one process holds ~1000 players; friends on different shards must still find, invite and play with each other |
 
 Two fixes are on for everyone: a TCP packet size under its header no longer loops the session for
 ever (`client_session.cpp`), and a datagram from one game no longer walks every member's stream
@@ -205,10 +206,12 @@ rush of hundreds a minute asks up to 24 bits (~5 s each) until it calms.
 
 The link thread (relay, worlds, lobby) is the limit: ~65% of one core at 1000 players here. A
 dedicated 4-8 core machine should hold ~1000-1500 players in one process (a guess past what was
-measured). Past that, worlds go to several shadNet processes (each a share of the worlds, its own
-port) with a small directory saying which process runs which world: that is where Redis (or a
-Postgres table) earns its place, not before. Each world's log has one writer, its process, so no
-distributed database is needed for "sync".
+measured). Past that, a region runs several shadNet processes, the shards (each its own port,
+its own share of the worlds), with a small directory on Redis beside them: built, see
+[SCALING.md](SCALING.md) (design, settings, `run_shards.py`, what is left). Players never leave
+and rejoin: a shard sends a game's link on to another (link message Redirect) when a friend's team
+or world is there. Each world's log keeps one writer, its shard, so no distributed database is
+needed for "sync".
 
 Storage: SQLite (accounts) and the world folders (journal + snapshots) are right for one machine.
 Postgres helps only with several processes or machines; moving to it is ~3-4 weeks (thread-per-

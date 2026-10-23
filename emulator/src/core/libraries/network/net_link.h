@@ -56,6 +56,9 @@ enum class Kind : u8 {
     Rpc = 8,
     Cookie = 9, // server -> game: a hello without a valid cookie's answer, with the server's key
     Work = 10,  // server -> game (hosted): no account for the id yet: the work its hello needs
+    // server -> game (a region of shards, docs/SCALING.md): continue on another shard, at its
+    // address with its key; the hellos there carry the ticket. A hello's answer, or on the link.
+    Redirect = 11,
 };
 struct Hello {
     u8 version = LinkVersion;
@@ -68,6 +71,16 @@ struct Hello {
     std::string secret;
     LinkAuth::Cookie cookie{}; // zeros before the server gave one
     std::optional<u64> work;   // hosted: a new account's work nonce, after the secret
+    // A region: the ticket of the shard that sent the game here (opaque), after the work's 8
+    // bytes (0: none done), its size a u16.
+    std::vector<u8> ticket;
+};
+struct Redirect {
+    u32 addr_nbo = 0;
+    u16 port_nbo = 0;
+    LinkAuth::Key key{};
+    std::vector<u8> ticket;
+    std::string text;
 };
 struct Welcome {
     bool accepted = false;
@@ -189,7 +202,7 @@ inline std::optional<Kind> KindOf(std::span<const u8> datagram) {
         return std::nullopt;
     }
     const u8 kind = datagram[8];
-    if (kind < static_cast<u8>(Kind::Hello) || kind > static_cast<u8>(Kind::Work)) {
+    if (kind < static_cast<u8>(Kind::Hello) || kind > static_cast<u8>(Kind::Redirect)) {
         return std::nullopt;
     }
     if (!Detail::Body(datagram, static_cast<Kind>(kind))) {
@@ -205,10 +218,41 @@ inline std::vector<u8> Encode(const Hello& hello) {
     Detail::PutText(out, hello.online_id);
     Detail::PutText(out, hello.build);
     Detail::PutText(out, hello.secret);
-    if (hello.work) {
-        Detail::Put(out, *hello.work);
+    if (hello.work || !hello.ticket.empty()) {
+        Detail::Put(out, hello.work.value_or(0));
+    }
+    if (!hello.ticket.empty()) {
+        Detail::Put(out, static_cast<u16>(hello.ticket.size()));
+        Detail::PutRaw(out, hello.ticket.data(), hello.ticket.size());
     }
     return out;
+}
+
+inline std::vector<u8> Encode(const Redirect& redirect) {
+    auto out = Detail::Start(Kind::Redirect);
+    Detail::PutRaw(out, &redirect.addr_nbo, sizeof(redirect.addr_nbo));
+    Detail::PutRaw(out, &redirect.port_nbo, sizeof(redirect.port_nbo));
+    Detail::PutRaw(out, redirect.key.data(), redirect.key.size());
+    Detail::Put(out, static_cast<u16>(redirect.ticket.size()));
+    Detail::PutRaw(out, redirect.ticket.data(), redirect.ticket.size());
+    Detail::PutText(out, redirect.text);
+    return out;
+}
+
+inline std::optional<Redirect> DecodeRedirect(std::span<const u8> datagram) {
+    auto body = Detail::Body(datagram, Kind::Redirect);
+    Redirect redirect;
+    u16 size = 0;
+    if (!body || !body->GetRaw(&redirect.addr_nbo, sizeof(redirect.addr_nbo)) ||
+        !body->GetRaw(&redirect.port_nbo, sizeof(redirect.port_nbo)) ||
+        !body->GetRaw(redirect.key.data(), redirect.key.size()) || !body->Get(size)) {
+        return std::nullopt;
+    }
+    redirect.ticket.resize(size);
+    if (!body->GetRaw(redirect.ticket.data(), size) || !body->GetText(redirect.text)) {
+        return std::nullopt;
+    }
+    return redirect;
 }
 
 inline std::vector<u8> Encode(const Welcome& welcome) {
@@ -283,6 +327,12 @@ inline std::optional<Hello> DecodeHello(std::span<const u8> datagram) {
     }
     if (u64 work = 0; body->Get(work)) {
         hello.work = work;
+    }
+    if (u16 size = 0; body->Get(size)) {
+        hello.ticket.resize(size);
+        if (!body->GetRaw(hello.ticket.data(), size)) {
+            return std::nullopt;
+        }
     }
     return hello;
 }
@@ -379,10 +429,11 @@ inline std::optional<Member> DecodeMember(std::span<const u8> datagram) {
 
 // The game's hello for its link's state, as it goes: without a cookie it asks for one (nothing
 // secret in it); with one it is the handshake sealed to the server's key, the same datagram until
-// its bytes change (`fresh`: the ephemeral key of a new one).
+// its bytes change (`fresh`: the ephemeral key of a new one). `ticket`: a region's, from the
+// Redirect that sent the game to this shard.
 inline std::vector<u8> HelloDatagram(LinkAuth::Client& auth, std::string online_id,
                                      std::string build, std::string_view secret,
-                                     const LinkAuth::Key& fresh) {
+                                     const LinkAuth::Key& fresh, std::span<const u8> ticket = {}) {
     Hello hello;
     hello.online_id = std::move(online_id);
     hello.build = std::move(build);
@@ -390,6 +441,7 @@ inline std::vector<u8> HelloDatagram(LinkAuth::Client& auth, std::string online_
     if (auth.HasCookie()) {
         hello.cookie = auth.CookieToEcho();
         hello.work = auth.WorkToSend();
+        hello.ticket.assign(ticket.begin(), ticket.end());
     }
     return auth.SealHello(Encode(hello), fresh);
 }

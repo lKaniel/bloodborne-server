@@ -4334,13 +4334,18 @@ class Launcher:
                 bbport_coop.copy_events(PORT_DIR, root)
             # A public server's name is looked up once: the link and the HTTP ports go to its address,
             # as to a host's IP.
-            address = bbport_coop.resolve_host(settings['host_ip'])
-            if not address:
-                raise RuntimeError(_(bbport_coop.UNKNOWN_SERVER_TEXT).format(settings['host_ip']))
-            # The id for this server: its own when it refused the player's one id (coop_watch_line).
-            account, secret = bbport_coop.player_id_for(settings, settings['host_ip'])
-            settings = dict(settings, host_ip=address, server=settings['host_ip'], account=account, password=secret,
-                            link_key=bbport_coop.link_key_for(settings, settings['host_ip']))
+            # A region's directory (https://...) names the shard: the least loaded, or the player's own
+            # (docs/SCALING.md); the shards send the game on by themselves later.
+            if bbport_coop.region_url(settings['host_ip']):
+                settings = bbport_coop.region_settings(settings)
+            else:
+                address = bbport_coop.resolve_host(settings['host_ip'])
+                if not address:
+                    raise RuntimeError(_(bbport_coop.UNKNOWN_SERVER_TEXT).format(settings['host_ip']))
+                # The id for this server: its own when it refused the player's one id (coop_watch_line).
+                account, secret = bbport_coop.player_id_for(settings, settings['host_ip'])
+                settings = dict(settings, host_ip=address, server=settings['host_ip'], account=account,
+                                password=secret, link_key=bbport_coop.link_key_for(settings, settings['host_ip']))
             user = PORT_DIR / 'user'
             user.mkdir(parents=True, exist_ok=True)
             (user / 'host_overrides.custom.json').write_text(bbport_coop.host_overrides(settings['host_ip']),

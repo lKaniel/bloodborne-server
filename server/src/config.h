@@ -49,6 +49,22 @@ struct HostedConfig {
     int retireDays = 0;
 };
 
+// A region of several shards (docs/SCALING.md): this shard's place in it. Each setting from
+// shadnet.cfg, or its environment variable (DIRECTORY_URL, ...), which wins: the deploy's.
+struct ShardConfig {
+    QString directoryUrl; // empty: no region (a lone server, as before)
+    QString name;
+    QString publicAddress;   // "a.b.c.d:port": the games reach this shard's link there
+    QByteArray token;        // the shards' and the directory's shared secret
+    QByteArray regionSecret; // the tickets' key (empty: derived from the token)
+    int capacity = 800;
+    bool draining = false;
+    int heartbeatMs = 2000;
+    bool Enabled() const {
+        return !directoryUrl.isEmpty() && !name.isEmpty();
+    }
+};
+
 class ConfigManager {
 public:
     bool Load(const QString& path = "shadnet.cfg");
@@ -105,6 +121,10 @@ public:
         return m_bloodborneSeamlessCoop;
     }
 
+    ShardConfig GetShard() const {
+        QReadLocker lk(&m_lock);
+        return m_shard;
+    }
     HostedConfig GetHosted() const {
         QReadLocker lk(&m_lock);
         return m_hosted;
@@ -189,6 +209,7 @@ private:
     bool m_bloodborneSeamlessCoop = false;
     BackendConfig m_backend;
     HostedConfig m_hosted;
+    ShardConfig m_shard;
     bool m_httpLinkedOnly = false;
     QString m_statsPort = "31320";
     QString m_statsPath = "stats";

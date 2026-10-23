@@ -115,6 +115,11 @@ set(SOURCES
     # The games' one link to the server (co-op phase 2)
     src/server_link.h
     src/server_link.cpp
+    # A region of several shards (docs/SCALING.md)
+    src/region.h
+    src/region.cpp
+    src/directory_client.h
+    src/directory_client.cpp
     # The parties' worlds (co-op phase 3)
     src/bloodborne_world.h
     src/bloodborne_world.cpp
@@ -250,6 +255,23 @@ if(BUILD_TESTING)
     target_compile_definitions(test_server_link PRIVATE
         BLOODBORNE_SERVER_LINK_CONTRACTS="${CMAKE_CURRENT_SOURCE_DIR}/tests/contracts/server_link_frames.txt")
     add_test(NAME server_link COMMAND test_server_link)
+
+    add_executable(test_region EXCLUDE_FROM_ALL
+        tests/test_region.cpp
+        src/region.cpp
+        src/server_link.cpp
+        ${COOP_SOURCES}
+    )
+    target_include_directories(test_region PRIVATE
+        src
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${PROTO_OUT}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/externals/protobuf/src"
+    )
+    target_link_libraries(test_region PRIVATE Qt6::Core Qt6::Network libprotobuf)
+    target_compile_definitions(test_region PRIVATE
+        BLOODBORNE_SERVER_LINK_CONTRACTS="${CMAKE_CURRENT_SOURCE_DIR}/tests/contracts/server_link_frames.txt")
+    add_test(NAME region COMMAND test_region)
 
     add_executable(test_packet_routes EXCLUDE_FROM_ALL tests/test_packet_routes.cpp)
     target_include_directories(test_packet_routes PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -407,6 +429,11 @@ if(BUILD_TESTING)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tests")
         set_tests_properties(http_gate_routes PROPERTIES
             ENVIRONMENT "SHADNET_EXE=$<TARGET_FILE:shadnet>")
+        # The region's directory (docs/SCALING.md) on fakeredis; skipped without redis-py and
+        # fakeredis[lua].
+        add_test(NAME region_directory
+            COMMAND "${Python3_EXECUTABLE}" -m unittest -v test_directory
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/directory")
     endif()
 endif()
 

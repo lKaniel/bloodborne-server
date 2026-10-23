@@ -18,6 +18,8 @@
 #include "client_session.h"
 #include "coop/rpc_tunnel.h"
 #include "database.h"
+#include "directory_client.h"
+#include "region.h"
 #include "server_link.h"
 
 // shadNet's UDP port: the games' link (server_link.h), which relays their frames and carries
@@ -46,8 +48,10 @@ private:
                                                     const QByteArray& secret, bool paid);
     // Hosted: a password checked on the sign-in thread (its account made if it may be).
     // `counted`: it counted as an account made when it was queued (Admission::Guard::Made).
+    // `elsewhere`: a region's shard that holds the id's account (it was not made here).
     void SignedIn(const QByteArray& online_id, const QByteArray& hash, bool accepted, bool made,
-                  quint32 address, bool counted, const QByteArray& refusal);
+                  quint32 address, bool counted, const QByteArray& refusal,
+                  const QString& elsewhere = {});
     void LoadBanList();
     // Hosted: the operator's commands (admin.h) on the admin socket, and the worlds' retirement.
     void OnAdminConnection();
@@ -58,6 +62,21 @@ private:
     // Hosted (docs/HOSTED_SERVER.md): whether a datagram from `sender` goes on to the hub.
     bool Admit(const QByteArray& datagram, ServerLink::Kind kind, quint32 address,
                const ServerLink::Endpoint& from);
+
+    // A region of shards (docs/SCALING.md): the directory's heartbeat and its view; a signed-in
+    // hello's verdict, sent on when this shard is full or draining (rule (c)); a game the lobby
+    // sends to another shard (rules (a), (b)), its Redirect said again until its game goes.
+    void SetupRegion();
+    void Heartbeat();
+    void TakeView(const QJsonObject& answer);
+    ServerLink::SignInVerdict Placed(const QByteArray& online_id, const QByteArray& hash,
+                                     bool ticketed);
+    ServerLink::Redirect RedirectTo(const Region::Shard& shard, const QByteArray& online_id,
+                                    const QByteArray& hash,
+                                    const std::vector<bbcoop::TeamRequest>& requests,
+                                    const QByteArray& why) const;
+    void SendOn(const BloodborneWorld::Service::Move& move);
+    void ResendRedirects();
 
     // A game's end of its Rpc tunnel here: the connection to shadNet's TCP port it stands for.
     // What a game can make it hold: its messages (the bridge reads 16 KiB at a time) and those
@@ -104,6 +123,7 @@ private:
         QByteArray hash;
         qint64 until_ms = 0;
         QByteArray refusal;
+        QString elsewhere; // a region: the shard that holds the account
     };
     QHash<QByteArray, Refused> m_signInRefused;
     quint32 m_helloAddress = 0;            // the address of the hello the hub is reading
@@ -118,4 +138,21 @@ private:
     QString m_dbPath;
     QString m_keyError; // the link's key did not read (LinkKeyFile): the link does not start
     std::map<QByteArray, std::unique_ptr<RpcEnd>> m_rpc; // by player id
+
+    ShardConfig m_shardConfig;
+    DirectoryClient* m_directory = nullptr; // a region's only
+    Region::View m_region;
+    LinkAuth::HmacKey m_ticketKey;
+    QTimer* m_beatTimer = nullptr;
+    bool m_beating = false;
+    quint64 m_beatsLost = 0;
+    QList<QByteArray> m_started; // since the last heartbeat
+    struct Redirecting {
+        ServerLink::Endpoint to;
+        QByteArray online_id;
+        QByteArray datagram; // plain
+        qint64 until_ms = 0;
+    };
+    QHash<quint64, Redirecting> m_redirecting; // by link
+    QSet<QByteArray> m_ticketsTaken;           // whose requests the world expects already
 };

@@ -167,12 +167,30 @@ public:
         ServerLink::Endpoint to;
         QByteArray body; // a Coop datagram's body
     };
+    // A region of shards (docs/SCALING.md): a linked game this shard sends to another one (its
+    // redirect carries the requests in a ticket), and an invite for another shard's player.
+    struct Move {
+        ServerLink::Endpoint link;
+        QByteArray online_id;
+        std::string shard;
+        std::vector<bbcoop::TeamRequest> requests;
+    };
     struct Result {
         QList<Send> sends;
         QStringList log;
+        std::vector<Move> moves;
+        std::vector<BloodborneCoop::TeamLobby::RemoteInvite> remote_invites;
+        QList<QByteArray> started; // players whose team started here (the directory's homes)
     };
 
     void SetHosted(const HostedRules& rules);
+    // A region: the directory's view for the lobby's lookups, and this shard's name.
+    void SetRegion(BloodborneCoop::TeamLobby::Region region, std::string shard);
+    // Invites from other shards' teams for players here (the heartbeat's inbox).
+    Result TakeInvites(const std::vector<std::pair<std::string, bbcoop::TeamInvite>>& invites,
+                       qint64 now_ms);
+    // A player that came with a ticket: its requests run at its lobby hello (once), as its own.
+    void Expect(const std::string& member, std::vector<bbcoop::TeamRequest> requests);
     // For the members that link from now on (and the worlds).
     void SetLimits(const Limits& limits) {
         this->limits = limits;
@@ -391,8 +409,9 @@ private:
     // after a change, a TeamStart to those the outcome starts, the world list to disk.
     void OnLobbyHello(Member& member, const bbcoop::LobbyHello& hello, qint64 now_ms,
                       Result& result);
+    // `ticket`: a request a region ticket carried (a game's CREATE names no code).
     void OnTeamRequest(Member& member, const bbcoop::TeamRequest& request, qint64 now_ms,
-                       Result& result);
+                       Result& result, bool ticket = false);
     void Settle(const BloodborneCoop::TeamLobby::Outcome& outcome, qint64 now_ms, Result& result);
     // A member out of its team: out of that team's world at once (its share, boards, owners, load
     // and session go, as when its game leaves) and cut off from the team's games.
@@ -438,6 +457,7 @@ private:
     qint64 lobby_sent_ms = 0;
     std::map<std::string, std::string> lobby_sent; // hosted: each player's last state, as sent
     bool lobby_changed = false; // a player's game went: states to send at the next tick
+    std::map<std::string, std::vector<bbcoop::TeamRequest>> expected; // Expect, by member
     // The listed worlds' folders by world id, for those not in PartyFolderName("world:<id>").
     std::map<std::string, QString> world_folders;
 };

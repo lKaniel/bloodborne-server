@@ -28,6 +28,7 @@
 #include "common/logging/log.h"
 #include "common/singleton.h"
 #include "core/libraries/kernel/kernel.h"
+#include "core/libraries/network/http.h"
 #include "core/libraries/network/net_delay.h"
 #include "core/libraries/network/net_firewall.h"
 #include "core/libraries/network/net_link.h"
@@ -471,6 +472,7 @@ public:
             if (key) {
                 link_auth.Pin(*key);
             }
+            link_ticket.clear();
             link_other_keys = 0;
             ++work_generation; // a work under way was for the other id
         }
@@ -915,9 +917,44 @@ private:
                 StartWork(*bits);
             }
             return;
+        case Link::Kind::Redirect:
+            if (const auto redirect = Link::DecodeRedirect(datagram)) {
+                OnRedirect(*redirect);
+            }
+            return;
         default:
             return;
         }
+    }
+
+    // A region of shards (docs/SCALING.md): the server sends this game on to another shard. The
+    // link moves there as after a restart of the server: a new cookie and handshake there with
+    // the same id and secret, the key it says pinned (it came sealed by a server this game
+    // trusts), its ticket in the hellos. The Coop and Rpc streams see a new server and start
+    // over by themselves; the HTTP calls follow the link (http.cpp FollowLinkHost).
+    void OnRedirect(const Link::Redirect& redirect) {
+        if (redirect.addr_nbo == 0 || redirect.port_nbo == 0) {
+            return;
+        }
+        {
+            std::lock_guard lock(link_mutex);
+            link_server = {redirect.addr_nbo, redirect.port_nbo};
+            link_welcomed = false;
+            link_hello_ms.reset();
+            link_refusal.clear();
+            link_auth = {};
+            link_auth.Pin(redirect.key);
+            link_ticket = redirect.ticket;
+            link_other_keys = 0;
+            ++work_generation; // a work under way was for the other shard's cookie
+        }
+        const u32 addr = ntohl(redirect.addr_nbo);
+        const std::string host = fmt::format("{}.{}.{}.{}", addr >> 24, (addr >> 16) & 0xFF,
+                                             (addr >> 8) & 0xFF, addr & 0xFF);
+        Libraries::Http::FollowLinkHost(host);
+        LOG_INFO(Lib_Net, "Server link: sent on to the shard at {}:{} ({}), key {}", host,
+                 ntohs(redirect.port_nbo), redirect.text, LinkAuth::HexOf(redirect.key));
+        TellLinkObserver("redirect", fmt::format("shard={}:{}", host, ntohs(redirect.port_nbo)));
     }
 
     // Hosted: this id has no account yet, and the server asks its first hello for work
@@ -1045,7 +1082,7 @@ private:
                 Link::HelloDue(link_welcomed, link_hello_ms, !link_refusal.empty(), now_ms)) {
                 link_hello_ms = now_ms;
                 datagrams.push_back(Link::HelloDatagram(link_auth, link_online_id, link_build,
-                                                        link_secret, FreshKey()));
+                                                        link_secret, FreshKey(), link_ticket));
             }
             if (const auto ping = ping_meter.Due(now_ms)) {
                 if (auto sealed = Link::Sealed(link_auth, Link::Encode(Link::Kind::Ping, *ping))) {
@@ -1141,9 +1178,10 @@ private:
     bool link_welcomed{false};
     std::string link_refusal;
     std::optional<s64> link_hello_ms;
-    LinkAuth::Client link_auth; // link version 4: the key, the cookie, the handshake, the session
-    u32 link_other_keys{0};     // cookies that said another key than the pinned one
-    std::thread work_thread;    // hosted: a new account's work (StartWork)
+    LinkAuth::Client link_auth;  // link version 4: the key, the cookie, the handshake, the session
+    std::vector<u8> link_ticket; // a region's: from the Redirect that sent the game to this shard
+    u32 link_other_keys{0};      // cookies that said another key than the pinned one
+    std::thread work_thread;     // hosted: a new account's work (StartWork)
     std::atomic<u64> work_generation{0};
     u32 link_untagged{0};
     Link::PingMeter ping_meter;

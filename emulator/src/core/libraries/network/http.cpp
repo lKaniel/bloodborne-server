@@ -326,6 +326,24 @@ std::unordered_map<std::string, HostOverrideTarget> ParseHostOverridesJson(
     return out;
 }
 
+// A region of shards (docs/SCALING.md): once the server link moved to another shard, every
+// overridden host (the shadNet server's HTTP ports, as the launcher writes them) is that shard's
+// address, so its HTTP calls reach the shard its link is on.
+static std::mutex g_link_host_mutex;
+static std::string g_link_host;
+
+void FollowLinkHost(std::string host) {
+    std::lock_guard lock(g_link_host_mutex);
+    g_link_host = std::move(host);
+}
+
+static void FollowedHost(std::string& host) {
+    std::lock_guard lock(g_link_host_mutex);
+    if (!g_link_host.empty()) {
+        host = g_link_host;
+    }
+}
+
 struct HostOverrideState {
     bool loaded = false;
     std::unordered_map<std::string, HostOverrideTarget> entries;
@@ -430,6 +448,7 @@ bool ApplyHostOverride(std::string& scheme, std::string& host, u16& port, bool& 
     const HostOverrideTarget& target = it->second;
 
     host = target.host;
+    FollowedHost(host);
 
     // Scheme handling: explicit scheme in JSON wins; otherwise preserve.
     if (!target.scheme.empty()) {
@@ -827,6 +846,7 @@ bool ApplyBloodborneSeamlessRoute(SendRequestPlan& plan) {
         plan.scheme = target.scheme;
     }
     plan.host = target.host;
+    FollowedHost(plan.host);
     if (target.port != 0) {
         plan.port = target.port;
     } else if (plan.scheme != old_scheme) {

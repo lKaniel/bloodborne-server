@@ -4,6 +4,7 @@
 #pragma once
 
 #include <mutex>
+#include <string>
 #include "common/types.h"
 #include "core/libraries/network/ssl.h"
 
@@ -12,6 +13,10 @@ class SymbolsResolver;
 }
 
 namespace Libraries::Http {
+
+// A region of shards (docs/SCALING.md): the server link moved to the shard at `host` (an IPv4
+// address); the HTTP calls the launcher's host overrides send to the server go there from now on.
+void FollowLinkHost(std::string host);
 
 enum OrbisHttpNBEvents : u32 {
     ORBIS_HTTP_NB_EVENT_IN = 0x00000001U,           // Ready to receive (response data available).

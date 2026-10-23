@@ -243,6 +243,69 @@ class AnswersTests(unittest.TestCase):
         self.assertEqual(coop.resolve_host('localhost', lookup=lambda _n: '203.0.113.7'), '', 'not a valid answer')
         self.assertIn('{}', coop.UNKNOWN_SERVER_TEXT)
 
+    def test_a_region_is_typed_by_its_directory(self):
+        # A region of shards (docs/SCALING.md): Host's IP address may be its directory, over HTTPS.
+        for good in ('https://eu.example.com', 'https://eu.example.com/', 'https://eu.example.com:8443/region'):
+            self.assertTrue(coop.region_url(good), good)
+            self.assertTrue(coop.valid_host(good), good)
+        for bad in ('http://eu.example.com', 'https://', 'https://bad host.com', 'eu.example.com', 'ftp://x.com',
+                    'https://eu.example.com:99999', 'https://eu.example.com?x=1'):
+            self.assertEqual(coop.region_url(bad), '', bad)
+        self.assertEqual(coop.region_url(' https://EU.example.com/ '), 'https://eu.example.com')
+        self.assertEqual(coop.missing(dict(coop.DEFAULTS, game='G', host_ip='https://eu.example.com')), [])
+
+    def test_the_launcher_starts_on_the_players_shard_or_the_least_loaded(self):
+        key = 'ab' * 32
+        shards = [{'name': 'eu-1', 'address': '203.0.113.1:31314', 'key': key, 'players': 700, 'capacity': 800,
+                   'draining': False},
+                  {'name': 'eu-2', 'address': '203.0.113.2:31314', 'key': key, 'players': 100, 'capacity': 800,
+                   'draining': False},
+                  {'name': 'eu-3', 'address': '203.0.113.3:40000', 'key': key, 'players': 0, 'capacity': 800,
+                   'draining': True},
+                  {'name': 'bad', 'address': 'nowhere', 'key': key, 'players': 0, 'capacity': 800}]
+        self.assertEqual(coop.pick_shard(shards)['name'], 'eu-2')
+        self.assertEqual(coop.pick_shard(shards, shards[0])['name'], 'eu-1', 'where the player is, or played')
+        self.assertEqual(coop.pick_shard(shards, shards[2])['name'], 'eu-2', 'not a draining one')
+        self.assertEqual(coop.pick_shard(shards, dict(shards[0], players=800))['name'], 'eu-2', 'not a full one')
+        self.assertIsNone(coop.pick_shard([shards[2], shards[3]]))
+        asked = []
+
+        def fetch(url):
+            asked.append(url)
+            if '/v1/where' in url:
+                if 'player=Ada' in url:
+                    return {'player': 'Ada', 'online': False, 'shard': shards[0]}
+                return None  # 404: nowhere yet
+            return {'shards': shards}
+        self.assertEqual(coop.resolve_region('https://eu.example.com', 'Ada', fetch=fetch),
+                         ('203.0.113.1', 31314, key, 'eu-1'))
+        self.assertEqual(asked, ['https://eu.example.com/v1/where?player=Ada', 'https://eu.example.com/v1/shards'])
+        self.assertEqual(coop.resolve_region('https://eu.example.com', 'Bob', fetch=fetch)[:2], ('203.0.113.2', 31314))
+        with self.assertRaises(RuntimeError):
+            coop.resolve_region('https://eu.example.com', 'Bob', fetch=lambda url: {'shards': [shards[2]]})
+
+        def down(url):
+            raise OSError('no route')
+        with self.assertRaises(RuntimeError):
+            coop.resolve_region('https://eu.example.com', 'Bob', fetch=down)
+        # The game links to the shard's port; the region's key ships with the launcher and wins over the
+        # directory's (the directory can only name an address, never stand in for the region).
+        settings = dict(coop.DEFAULTS, account='Ada', password='a' * 32, host_ip='https://eu.example.com')
+        other = 'cd' * 32
+        made = coop.region_settings(settings, fetch=fetch)
+        self.assertEqual((made['host_ip'], made['link_port'], made['link_key'], made['server']),
+                         ('203.0.113.1', '31314', key, 'https://eu.example.com'))
+        with mock.patch.dict(coop.KNOWN_SERVER_KEYS, {'https://eu.example.com': other}):
+            self.assertEqual(coop.region_settings(settings, fetch=fetch)['link_key'], other)
+        env = coop.game_environment({}, dict(made, link_key=key), Path('.'), Path('.'))
+        self.assertEqual(env['BB_SHADNET_SERVER'], '203.0.113.1:31314')
+        self.assertEqual(env['BB_SHADNET_WEBAPI'], 'http://203.0.113.1:31315')
+        env = coop.game_environment({}, dict(made, link_port='40000'), Path('.'), Path('.'))
+        self.assertEqual(env['BB_SHADNET_SERVER'], '203.0.113.1:40000')
+        env = coop.game_environment({}, dict(coop.DEFAULTS, host_ip='26.1.2.3', account='a', password='b'), Path('.'),
+                                    Path('.'))
+        self.assertEqual(env['BB_SHADNET_SERVER'], f'26.1.2.3:{coop.MATCHING_PORT}', 'a home host as before')
+
     def test_the_old_settings_bat_carries_over(self):
         with tempfile.TemporaryDirectory() as folder:
             bat = Path(folder) / 'settings.bat'

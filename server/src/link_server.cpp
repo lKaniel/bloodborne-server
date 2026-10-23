@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QPromise>
 #include <QRandomGenerator>
@@ -16,6 +17,9 @@
 #include "link_server.h"
 
 namespace {
+
+// A new id while the region's directory does not answer (it cannot be claimed).
+const QByteArray DirectoryDown = "the region's directory does not answer: try again in a minute";
 
 // What a refused hello's game hears when its id got no account for a reason the player can act on.
 QByteArray RefusalOf(DbError why) {
@@ -146,6 +150,10 @@ LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_
                                  .arg(m_link.SignupWork());
     }
     m_dbPath = db_path;
+    if (shared && shared->config)
+        m_shardConfig = shared->config->GetShard();
+    if (m_shardConfig.Enabled())
+        SetupRegion();
     m_linkTimer->start(500);
     // The worlds' clock is the wall clock: their journals keep it across restarts.
     Apply(m_world.Load(QDateTime::currentMSecsSinceEpoch()));
@@ -332,6 +340,8 @@ void LinkServer::OnLinkTick() {
         m_link.SetSignupWork(m_signupWork.Bits(m_clock.elapsed()));
     QElapsedTimer busy;
     busy.start();
+    if (!m_redirecting.isEmpty())
+        ResendRedirects();
     Apply(m_link.Tick(m_clock.elapsed()));
     Busy(busy);
 }
@@ -354,9 +364,28 @@ std::optional<ServerLink::SignInVerdict> LinkServer::SignIn(const QByteArray& on
     if (m_hosted.enabled && m_guard.BannedId(online_id))
         return std::nullopt;
     const QByteArray hash = QCryptographicHash::hash(secret, QCryptographicHash::Sha256);
+    // A region: another shard's ticket for this one stands for the account and its password (the
+    // shard that sent the game checked them); its requests run at the player's lobby hello.
+    bool ticketed = false;
+    if (m_directory && !m_link.HelloTicket().isEmpty()) {
+        const auto ticket = Region::OpenTicket(m_ticketKey, m_link.HelloTicket(), online_id, secret,
+                                               m_shardConfig.name.toStdString(),
+                                               QDateTime::currentMSecsSinceEpoch());
+        ticketed = ticket.has_value();
+        if (ticket && !m_ticketsTaken.contains(m_link.HelloTicket())) {
+            if (m_ticketsTaken.size() > 100'000)
+                m_ticketsTaken.clear(); // each holds 2 minutes
+            m_ticketsTaken.insert(m_link.HelloTicket());
+            m_world.Expect(online_id.toHex().toStdString(),
+                           {ticket->requests().begin(), ticket->requests().end()});
+        }
+    }
     const auto known = m_signedIn.constFind(online_id);
-    if (known != m_signedIn.constEnd())
-        return ServerLink::SignInVerdict{*known == hash, {}};
+    if (known != m_signedIn.constEnd()) {
+        if (*known != hash)
+            return ServerLink::SignInVerdict{false, {}};
+        return Placed(online_id, hash, ticketed);
+    }
     bool make = !m_shared->config || m_shared->config->IsMakingAccountsAtSignIn();
     if (!m_hosted.enabled) {
         DbError why = DbError::None;
@@ -365,61 +394,99 @@ std::optional<ServerLink::SignInVerdict> LinkServer::SignIn(const QByteArray& on
         if (!user)
             return ServerLink::SignInVerdict{false, RefusalOf(why)};
         m_signedIn.insert(online_id, hash);
-        return ServerLink::SignInVerdict{true, {}};
+        return Placed(online_id, hash, ticketed);
     }
     // Hosted: on the sign-in thread; the game's next hello hears the verdict.
     const qint64 now = m_clock.elapsed();
     if (const auto refused = m_signInRefused.constFind(online_id);
-        refused != m_signInRefused.constEnd() && refused->hash == hash && refused->until_ms > now)
+        refused != m_signInRefused.constEnd() && refused->hash == hash && refused->until_ms > now) {
+        // A region: the account is another shard's: the game goes there (it checks the secret).
+        if (const Region::Shard* home = refused->elsewhere.isEmpty()
+                                            ? nullptr
+                                            : m_region.Find(refused->elsewhere.toStdString())) {
+            ServerLink::SignInVerdict verdict{true, {}};
+            verdict.redirect = ServerLink::Redirect{
+                home->address, home->key, {}, "this id's account is on another shard"};
+            return verdict;
+        }
         return ServerLink::SignInVerdict{false, refused->refusal};
+    }
     if (m_signInPending.contains(online_id))
         return std::nullopt;
     // A hello without the work (hub.SetSignupWork) makes no account: one for an id that has one
-    // goes on, the others hear how much work, before any password is hashed.
-    if (!paid && make) {
+    // goes on, the others hear how much work, before any password is hashed. A ticket's account is
+    // made here as it is elsewhere.
+    if (!paid && make && !ticketed) {
         if (!m_db.GetUserId(QString::fromUtf8(online_id)))
             return ServerLink::SignInVerdict{false, {}, true};
         make = false;
     }
     // A flood of new ids from many addresses: no more checks queued than the pool clears in a few
     // seconds; the others' games say hello again in a second.
-    if (m_signInPending.size() >= 512)
+    if (m_signInPending.size() >= 512 && !ticketed)
         return std::nullopt;
     const quint32 address = m_helloAddress;
-    make = make && m_guard.MayMakeAccount(address, now);
-    if (make)
+    const bool counted = make && !ticketed && m_guard.MayMakeAccount(address, now);
+    make = ticketed ? make : counted;
+    if (counted)
         m_guard.Made(address, now); // counted now (checks run at once), given back if none is
     m_signInPending.insert(online_id);
     const QString db_path = m_dbPath;
-    m_signInPool.start([this, online_id, secret, hash, make, address, db_path] {
-        // Each sign-in thread's own connection to the accounts.
-        static thread_local std::unique_ptr<Database> db;
-        if (!db) {
-            db = std::make_unique<Database>(
-                QStringLiteral("link_sign_in_%1")
-                    .arg(reinterpret_cast<quintptr>(QThread::currentThreadId())));
-            if (!db->Open(db_path))
-                qCritical() << "Link: the sign-in thread's accounts did not open";
-        }
-        const QString id = QString::fromUtf8(online_id);
-        const bool existed = db->GetUserId(id).has_value();
-        DbError why = DbError::None;
-        const bool accepted =
-            db->SignIn(id, QString::fromUtf8(secret), {}, false, make, &why).has_value();
-        const bool made = accepted && !existed;
-        const QByteArray refusal = accepted ? QByteArray{} : RefusalOf(why);
-        QMetaObject::invokeMethod(
-            this,
-            [this, online_id, hash, accepted, made, address, make, refusal] {
-                SignedIn(online_id, hash, accepted, made, address, make, refusal);
-            },
-            Qt::QueuedConnection);
-    });
+    // A region: a new id (no ticket) is claimed in the directory before its account is made.
+    const bool claim = m_directory && !ticketed;
+    const QString directory = m_shardConfig.directoryUrl;
+    const QByteArray token = m_shardConfig.token;
+    const QString shard = m_shardConfig.name;
+    // A game another shard sent here goes before the new players queued (a join rush): its team
+    // is waiting for it.
+    m_signInPool.start(
+        [this, online_id, secret, hash, make, address, counted, db_path, claim, directory, token,
+         shard] {
+            // Each sign-in thread's own connection to the accounts.
+            static thread_local std::unique_ptr<Database> db;
+            if (!db) {
+                db = std::make_unique<Database>(
+                    QStringLiteral("link_sign_in_%1")
+                        .arg(reinterpret_cast<quintptr>(QThread::currentThreadId())));
+                if (!db->Open(db_path))
+                    qCritical() << "Link: the sign-in thread's accounts did not open";
+            }
+            const QString id = QString::fromUtf8(online_id);
+            const bool existed = db->GetUserId(id).has_value();
+            QString elsewhere;
+            QByteArray refusal;
+            bool may_make = make;
+            if (!existed && make && claim) {
+                const auto holder = DirectoryClient::ClaimAccount(directory, token, id, shard);
+                if (!holder) {
+                    may_make = false;
+                    refusal = DirectoryDown;
+                } else if (*holder != shard) {
+                    may_make = false;
+                    elsewhere = *holder;
+                }
+            }
+            DbError why = DbError::None;
+            const bool accepted =
+                (existed || may_make) &&
+                db->SignIn(id, QString::fromUtf8(secret), {}, false, may_make, &why).has_value();
+            const bool made = accepted && !existed;
+            if (!accepted && refusal.isEmpty())
+                refusal = RefusalOf(why);
+            QMetaObject::invokeMethod(
+                this,
+                [this, online_id, hash, accepted, made, address, counted, refusal, elsewhere] {
+                    SignedIn(online_id, hash, accepted, made, address, counted, refusal, elsewhere);
+                },
+                Qt::QueuedConnection);
+        },
+        ticketed ? 1 : 0);
     return std::nullopt;
 }
 
 void LinkServer::SignedIn(const QByteArray& online_id, const QByteArray& hash, bool accepted,
-                          bool made, quint32 address, bool counted, const QByteArray& refusal) {
+                          bool made, quint32 address, bool counted, const QByteArray& refusal,
+                          const QString& elsewhere) {
     m_signInPending.remove(online_id);
     const qint64 now = m_clock.elapsed();
     if (accepted) {
@@ -437,8 +504,175 @@ void LinkServer::SignedIn(const QByteArray& online_id, const QByteArray& hash, b
         // A wrong password (or no account allowed) is not hashed again for 30 s.
         if (m_signInRefused.size() > 100'000)
             m_signInRefused.clear();
-        m_signInRefused.insert(online_id, Refused{hash, now + 30'000, refusal});
+        // The directory not answering is held 5 s only: the game's next hellos try again.
+        const qint64 hold = refusal == DirectoryDown ? 5'000 : 30'000;
+        m_signInRefused.insert(online_id, Refused{hash, now + hold, refusal, elsewhere});
     }
+}
+
+void LinkServer::SetupRegion() {
+    if (!m_hosted.enabled) {
+        qCritical() << "Region: a shard needs Hosted=true; this server runs alone";
+        return;
+    }
+    const auto address = Region::EndpointOf(m_shardConfig.publicAddress);
+    if (!address || m_shardConfig.token.isEmpty()) {
+        qCritical().noquote() << "Region: ShardPublicAddress (a.b.c.d:port) and DirectoryToken are"
+                                 " needed; this server runs alone";
+        return;
+    }
+    m_ticketKey = Region::TicketKey(m_shardConfig.regionSecret, m_shardConfig.token);
+    m_directory = new DirectoryClient(m_shardConfig.directoryUrl, m_shardConfig.token, this);
+    BloodborneCoop::TeamLobby::Region lookups;
+    lookups.shard_of_code = [this](const std::string& code) {
+        const auto found = m_region.codes.find(code);
+        return found == m_region.codes.end() ? std::string{} : found->second;
+    };
+    lookups.named = [this](const std::string& folded) {
+        std::vector<BloodborneCoop::TeamLobby::Elsewhere> found;
+        for (const Region::Player& player : m_region.players) {
+            if (BloodborneCoop::TeamLobby::Fold(player.name) == folded)
+                found.push_back({player.shard, player.member});
+        }
+        return found;
+    };
+    lookups.world_holder = [this](const std::string& world) {
+        const auto found = m_region.held.find(world);
+        return found == m_region.held.end() ? std::string{} : found->second;
+    };
+    m_world.SetRegion(std::move(lookups), m_shardConfig.name.toStdString());
+    m_beatTimer = new QTimer(this);
+    connect(m_beatTimer, &QTimer::timeout, this, &LinkServer::Heartbeat);
+    m_beatTimer->start(m_shardConfig.heartbeatMs);
+    Heartbeat();
+    qInfo().noquote() << QStringLiteral("Region: shard %1 at %2 (capacity %3%4), directory %5")
+                             .arg(m_shardConfig.name, m_shardConfig.publicAddress)
+                             .arg(m_shardConfig.capacity)
+                             .arg(m_shardConfig.draining ? QStringLiteral(", draining") : QString{})
+                             .arg(m_shardConfig.directoryUrl);
+}
+
+void LinkServer::Heartbeat() {
+    if (m_beating)
+        return; // the last one is still under way
+    m_beating = true;
+    QJsonArray players;
+    for (const auto& [member, name] : m_world.Lobby().Players()) {
+        const QByteArray id = QByteArray::fromHex(QByteArray::fromStdString(member));
+        players.append(QJsonObject{{"id", QString::fromUtf8(id)},
+                                   {"member", QString::fromStdString(member)},
+                                   {"name", QString::fromStdString(name)}});
+    }
+    QJsonArray codes;
+    for (const std::string& code : m_world.Lobby().Codes())
+        codes.append(QString::fromStdString(code));
+    QJsonArray worlds;
+    for (const bbcoop::TeamWorldInfo& world : m_world.Lobby().Worlds())
+        worlds.append(QString::fromStdString(world.id()));
+    QJsonArray started;
+    for (const QByteArray& id : std::exchange(m_started, {}))
+        started.append(QString::fromUtf8(id));
+    const QJsonObject beat{
+        {"shard", m_shardConfig.name},
+        {"address", m_shardConfig.publicAddress},
+        {"key", QString::fromStdString(LinkAuth::HexOf(m_link.PublicKey()))},
+        {"capacity", m_shardConfig.capacity},
+        {"draining", m_shardConfig.draining},
+        {"count", m_link.Members()},
+        {"load", m_linkLoad},
+        {"players", players},
+        {"codes", codes},
+        {"worlds", worlds},
+        {"started", started},
+    };
+    m_directory->Post("/v1/heartbeat", beat, [this](std::optional<QJsonObject> answer) {
+        m_beating = false;
+        if (answer) {
+            TakeView(*answer);
+        } else if (m_beatsLost++ % 30 == 0) {
+            qWarning() << "Region: the directory did not answer a heartbeat (" << m_beatsLost
+                       << "so far); the last view stays";
+        }
+    });
+}
+
+void LinkServer::TakeView(const QJsonObject& answer) {
+    QElapsedTimer busy;
+    busy.start();
+    std::vector<Region::Invite> inbox;
+    m_region = Region::ViewOf(answer, &inbox);
+    if (!inbox.empty()) {
+        std::vector<std::pair<std::string, bbcoop::TeamInvite>> invites;
+        for (Region::Invite& invite : inbox)
+            invites.emplace_back(std::move(invite.member), std::move(invite.invite));
+        Apply(m_world.TakeInvites(invites, QDateTime::currentMSecsSinceEpoch()));
+    }
+    Busy(busy);
+}
+
+ServerLink::SignInVerdict LinkServer::Placed(const QByteArray& online_id, const QByteArray& hash,
+                                             bool ticketed) {
+    ServerLink::SignInVerdict verdict{true, {}};
+    // Rule (c): a full or draining shard sends a new arrival on (never a game linked here already,
+    // nor one another shard just sent here).
+    if (!m_directory || ticketed || m_link.HasLink(online_id))
+        return verdict;
+    const Region::Shard* to =
+        Region::PlaceHello(m_region, m_shardConfig.name.toStdString(), m_link.Members(),
+                           m_shardConfig.capacity, m_shardConfig.draining);
+    if (to)
+        verdict.redirect =
+            RedirectTo(*to, online_id, hash, {},
+                       m_shardConfig.draining ? "this shard is draining" : "this shard is full");
+    return verdict;
+}
+
+ServerLink::Redirect LinkServer::RedirectTo(const Region::Shard& shard, const QByteArray& online_id,
+                                            const QByteArray& hash,
+                                            const std::vector<bbcoop::TeamRequest>& requests,
+                                            const QByteArray& why) const {
+    const QByteArray ticket = Region::SignTicket(
+        m_ticketKey, Region::TicketFor(online_id, hash, shard.name,
+                                       QDateTime::currentMSecsSinceEpoch(), requests));
+    return ServerLink::Redirect{shard.address, shard.key, ticket, why};
+}
+
+void LinkServer::SendOn(const BloodborneWorld::Service::Move& move) {
+    const Region::Shard* shard = m_region.Find(move.shard);
+    const QByteArray hash = m_signedIn.value(move.online_id);
+    if (!shard || hash.isEmpty()) {
+        qWarning().noquote() << QStringLiteral("Region: %1 stays: shard %2 is not in the view")
+                                    .arg(QString::fromUtf8(move.online_id),
+                                         QString::fromStdString(move.shard));
+        return;
+    }
+    const QByteArray plain = ServerLink::Encode(
+        RedirectTo(*shard, move.online_id, hash, move.requests, "to your team's shard"));
+    if (const auto sealed = m_link.Seal(move.link, plain))
+        m_socket->writeDatagram(*sealed, QHostAddress(move.link.ipv4), move.link.port);
+    // Said again until the game goes (a datagram may be lost); then its link here is forgotten.
+    m_redirecting.insert(move.link.Key(),
+                         Redirecting{move.link, move.online_id, plain, m_clock.elapsed() + 3000});
+    qInfo().noquote() << QStringLiteral("Region: %1 sent on to shard %2 (%3)")
+                             .arg(QString::fromUtf8(move.online_id),
+                                  QString::fromStdString(move.shard), shard->address.Text());
+}
+
+void LinkServer::ResendRedirects() {
+    const qint64 now = m_clock.elapsed();
+    QList<Redirecting> over;
+    for (auto it = m_redirecting.begin(); it != m_redirecting.end();) {
+        if (now >= it->until_ms) {
+            over.append(*it);
+            it = m_redirecting.erase(it);
+            continue;
+        }
+        if (const auto sealed = m_link.Seal(it->to, it->datagram))
+            m_socket->writeDatagram(*sealed, QHostAddress(it->to.ipv4), it->to.port);
+        ++it;
+    }
+    for (const Redirecting& gone : over)
+        Apply(m_link.Kick(gone.online_id, 0, now));
 }
 
 void LinkServer::OnRpc(const ServerLink::Endpoint& from, const QByteArray& online_id,
@@ -588,6 +822,7 @@ void LinkServer::Apply(const ServerLink::Hub::Result& result) {
     // Phase 7: a linked game's address for the rooms and signaling is its virtual one, known from
     // its hello.
     for (const auto& linked : result.linked) {
+        m_redirecting.remove(linked.endpoint.Key()); // back here: it stays
         if (!m_linkAddress.contains(linked.endpoint.Key())) {
             m_linkAddress.insert(linked.endpoint.Key(), linked.endpoint.ipv4);
             ++m_addressLinks[linked.endpoint.ipv4];
@@ -621,4 +856,18 @@ void LinkServer::Apply(const BloodborneWorld::Service::Result& result) {
             m_socket->writeDatagram(*sealed, QHostAddress(send.to.ipv4), send.to.port);
     for (const auto& line : result.log)
         qInfo().noquote() << line;
+    for (const auto& move : result.moves)
+        SendOn(move);
+    for (const auto& invite : result.remote_invites) {
+        if (m_directory)
+            m_directory->Post(
+                "/v1/invite",
+                QJsonObject{{"shard", QString::fromStdString(invite.shard)},
+                            {"member", QString::fromStdString(invite.member)},
+                            {"team", QString::fromStdString(invite.invite.team())},
+                            {"from", QString::fromStdString(invite.invite.from())},
+                            {"from_name", QString::fromStdString(invite.invite.from_name())}});
+    }
+    if (m_directory)
+        m_started.append(result.started);
 }

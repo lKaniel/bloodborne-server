@@ -73,7 +73,7 @@ const std::vector<u8> GameFrame{0x75, 0x30, 0x75, 0x31, 0x07, 0x00, 0x00,
 
 TEST(NetLink, EncodesTheContractsDatagrams) {
     const auto datagrams = ContractDatagrams();
-    ASSERT_EQ(datagrams.size(), 17u) << BLOODBORNE_SERVER_LINK_CONTRACTS;
+    ASSERT_EQ(datagrams.size(), 19u) << BLOODBORNE_SERVER_LINK_CONTRACTS;
     Hello hello{
         .online_id = "Kaniel", .build = "92829ac4 events 1f protocol 9", .secret = "s3cr3t"};
     hello.cookie.fill(0x11);
@@ -155,6 +155,39 @@ TEST(NetLink, DecodesTheContractsDatagrams) {
     EXPECT_EQ(DecodeMember(datagrams.at("member.gone"))->state, MemberState::Gone);
 }
 
+// A region of shards (docs/SCALING.md): the Redirect, and the hello that carries its ticket.
+TEST(NetLink, ReadsTheRedirectAndSaysItsTicket) {
+    const auto datagrams = ContractDatagrams();
+    const auto redirect = DecodeRedirect(datagrams.at("redirect"));
+    ASSERT_TRUE(redirect.has_value());
+    EXPECT_EQ(KindOf(datagrams.at("redirect")), Kind::Redirect);
+    // 10.0.0.2, port 31316, as sockaddr_in holds them.
+    u32 address = 0;
+    u16 port = 0;
+    std::memcpy(&address, "\x0a\x00\x00\x02", 4);
+    std::memcpy(&port, "\x7a\x54", 2);
+    EXPECT_EQ(redirect->addr_nbo, address);
+    EXPECT_EQ(redirect->port_nbo, port);
+    EXPECT_EQ(LinkAuth::HexOf(redirect->key),
+              "ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b");
+    EXPECT_EQ(redirect->ticket, (std::vector<u8>{1, 2, 3, 4, 5}));
+    EXPECT_EQ(redirect->text, "full");
+    EXPECT_EQ(Encode(*redirect), datagrams.at("redirect"));
+
+    Hello hello;
+    hello.online_id = "Kaniel";
+    hello.build = "92829ac4 events 1f protocol 9";
+    hello.secret = "s3cr3t";
+    hello.cookie.fill(0x11);
+    hello.ticket = {'T', 'I', 'C', 'K', 'E', 'T'};
+    EXPECT_EQ(Encode(hello), datagrams.at("hello.ticket"));
+    const auto said = DecodeHello(datagrams.at("hello.ticket"));
+    ASSERT_TRUE(said.has_value());
+    EXPECT_EQ(said->ticket, hello.ticket);
+    EXPECT_EQ(said->work, 0u);
+    EXPECT_TRUE(DecodeHello(datagrams.at("hello"))->ticket.empty());
+}
+
 TEST(NetLink, EveryCutDatagramIsRefused) {
     for (const auto& [name, bytes] : ContractDatagrams()) {
         if (name == "server.key" || name.ends_with(".sealed")) {
@@ -165,12 +198,14 @@ TEST(NetLink, EveryCutDatagramIsRefused) {
             if (name == "data" && size >= 8 + 1 + 6) {
                 continue; // a shorter frame is still a frame
             }
-            if (name == "hello.work" && size >= ContractDatagrams().at("hello").size()) {
-                continue; // without the work
+            if ((name == "hello.work" || name == "hello.ticket") &&
+                size >= ContractDatagrams().at("hello").size()) {
+                continue; // without the work, or the ticket
             }
             EXPECT_FALSE(DecodeHello(cut) || DecodeWelcome(cut) || DecodeData(cut) ||
                          DecodeCookie(cut) || DecodePing(Kind::Ping, cut) ||
-                         DecodePing(Kind::Pong, cut) || DecodeMember(cut) || DecodeWork(cut))
+                         DecodePing(Kind::Pong, cut) || DecodeMember(cut) || DecodeWork(cut) ||
+                         DecodeRedirect(cut))
                 << name << " cut to " << size;
         }
     }

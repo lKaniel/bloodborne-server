@@ -184,7 +184,7 @@ std::optional<Kind> KindOf(const QByteArray& datagram) {
         return std::nullopt;
     }
     const quint8 kind = static_cast<quint8>(datagram[8]);
-    if (kind < static_cast<quint8>(Kind::Hello) || kind > static_cast<quint8>(Kind::Work) ||
+    if (kind < static_cast<quint8>(Kind::Hello) || kind > static_cast<quint8>(Kind::Redirect) ||
         !Body(datagram, static_cast<Kind>(kind))) {
         return std::nullopt;
     }
@@ -198,8 +198,12 @@ QByteArray Encode(const Hello& hello) {
     PutText(out, hello.online_id);
     PutText(out, hello.build);
     PutText(out, hello.secret);
-    if (hello.work) {
-        Put(out, *hello.work);
+    if (hello.work || !hello.ticket.isEmpty()) {
+        Put(out, hello.work.value_or(0));
+    }
+    if (!hello.ticket.isEmpty()) {
+        Put(out, static_cast<quint16>(hello.ticket.size()));
+        out.append(hello.ticket);
     }
     return out;
 }
@@ -314,7 +318,50 @@ std::optional<Hello> DecodeHello(const QByteArray& datagram) {
     if (quint64 work = 0; rest.Get(work)) {
         hello.work = work;
     }
+    if (quint16 size = 0; rest.Get(size)) {
+        hello.ticket = rest.Rest().left(size);
+        if (hello.ticket.size() != size) {
+            return std::nullopt;
+        }
+    }
     return hello;
+}
+
+QByteArray Encode(const Redirect& redirect) {
+    QByteArray out = Start(Kind::Redirect);
+    PutEndpoint(out, redirect.to);
+    out.append(ToQt(redirect.key));
+    Put(out, static_cast<quint16>(redirect.ticket.size()));
+    out.append(redirect.ticket);
+    PutText(out, redirect.text);
+    return out;
+}
+
+std::optional<Redirect> DecodeRedirect(const QByteArray& datagram) {
+    auto body = Body(datagram, Kind::Redirect);
+    Redirect redirect;
+    quint16 size = 0;
+    if (!body || !body->GetEndpoint(redirect.to)) {
+        return std::nullopt;
+    }
+    const QByteArray key = body->Rest().left(LinkAuth::KeyBytes);
+    if (key.size() != static_cast<qsizetype>(LinkAuth::KeyBytes)) {
+        return std::nullopt;
+    }
+    redirect.key = Array<LinkAuth::KeyBytes>(key);
+    Reader rest{datagram, HeaderSize + 6 + static_cast<int>(LinkAuth::KeyBytes)};
+    if (!rest.Get(size)) {
+        return std::nullopt;
+    }
+    redirect.ticket = rest.Rest().left(size);
+    if (redirect.ticket.size() != size) {
+        return std::nullopt;
+    }
+    Reader text{datagram, HeaderSize + 6 + static_cast<int>(LinkAuth::KeyBytes) + 2 + size};
+    if (!text.GetText(redirect.text)) {
+        return std::nullopt;
+    }
+    return redirect;
 }
 
 std::optional<Welcome> DecodeWelcome(const QByteArray& datagram) {
@@ -490,6 +537,11 @@ QByteArray Hub::Build() const {
     return {};
 }
 
+bool Hub::HasLink(const QByteArray& online_id) const {
+    const auto holder = by_virtual.find(VirtualEndpointOf(online_id).Key());
+    return holder != by_virtual.end() && members.value(*holder).online_id == online_id;
+}
+
 std::optional<Endpoint> Hub::VirtualOf(const Endpoint& real) const {
     const auto found = members.find(real.Key());
     return found == members.end() ? std::nullopt : std::optional{found->virtual_endpoint};
@@ -651,10 +703,21 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
             (hello->work &&
              LinkAuth::WorkDone(Array<LinkAuth::CookieBytes>(hello->cookie),
                                 hello->online_id.toStdString(), *hello->work, signup_work));
+        hello_ticket = hello->ticket;
         const std::optional<SignInVerdict> signed_in =
             sign_in(hello->online_id, hello->secret, paid);
+        hello_ticket.clear();
         if (!signed_in) {
             return; // still checking: the next hello hears
+        }
+        if (signed_in->redirect) {
+            result.sends.append(
+                {from, ToQt(AnswerOf(*responder, Encode(*signed_in->redirect)).datagram), true});
+            result.log.append(QStringLiteral("server link: %1 (%2) sent on to %3: %4")
+                                  .arg(QString::fromUtf8(hello->online_id), from.Text(),
+                                       signed_in->redirect->to.Text(),
+                                       QString::fromUtf8(signed_in->redirect->text)));
+            return;
         }
         if (signed_in->work && !paid) {
             ++work_asked;
