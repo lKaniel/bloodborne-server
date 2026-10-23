@@ -86,6 +86,10 @@ MORE_KEYS = [
     'Each from 1 to 10; 1 is the normal game.',
     "Running, but the game's port 20443 doesn't answer: press Stop server, then Start server",
     'Co-op is tested on the EU edition (CUSA03173) only: {} should work, but it was not tested properly. If something goes wrong, send your user\\log folder.',
+    "Can't find the server {}: check its address and your internet connection.",
+    'Playing on a public server? Type its address here, a name like play.example.com or an IP.',
+    "The server already has a player at your id's address: making a new id and starting again…",
+    "The server refused {} new ids (address taken). Try again later, or tell the server's operator.",
 ]
 
 MORE = {
@@ -173,6 +177,10 @@ MORE = {
         'Каждое от 1 до 10; 1 — обычная игра.',
         'Работает, но онлайн-службы игры (порт 20443) не отвечают: нажмите «Остановить сервер», затем «Запустить сервер»',
         'Кооператив проверен только на европейском издании (CUSA03173): {} должно работать, но толком не проверено. Если что-то пойдёт не так, пришлите папку user\\log.',
+        'Сервер {} не найден: проверьте адрес и подключение к интернету.',
+        'Играете на публичном сервере? Введите здесь его адрес: имя вроде play.example.com или IP.',
+        'На сервере уже есть игрок с адресом вашего ID: создаём новый ID и запускаем заново…',
+        'Сервер отклонил {} новых ID (адрес занят). Попробуйте позже или сообщите владельцу сервера.',
     ],
     'ar': [
         'اللعب التعاوني عبر الإنترنت',
@@ -258,6 +266,10 @@ MORE = {
         'كل قيمة من 1 إلى 10؛ القيمة 1 هي اللعبة العادية.',
         'يعمل، لكن خدمات اللعبة عبر الإنترنت (المنفذ 20443) لا تستجيب: اضغط Stop server ثم Start server',
         'تم اختبار اللعب التعاوني على النسخة الأوروبية (CUSA03173) فقط: يُفترض أن تعمل {} لكنها لم تُختبر جيدًا. إذا حدثت مشكلة، أرسل مجلد user\\log.',
+        'تعذّر العثور على الخادم {}: تحقّق من عنوانه ومن اتصالك بالإنترنت.',
+        'تلعب على خادم عام؟ اكتب عنوانه هنا، اسمًا مثل play.example.com أو عنوان IP.',
+        'يوجد على الخادم لاعب بعنوان معرّفك نفسه: يجري إنشاء معرّف جديد وبدء اللعبة من جديد…',
+        'رفض الخادم {} معرّفات جديدة (العنوان مستخدم). حاول لاحقًا أو أبلغ مشغّل الخادم.',
     ],
     'es': [
         'Cooperativo en línea',
@@ -343,6 +355,10 @@ MORE = {
         'Cada uno de 1 a 10; 1 es el juego normal.',
         'En marcha, pero los servicios en línea del juego (puerto 20443) no responden: pulsa Stop server y luego Start server',
         'El cooperativo solo se ha probado con la edición europea (CUSA03173): {} debería funcionar, pero no se ha probado bien. Si algo falla, envía tu carpeta user\\log.',
+        'No se encuentra el servidor {}: comprueba su dirección y tu conexión a internet.',
+        '¿Juegas en un servidor público? Escribe aquí su dirección: un nombre como play.example.com o una IP.',
+        'El servidor ya tiene un jugador en la dirección de tu ID: creando un ID nuevo y empezando de nuevo…',
+        'El servidor rechazó {} ID nuevos (dirección ocupada). Inténtalo más tarde o avisa al operador del servidor.',
     ],
     'pt': [
         'Cooperativo online',
@@ -428,6 +444,10 @@ MORE = {
         'Cada um de 1 a 10; 1 é o jogo normal.',
         'Em execução, mas os serviços online do jogo (porta 20443) não respondem: clique em Stop server e depois em Start server',
         'O co-op só foi testado na edição europeia (CUSA03173): {} deve funcionar, mas não foi bem testado. Se algo der errado, envie sua pasta user\\log.',
+        'Não foi possível encontrar o servidor {}: verifique o endereço e sua conexão com a internet.',
+        'Jogando em um servidor público? Digite o endereço dele aqui: um nome como play.example.com ou um IP.',
+        'O servidor já tem um jogador no endereço do seu ID: criando um ID novo e iniciando de novo…',
+        'O servidor recusou {} IDs novos (endereço em uso). Tente mais tarde ou avise o operador do servidor.',
     ],
     'fr': [
         'Coopération en ligne',
@@ -513,6 +533,10 @@ MORE = {
         'Chacun de 1 à 10 ; 1 correspond au jeu normal.',
         'En marche, mais les services en ligne du jeu (port 20443) ne répondent pas : appuyez sur Stop server, puis sur Start server',
         "La coop n'est testée que sur l'édition européenne (CUSA03173) : {} devrait fonctionner, mais n'a pas été bien testée. En cas de problème, envoyez votre dossier user\\log.",
+        'Serveur {} introuvable : vérifiez son adresse et votre connexion internet.',
+        'Vous jouez sur un serveur public ? Saisissez son adresse ici : un nom comme play.example.com ou une IP.',
+        "Le serveur a déjà un joueur à l'adresse de votre ID : création d'un nouvel ID et nouveau démarrage…",
+        "Le serveur a refusé {} nouveaux ID (adresse prise). Réessayez plus tard ou prévenez l'opérateur du serveur.",
     ],
     'de': [
         'Online-Koop',
@@ -598,6 +622,10 @@ MORE = {
         'Jeweils 1 bis 10; 1 ist das normale Spiel.',
         'Läuft, aber die Online-Dienste des Spiels (Port 20443) antworten nicht: Stop server drücken, dann Start server',
         'Koop ist nur mit der EU-Edition (CUSA03173) getestet: {} sollte funktionieren, wurde aber nicht richtig getestet. Wenn etwas schiefgeht, schick deinen Ordner user\\log.',
+        'Server {} nicht gefunden: Prüfe seine Adresse und deine Internetverbindung.',
+        'Du spielst auf einem öffentlichen Server? Gib hier seine Adresse ein: einen Namen wie play.example.com oder eine IP.',
+        'Auf dem Server gibt es schon einen Spieler mit der Adresse deiner ID: Eine neue ID wird erstellt und das Spiel neu gestartet…',
+        'Der Server hat {} neue IDs abgelehnt (Adresse vergeben). Versuche es später erneut oder sag dem Betreiber des Servers Bescheid.',
     ],
     'it': [
         'Cooperativa online',
@@ -683,6 +711,10 @@ MORE = {
         'Ognuno da 1 a 10; 1 è il gioco normale.',
         'In esecuzione, ma i servizi online del gioco (porta 20443) non rispondono: premi Stop server, poi Start server',
         "La co-op è testata solo sull'edizione europea (CUSA03173): {} dovrebbe funzionare, ma non è stata testata bene. Se qualcosa va storto, invia la cartella user\\log.",
+        'Server {} non trovato: controlla il suo indirizzo e la connessione a internet.',
+        'Giochi su un server pubblico? Scrivi qui il suo indirizzo: un nome come play.example.com o un IP.',
+        "Il server ha già un giocatore all'indirizzo del tuo ID: creazione di un nuovo ID e nuovo avvio…",
+        'Il server ha rifiutato {} nuovi ID (indirizzo occupato). Riprova più tardi o avvisa il gestore del server.',
     ],
     'pl': [
         'Kooperacja online',
@@ -768,6 +800,10 @@ MORE = {
         'Każda od 1 do 10; 1 to zwykła gra.',
         'Działa, ale usługi online gry (port 20443) nie odpowiadają: naciśnij Stop server, a potem Start server',
         'Co-op był testowany tylko na wydaniu europejskim (CUSA03173): {} powinno działać, ale nie zostało dobrze przetestowane. Jeśli coś pójdzie nie tak, wyślij folder user\\log.',
+        'Nie znaleziono serwera {}: sprawdź jego adres i połączenie z internetem.',
+        'Grasz na serwerze publicznym? Wpisz tu jego adres: nazwę, np. play.example.com, albo IP.',
+        'Na serwerze jest już gracz z adresem twojego ID: tworzę nowe ID i uruchamiam ponownie…',
+        'Serwer odrzucił {} nowe ID (adres zajęty). Spróbuj później albo powiadom operatora serwera.',
     ],
     'tr': [
         'Çevrim içi ortak oyun',
@@ -853,6 +889,10 @@ MORE = {
         'Her biri 1 ile 10 arası; 1 normal oyundur.',
         'Çalışıyor, ancak oyunun çevrim içi hizmetleri (port 20443) yanıt vermiyor: Stop server, ardından Start server düğmesine basın',
         'Ortak oyun yalnızca Avrupa sürümünde (CUSA03173) test edildi: {} çalışmalı, ancak düzgün test edilmedi. Bir sorun olursa user\\log klasörünü gönderin.',
+        '{} sunucusu bulunamadı: adresini ve internet bağlantınızı kontrol edin.',
+        'Herkese açık bir sunucuda mı oynuyorsunuz? Adresini buraya yazın: play.example.com gibi bir ad ya da bir IP.',
+        'Sunucuda kimliğinizin adresini kullanan bir oyuncu zaten var: yeni bir kimlik oluşturulup yeniden başlatılıyor…',
+        'Sunucu {} yeni kimliği reddetti (adres kullanımda). Daha sonra yeniden deneyin ya da sunucunun yöneticisine bildirin.',
     ],
     'zh': [
         '在线合作',
@@ -938,6 +978,10 @@ MORE = {
         '每项 1 到 10；1 即普通游戏。',
         '正在运行，但游戏的在线服务（端口 20443）没有响应：请先按 Stop server，再按 Start server',
         '合作模式只在欧版（CUSA03173）上测试过：{} 应该可以运行，但没有经过充分测试。如果出现问题，请发送你的 user\\log 文件夹。',
+        '找不到服务器 {}：请检查地址和网络连接。',
+        '在公共服务器上玩？在这里输入它的地址：像 play.example.com 这样的名称或 IP。',
+        '服务器上已有玩家使用你的 ID 的地址：正在创建新 ID 并重新启动…',
+        '服务器拒绝了 {} 个新 ID（地址已被占用）。请稍后再试，或告知服务器运营者。',
     ],
     'ja': [
         'オンライン協力プレイ',
@@ -1023,6 +1067,10 @@ MORE = {
         'それぞれ 1〜10。1 は通常のゲームです。',
         '実行中ですが、ゲームのオンラインサービス（ポート 20443）が応答しません: Stop server を押してから Start server を押してください',
         '協力プレイは欧州版（CUSA03173）でのみテストされています: {} でも動作するはずですが、十分にテストされていません。問題があれば user\\log フォルダーを送ってください。',
+        'サーバー {} が見つかりません：アドレスとインターネット接続を確認してください。',
+        '公開サーバーで遊びますか？ここにそのアドレスを入力してください（play.example.com のような名前か IP）。',
+        'サーバーにはあなたの ID と同じアドレスのプレイヤーが既にいます：新しい ID を作成して再起動しています…',
+        'サーバーが新しい ID を {} 回拒否しました（アドレス使用中）。後でもう一度試すか、サーバーの運営者に知らせてください。',
     ],
     'ko': [
         '온라인 협동',
@@ -1108,5 +1156,9 @@ MORE = {
         '각각 1~10; 1은 일반 게임입니다.',
         '실행 중이지만 게임의 온라인 서비스(포트 20443)가 응답하지 않습니다: Stop server를 누른 다음 Start server를 누르세요',
         '협동 플레이는 유럽판(CUSA03173)에서만 테스트되었습니다: {}도 작동해야 하지만 제대로 테스트되지 않았습니다. 문제가 생기면 user\\log 폴더를 보내 주세요.',
+        '서버 {}을(를) 찾을 수 없습니다: 주소와 인터넷 연결을 확인하세요.',
+        '공개 서버에서 플레이하나요? 여기에 서버 주소를 입력하세요: play.example.com 같은 이름이나 IP.',
+        '서버에 이미 당신의 ID와 같은 주소를 쓰는 플레이어가 있습니다: 새 ID를 만들어 다시 시작합니다…',
+        '서버가 새 ID를 {}번 거부했습니다(주소 사용 중). 나중에 다시 시도하거나 서버 운영자에게 알리세요.',
     ],
 }

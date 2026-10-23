@@ -31,6 +31,8 @@ public:
     };
 
     RpcTunnel(std::string self, u32 instance) : stream{std::move(self), instance} {}
+    RpcTunnel(std::string self, u32 instance, CoopStream::Limits limits)
+        : stream{std::move(self), instance, limits} {}
 
     // This end's connection: it started, sent bytes, or is over.
     void Open(s64 now_ms) {
@@ -90,6 +92,13 @@ public:
     }
     size_t Unacked() const {
         return stream.Unacked();
+    }
+    size_t UnackedBytes() const {
+        return stream.UnackedBytes();
+    }
+    // The other end went past this end's limits (CoopStream::Broken).
+    bool Broken() const {
+        return stream.Broken();
     }
 
 private:

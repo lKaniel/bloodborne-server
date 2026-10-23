@@ -458,6 +458,12 @@ message TeamRequest {
         // Kaniel 2026-10-17: the leader forgets one of the server's worlds (`world`): off the
         // list, its folder kept aside on the server.
         FORGET_WORLD = 11;
+        // A friend the lobby does not list (hosted: it lists 32 players). The player joins the
+        // team whose code it typed (`code`, coop/team_code.h): the leader handed the code out, so
+        // it stands for the leader's invite and the typing for the accept.
+        JOIN_CODE = 12;
+        NEW_CODE = 13;    // the leader: a fresh code for its team, the old one no longer joins
+        INVITE_NAME = 14; // invite the one signed-in player named `name` (as the lobby shows it)
     }
     Action action = 1;
     string member = 2;
@@ -465,6 +471,8 @@ message TeamRequest {
     uint32 slot = 4;
     string character = 5;
     string world = 6;
+    string code = 7;
+    string name = 8;
 }
 
 message LobbyPlayer {
@@ -508,6 +516,9 @@ message TeamWorldInfo {
     int64 created_ms = 7;
     repeated string characters = 8;
     string played_by = 9;
+    // Hosted (docs/HOSTED_SERVER.md): the players (board names) whose world it is: those of the
+    // teams that played it. Only they see it in their lists; never sent to the games.
+    repeated string members = 10;
 }
 
 message Team {
@@ -520,6 +531,8 @@ message Team {
     // its party key ("world:<id>"; empty for a new one): a game in another party is not in it.
     string world = 6;
     string party = 7;
+    // The code that joins the team (TeamRequest.JOIN_CODE); sent to its leader only.
+    string code = 8;
 }
 
 message TeamInvite {

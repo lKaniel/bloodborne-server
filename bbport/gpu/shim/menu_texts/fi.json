@@ -377,5 +377,11 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Pystysuora näkökenttä asteina; pelin kamerassa on 43. Jokaista kameraa laajennetaan yhtä paljon. Tulee voimaan, kun peli käynnistetään uudelleen.",
  "Mute in the background": "Mykistä taustalla",
  "The game is silent while its window is not the active one.": "Peli on hiljaa, kun sen ikkuna ei ole aktiivinen.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Pelin ruudulla näyttämät painikkeet. Automaattinen seuraa sitä, millä pelaat: alla määritetyt näppäimet, kun käytät näppäimistöä ja hiirtä, ohjaimen omat painikkeet (PlayStation, Xbox tai Switch), kun käytät ohjainta, ja vaihtuu kesken pelin. Muutos tässä tulee voimaan uudelleenkäynnistyksen jälkeen."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Pelin ruudulla näyttämät painikkeet. Automaattinen seuraa sitä, millä pelaat: alla määritetyt näppäimet, kun käytät näppäimistöä ja hiirtä, ohjaimen omat painikkeet (PlayStation, Xbox tai Switch), kun käytät ohjainta, ja vaihtuu kesken pelin. Muutos tässä tulee voimaan uudelleenkäynnistyksen jälkeen.",
+ "Name of the hunter to invite": "Kutsuttavan metsästäjän nimi",
+ "Code of the team to join": "Liityttävän tiimin koodi",
+ "Team code": "Tiimin koodi",
+ "Invite by name": "Kutsu nimellä",
+ "New code": "Uusi koodi",
+ "Join by code": "Liity koodilla"
 }

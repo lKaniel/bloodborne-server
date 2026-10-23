@@ -7,6 +7,7 @@
 #include <charconv>
 #include <string_view>
 
+#include "coop/team_code.h"
 #include "core/bloodborne_flags.h"
 #include "core/bloodborne_party.h"
 
@@ -188,6 +189,36 @@ std::vector<bbcoop::TeamRequest> TeamJoinHuntRequests(const bbcoop::LobbyState& 
         requests.emplace_back().set_action(bbcoop::TeamRequest::START);
     }
     return requests;
+}
+
+bbcoop::TeamRequest TeamMenuRequest(bbcoop::TeamRequest::Action action, const std::string& id) {
+    using Action = bbcoop::TeamRequest;
+    bbcoop::TeamRequest request;
+    request.set_action(action);
+    switch (action) {
+    case Action::ACCEPT:
+    case Action::DECLINE:
+        request.set_team(id);
+        break;
+    case Action::WORLD:
+    case Action::FORGET_WORLD:
+        request.set_world(id);
+        break;
+    case Action::JOIN_CODE: {
+        const std::string code = BloodborneCoop::NormalizeTeamCode(id);
+        request.set_code(code.empty() ? id : code);
+        break;
+    }
+    case Action::INVITE_NAME:
+        request.set_name(id);
+        break;
+    case Action::NEW_CODE:
+        break;
+    default:
+        request.set_member(id);
+        break;
+    }
+    return request;
 }
 
 std::string DefaultTeamWorld(const bbcoop::LobbyState& lobby, std::string_view hint, bool fresh) {

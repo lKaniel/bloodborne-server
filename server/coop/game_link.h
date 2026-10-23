@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <optional>
@@ -149,6 +150,11 @@ public:
         s64 max_resend_ms = 2000;
         size_t max_resends = 64;
         s64 quiet_ms = 10'000;
+        // What a member may make this side hold (shadNet's streams set them; none by default): the
+        // bytes of the out-of-order packets held (past it they are dropped, and come again as
+        // resends) and the unreliable channels remembered (a packet on another one is dropped).
+        size_t held_bytes = SIZE_MAX;
+        size_t unreliable_channels = SIZE_MAX;
     };
 
     GameLinkPeer(std::string self, u32 instance) : GameLinkPeer(std::move(self), instance, {}) {}
@@ -160,6 +166,7 @@ public:
         Outgoing out{packet_class, 0, {packet.begin(), packet.end()}, now_ms};
         if (packet_class == PacketClass::Reliable) {
             out.seq = next_reliable++;
+            reliable_bytes += packet.size();
         } else {
             out.seq = next_unreliable++;
         }
@@ -244,7 +251,11 @@ public:
             return {};
         }
         if (frame.peer_instance == instance) {
-            unacked.erase(unacked.begin(), unacked.lower_bound(frame.ack));
+            const auto acked = unacked.lower_bound(frame.ack);
+            for (auto out = unacked.begin(); out != acked; ++out) {
+                reliable_bytes -= out->second.packet.size();
+            }
+            unacked.erase(unacked.begin(), acked);
         }
         std::vector<std::vector<u8>> delivered;
         for (const GameFrameEntry& entry : frame.entries) {
@@ -261,6 +272,14 @@ public:
         return unacked.size() + std::ranges::count_if(fresh, [](const Outgoing& out) {
                    return out.packet_class == PacketClass::Reliable;
                });
+    }
+    // The bytes of the reliable packets not yet acked (new ones included).
+    size_t UnackedBytes() const {
+        return reliable_bytes;
+    }
+    // The bytes of the out-of-order packets held for the gap before them.
+    size_t HeldBytes() const {
+        return held_bytes;
     }
     u64 Resends() const {
         return resends;
@@ -308,10 +327,12 @@ private:
         ++restarts;
         expected = 0;
         held.clear();
+        held_bytes = 0;
         newest_unreliable.clear();
         next_reliable = 0;
         next_unreliable = 0;
         unacked.clear();
+        reliable_bytes = 0;
         std::erase_if(
             fresh, [](const Outgoing& out) { return out.packet_class == PacketClass::Reliable; });
     }
@@ -319,7 +340,9 @@ private:
     void TakeUnreliable(const GameFrameEntry& entry, std::vector<std::vector<u8>>& delivered) {
         const u32 channel = ChannelOf(entry.packet);
         const auto newest = newest_unreliable.find(channel);
-        if (newest != newest_unreliable.end() && entry.seq <= newest->second) {
+        if ((newest != newest_unreliable.end() && entry.seq <= newest->second) ||
+            (newest == newest_unreliable.end() &&
+             newest_unreliable.size() >= settings.unreliable_channels)) {
             ++dropped_old;
             return;
         }
@@ -333,14 +356,17 @@ private:
             return; // a resend of one already taken
         }
         if (entry.seq > expected) {
-            if (held.size() < settings.held_out_of_order) {
-                held.emplace(entry.seq, entry.packet);
+            if (held.size() < settings.held_out_of_order &&
+                held_bytes + entry.packet.size() <= settings.held_bytes &&
+                held.try_emplace(entry.seq, entry.packet).second) {
+                held_bytes += entry.packet.size();
             }
             return;
         }
         delivered.push_back(entry.packet);
         ++expected;
         for (auto next = held.find(expected); next != held.end(); next = held.find(expected)) {
+            held_bytes -= next->second.size();
             delivered.push_back(std::move(next->second));
             held.erase(next);
             ++expected;
@@ -357,12 +383,14 @@ private:
     u32 next_unreliable = 0;
     std::deque<Outgoing> fresh;
     std::map<u32, Outgoing> unacked;
+    size_t reliable_bytes = 0; // the reliable packets' in fresh and unacked
     u64 resends = 0;
     bool was_quiet = false;         // the last flush found the member silent
     bool heard_since_quiet = false; // and it was heard since
 
     u32 expected = 0;
     std::map<u32, std::vector<u8>> held;
+    size_t held_bytes = 0;
     std::map<u32, u32> newest_unreliable;
     bool ack_owed = false;
     s64 last_frame_ms = 0;

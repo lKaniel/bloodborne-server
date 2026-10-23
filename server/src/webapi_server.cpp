@@ -11,6 +11,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <webapi_routes_users.h>
+#include "client_session.h"
 #include "webapi_auth.h"
 #include "webapi_routes_bloodborne.h"
 #include "webapi_routes_presence.h"
@@ -67,9 +68,19 @@ void WebApiServer::RegisterRoutes() {
     WebApiRoutes::RegisterProfileRoutes(*m_http, *m_db, *m_shared);
     WebApiRoutes::RegisterPresenceRoutes(*m_http, *m_db, *m_shared);
     WebApiRoutes::RegisterSessionRoutes(*m_http, *m_db, *m_shared);
-    WebApiRoutes::RegisterBloodborneRoutes(*m_http, m_config->IsBloodborneSeamlessCoopEnabled());
-    // Phase 11: crash dumps and logs the players' launchers send after a crash.
-    RegisterReportRoutes(*m_http, *m_db, QStringLiteral("reports"));
+    // Hosted (http_gate.h): the summons and the token routes answer linked games' players only.
+    const HttpGate::Gate* gate = &m_shared->httpGate;
+    WebApiAuth::SetGate(gate);
+    WebApiRoutes::RegisterBloodborneRoutes(*m_http, m_config->IsBloodborneSeamlessCoopEnabled(),
+                                           gate);
+    // Phase 11: crash dumps and logs the players' launchers send after a crash. They come from the
+    // launcher (the game may be gone), so the gate is not asked; hosted: off unless HostedReports.
+    const HostedConfig hosted = m_config->GetHosted();
+    if (!hosted.enabled) {
+        RegisterReportRoutes(*m_http, *m_db, QStringLiteral("reports"));
+    } else if (hosted.reports) {
+        RegisterReportRoutes(*m_http, *m_db, QStringLiteral("reports"), 8ll * 1024 * 1024);
+    }
 
     m_http->setMissingHandler(
         this, [](const QHttpServerRequest& req, QHttpServerResponder& responder) {

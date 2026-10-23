@@ -351,6 +351,29 @@ int main() {
       Bloodborne::SummonBroker::ClaimStatus::Claimed);
   CHECK(Bloodborne::SummonBroker::UnclaimedOffersBeforeNewId >= 3);
 
+  // Signs are kept up to MaxRecords: past it a new sign takes the place of the
+  // one refreshed longest ago (a flood of made-up ids must not grow memory for
+  // ever; a real game refreshes its sign every 30 s).
+  Bloodborne::SummonBroker full(60'000);
+  const auto signOf = [](int userId) {
+    return QByteArray(
+               R"({"MessageId":"SummonDataCreateRequest","SessionId":"s)") +
+           QByteArray::number(userId) + R"(","UserId":)" +
+           QByteArray::number(userId) +
+           R"(,"AreaId":1,"AreaRegionId":2,"MatchingLevel":3,"SummonData":"d","SummonDataVersion":3,"SummonType":0})";
+  };
+  const int max = Bloodborne::SummonBroker::MaxRecords;
+  for (int userId = 1; userId <= max + 10; ++userId) {
+    const QByteArray sign = signOf(userId);
+    full.Advertise(Parse(sign), sign, userId == 2 ? 50 : 10 + (userId % 3));
+  }
+  CHECK(full.Size(60) == max);
+  // The newest are kept, and so is the one refreshed latest.
+  CHECK(full.StateFor(QStringLiteral("s") + QString::number(max + 10), max + 10,
+                      60) == Bloodborne::SummonBroker::State::Advertised);
+  CHECK(full.StateFor(QStringLiteral("s2"), 2, 60) ==
+        Bloodborne::SummonBroker::State::Advertised);
+
   std::cout << "Bloodborne summon broker state test passed\n";
   return 0;
 }

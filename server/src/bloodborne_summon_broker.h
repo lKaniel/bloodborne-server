@@ -53,6 +53,9 @@ public:
     // search on (rig 2026-10-11: the host's game kept a stale queue entry for it and never
     // claimed it in 48 searches).
     static constexpr int UnclaimedOffersBeforeNewId = 4;
+    // Signs kept at most (one a player, refreshed every 30 s): past it a new sign takes the place
+    // of the one refreshed longest ago.
+    static constexpr int MaxRecords = 4096;
 
     SummonBroker();
     explicit SummonBroker(qint64 ttlMs);
@@ -66,7 +69,8 @@ public:
                              const QByteArray& hostPlacement = {}, const QByteArray& party = {});
     ClaimResult Claim(const QJsonObject& request, const QByteArray& rawRequest, qint64 nowMs,
                       const QByteArray& hostPlacement = {}, const QByteArray& party = {});
-    ConsumeResult Consume(const QJsonObject& request, qint64 nowMs);
+    // Only the party's signs, as for Search and Claim.
+    ConsumeResult Consume(const QJsonObject& request, qint64 nowMs, const QByteArray& party = {});
 
     std::optional<State> StateFor(const QString& sessionId, qint64 userId, qint64 nowMs);
     int Size(qint64 nowMs);

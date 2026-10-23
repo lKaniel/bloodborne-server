@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bloodborne_reports.h"
 
+#include <algorithm>
+
 #include <QDir>
 #include <QRegularExpression>
 #include <QSaveFile>
@@ -28,7 +30,7 @@ bool KeptKind(const QString& name) {
 std::optional<QString> ReportStore::Save(const QString& player, const QString& file_name,
                                          const QByteArray& bytes, const QDateTime& now) {
     if (!PlainName(player, 32) || !PlainName(file_name, 80) || !KeptKind(file_name) ||
-        bytes.isEmpty() || bytes.size() > MaxBytes) {
+        bytes.isEmpty() || bytes.size() > max_bytes) {
         return std::nullopt;
     }
     const QDir dir{QDir{folder}.filePath(player)};
@@ -46,4 +48,25 @@ std::optional<QString> ReportStore::Save(const QString& player, const QString& f
         QFile::remove(dir.filePath(kept.takeFirst()));
     }
     return path;
+}
+
+bool ReportLimiter::Allow(quint32 address, qint64 now_ms) {
+    // Addresses whose bucket filled up again are forgotten now and then.
+    if (buckets.size() > 4096) {
+        for (auto it = buckets.begin(); it != buckets.end();) {
+            if (now_ms - it->at_ms >= burst * every_ms)
+                it = buckets.erase(it);
+            else
+                ++it;
+        }
+    }
+    auto it = buckets.find(address);
+    if (it == buckets.end())
+        it = buckets.insert(address, Bucket{double(burst), now_ms});
+    it->tokens = std::min<double>(burst, it->tokens + double(now_ms - it->at_ms) / every_ms);
+    it->at_ms = now_ms;
+    if (it->tokens < 1)
+        return false;
+    it->tokens -= 1;
+    return true;
 }

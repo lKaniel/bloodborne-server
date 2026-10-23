@@ -14,7 +14,9 @@
 #include "link_server.h"
 #include "score_cache.h"
 #include "score_files.h"
+#ifndef SHADNET_NO_HTTP
 #include "stats_server.h"
+#endif
 
 class ShadNetServer : public QObject {
     Q_OBJECT
@@ -47,6 +49,8 @@ private:
 
     std::unique_ptr<ScoreCache> m_scoreCache;
     std::unique_ptr<ScoreFiles> m_scoreFiles;
+#ifndef SHADNET_NO_HTTP
     std::unique_ptr<StatsServer> m_statsServer;
+#endif
     LinkServer* m_linkServer = nullptr;
 };

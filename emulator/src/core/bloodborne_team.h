@@ -136,6 +136,12 @@ std::vector<bbcoop::TeamRequest> TeamJoinHuntRequests(const bbcoop::LobbyState& 
                                                       const std::string& character,
                                                       std::string_view world = {});
 
+// The team screen's request `action` naming `id`, as the menu sends it (TeamLobbyRequest): a team
+// (accept, decline), a world (pick, forget), a typed code (JOIN_CODE: cleaned up,
+// NormalizeTeamCode; kept as typed when it cannot be one, the server's refusal says so), a typed
+// name (INVITE_NAME), else a member.
+bbcoop::TeamRequest TeamMenuRequest(bbcoop::TeamRequest::Action action, const std::string& id);
+
 // Kaniel 2026-10-16: a new character got the team's old world. Kaniel 2026-10-17: the worlds are
 // the server's, apart from its teams (bbcoop::TeamWorldInfo, LobbyState.worlds: any team plays
 // any of them) and the leader picks the one its Start plays. The world the team screen starts on

@@ -3,9 +3,14 @@
 #pragma once
 
 class QHttpServer;
+namespace HttpGate {
+class Gate;
+}
 
 namespace WebApiRoutes {
 
-void RegisterBloodborneRoutes(QHttpServer& http, bool seamlessCoop);
+// `gate`: who may ask (http_gate.h); null answers everyone.
+void RegisterBloodborneRoutes(QHttpServer& http, bool seamlessCoop,
+                              const HttpGate::Gate* gate = nullptr);
 
 } // namespace WebApiRoutes

@@ -50,6 +50,7 @@ ErrorType ClientSession::CmdCreate(StreamExtractor& data, QByteArray& reply) {
     if (err) {
         switch (*err) {
         case DbError::ExistingUsername:
+        case DbError::ExistingAddress: // another name gets another game address
             return ErrorType::CreationExistingUsername;
         case DbError::ExistingEmail:
             return ErrorType::CreationExistingEmail;

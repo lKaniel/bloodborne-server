@@ -377,5 +377,11 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "세로 시야각(도)입니다. 게임 카메라는 43입니다. 모든 카메라가 같은 만큼 넓어집니다. 게임을 다시 시작하면 적용됩니다.",
  "Mute in the background": "백그라운드에서 음소거",
  "The game is silent while its window is not the active one.": "게임 창이 활성 창이 아닌 동안 소리가 나지 않습니다.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "게임이 화면에 표시하는 버튼입니다. 자동은 지금 사용하는 장치를 따릅니다. 키보드와 마우스를 쓰는 동안에는 아래에서 지정한 키를, 컨트롤러를 쓰는 동안에는 그 버튼(PlayStation, Xbox, Switch)을 보여 주며, 바꾸면 바로 바뀝니다. 여기서 바꾼 설정은 다시 시작한 뒤 적용됩니다."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "게임이 화면에 표시하는 버튼입니다. 자동은 지금 사용하는 장치를 따릅니다. 키보드와 마우스를 쓰는 동안에는 아래에서 지정한 키를, 컨트롤러를 쓰는 동안에는 그 버튼(PlayStation, Xbox, Switch)을 보여 주며, 바꾸면 바로 바뀝니다. 여기서 바꾼 설정은 다시 시작한 뒤 적용됩니다.",
+ "Name of the hunter to invite": "초대할 사냥꾼의 이름",
+ "Code of the team to join": "참가할 팀의 코드",
+ "Team code": "팀 코드",
+ "Invite by name": "이름으로 초대",
+ "New code": "새 코드",
+ "Join by code": "코드로 참가"
 }

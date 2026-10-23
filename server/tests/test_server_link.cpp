@@ -202,7 +202,10 @@ int SignsIn() {
   QList<QByteArray> asked;
   hub.SetSignIn([&](const QByteArray &online_id, const QByteArray &secret) {
     asked.append(online_id);
-    return online_id == "Kaniel" && secret == "right";
+    if (online_id == "Squatter") {
+      return SignInVerdict{false, "address taken: make a new id"};
+    }
+    return SignInVerdict{online_id == "Kaniel" && secret == "right", {}};
   });
   auto result = hub.Receive(Kaniel, HelloFrom("Kaniel", Build, "wrong"), 0);
   const auto refused = DecodeWelcome(SentTo(result, Kaniel).value(0));
@@ -218,6 +221,16 @@ int SignsIn() {
   CHECK(result.rpc.size() == 1 && result.rpc[0].from == Kaniel &&
         result.rpc[0].online_id == "Kaniel" && result.rpc[0].body == "body");
   CHECK(result.coop.isEmpty());
+  // A refusal with its reason (a new account on another's address): the
+  // game's player reads it.
+  result = hub.Receive(Ada, HelloFrom("Squatter", Build, "any"), 30);
+  const auto squatted = DecodeWelcome(SentTo(result, Ada).value(0));
+  CHECK(squatted && !squatted->accepted &&
+        squatted->text == "address taken: make a new id");
+  // The address the games compute too (emulator net_link.h): never changes.
+  CHECK(VirtualEndpointOf("p000000000048cf").ipv4 == 0x0ae08f32 &&
+        VirtualEndpointOf("p00000000005b99").ipv4 == 0x0ae08f32 &&
+        VirtualEndpointOf("Kaniel").port == VirtualPort);
   std::cout << "server link sign-in: ok\n";
   return 0;
 }

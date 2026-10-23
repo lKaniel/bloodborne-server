@@ -19,6 +19,7 @@
 #include <QString>
 
 #include "bloodborne_summon_broker.h"
+#include "http_gate.h"
 
 namespace WebApiRoutes {
 namespace {
@@ -79,6 +80,36 @@ QHttpServerResponse InvalidRequest(const QString& reason) {
                                QHttpServerResponse::StatusCode::BadRequest};
 }
 
+// Hosted (http_gate.h): a summon request only from a linked game's address, as one of its players
+// (the body's UserId). Each must name its player (the game's always do): one naming nobody could
+// remove or claim anyone's sign by its SessionId. Nothing when it may go on.
+std::optional<QHttpServerResponse> Refused(const HttpGate::Gate* gate,
+                                           const QHttpServerRequest& request,
+                                           const std::optional<QJsonObject>& body) {
+    if (!gate || !gate->Enforced()) {
+        return std::nullopt;
+    }
+    std::optional<qint64> userId;
+    if (body && body->contains(QStringLiteral("UserId")) &&
+        !body->value(QStringLiteral("UserId")).isNull()) {
+        const QJsonValue value = body->value(QStringLiteral("UserId"));
+        userId = value.isDouble() ? value.toVariant().toLongLong() : -1;
+    } else if (body) {
+        userId = -1; // a player not linked here
+    }
+    const auto from = HttpGate::Ipv4Of(request.remoteAddress());
+    if (from && gate->ForUserId(*from, userId) == HttpGate::Verdict::Allowed) {
+        return std::nullopt;
+    }
+    QJsonObject reply;
+    reply.insert(QStringLiteral("ResKind"), 1);
+    reply.insert(QStringLiteral("MessageId"), QString());
+    reply.insert(QStringLiteral("Error"), QStringLiteral("Not a linked game's player"));
+    return QHttpServerResponse{"application/json",
+                               QJsonDocument(reply).toJson(QJsonDocument::Compact),
+                               QHttpServerResponse::StatusCode::Forbidden};
+}
+
 std::optional<QJsonObject> ParseRequest(const QHttpServerRequest& request) {
     QJsonParseError error{};
     const QJsonDocument document = QJsonDocument::fromJson(request.body(), &error);
@@ -107,7 +138,7 @@ void TraceSummonRequest(const char* route, const QHttpServerRequest& request) {
 
 } // namespace
 
-void RegisterBloodborneRoutes(QHttpServer& http, bool seamlessCoop) {
+void RegisterBloodborneRoutes(QHttpServer& http, bool seamlessCoop, const HttpGate::Gate* gate) {
     seamlessCoop = seamlessCoop || EnvEnabled("SHADNET_BLOODBORNE_SEAMLESS_COOP");
     Bloodborne::SummonBroker::Options options;
     options.seamlessCoop = seamlessCoop;
@@ -118,9 +149,12 @@ void RegisterBloodborneRoutes(QHttpServer& http, bool seamlessCoop) {
             << (broker->IsSeamlessAnywhereSummonsEnabled() ? "enabled" : "disabled");
 
     http.route("/summon_messenger/create", QHttpServerRequest::Method::Post,
-               [broker](const QHttpServerRequest& request) -> QHttpServerResponse {
+               [broker, gate](const QHttpServerRequest& request) -> QHttpServerResponse {
                    TraceSummonRequest("create", request);
                    const auto body = ParseRequest(request);
+                   if (auto refused = Refused(gate, request, body)) {
+                       return std::move(*refused);
+                   }
                    if (!body || !Bloodborne::HasRequiredAdvertisementFields(*body)) {
                        return InvalidRequest(QStringLiteral("Invalid summon advertisement"));
                    }
@@ -154,9 +188,12 @@ void RegisterBloodborneRoutes(QHttpServer& http, bool seamlessCoop) {
                });
 
     http.route("/summon_messenger/get", QHttpServerRequest::Method::Post,
-               [broker](const QHttpServerRequest& request) -> QHttpServerResponse {
+               [broker, gate](const QHttpServerRequest& request) -> QHttpServerResponse {
                    TraceSummonRequest("get", request);
                    const auto body = ParseRequest(request);
+                   if (auto refused = Refused(gate, request, body)) {
+                       return std::move(*refused);
+                   }
                    if (!body) {
                        return InvalidRequest(QStringLiteral("Invalid summon search"));
                    }
@@ -170,13 +207,17 @@ void RegisterBloodborneRoutes(QHttpServer& http, bool seamlessCoop) {
                });
 
     http.route("/summon_messenger/delete", QHttpServerRequest::Method::Post,
-               [broker](const QHttpServerRequest& request) -> QHttpServerResponse {
+               [broker, gate](const QHttpServerRequest& request) -> QHttpServerResponse {
                    TraceSummonRequest("delete", request);
                    const auto body = ParseRequest(request);
+                   if (auto refused = Refused(gate, request, body)) {
+                       return std::move(*refused);
+                   }
                    if (!body) {
                        return InvalidRequest(QStringLiteral("Invalid summon removal"));
                    }
-                   const auto result = broker->Consume(*body, QDateTime::currentMSecsSinceEpoch());
+                   const auto result =
+                       broker->Consume(*body, QDateTime::currentMSecsSinceEpoch(), Party(request));
                    qInfo() << "Bloodborne summon: consumed" << result.consumed << "retained"
                            << result.retained << "advertisement(s) host-placement-bytes"
                            << result.pendingHostPlacement.size();
@@ -193,9 +234,12 @@ void RegisterBloodborneRoutes(QHttpServer& http, bool seamlessCoop) {
                });
 
     http.route("/summon_messenger/request", QHttpServerRequest::Method::Post,
-               [broker](const QHttpServerRequest& request) -> QHttpServerResponse {
+               [broker, gate](const QHttpServerRequest& request) -> QHttpServerResponse {
                    TraceSummonRequest("request", request);
                    const auto body = ParseRequest(request);
+                   if (auto refused = Refused(gate, request, body)) {
+                       return std::move(*refused);
+                   }
                    if (!body) {
                        return InvalidRequest(QStringLiteral("Invalid summon request"));
                    }

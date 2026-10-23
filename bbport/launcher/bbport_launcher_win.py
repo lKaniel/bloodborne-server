@@ -3795,6 +3795,8 @@ class Launcher:
         cell = self.cell(card, 3, 0, _("Host's IP address (VPN or public; the host types their own)",
                                        'IP хоста (VPN или внешний; хост вводит свой)'))
         ttk.Entry(cell, textvariable=var('host_ip')).pack(fill='x')
+        # A public server (docs/HOSTED_SERVER.md) goes in the same field, by its name or address.
+        self.flow(cell, _(bbport_coop.PUBLIC_SERVER_HELP), 'small', MUTED).pack(fill='x', pady=(px(4), 0))
         # No account name or password (phase 11): the player's id is made once and kept in coop.json,
         # and the others see the character's name. No party settings: the team is made in the game (the team screen after Continue).
         enemies = self.cell(card, 3, 1, _('Enemies (the same for every player)', 'Враги (у всех одинаково)'))
@@ -4018,7 +4020,7 @@ class Launcher:
         missing = []
         if not self.coop_game_folder():
             missing.append(_('the game folder', 'папка игры'))
-        if not bbport_coop.valid_ip(self.coop.get('host_ip', '')):
+        if not bbport_coop.valid_host(self.coop.get('host_ip', '')):
             missing.append(_("the host's IP", 'IP хоста'))
         if 'harder' not in getattr(self, 'coop_picked', {'harder'}):
             missing.append(_('the enemies', 'враги'))
@@ -4309,6 +4311,7 @@ class Launcher:
             return
         self.collect()
         self.coop_busy = True
+        self.coop_id_tries = 0  # new ids made after the server refused this one's address (coop_watch_line)
         self.play_button.configure(state='disabled')
         self.set_running(False, preparing=True)
         threading.Thread(target=self.coop_prepare_and_play, args=(dict(self.coop),), daemon=True).start()
@@ -4329,6 +4332,14 @@ class Launcher:
                 bbport_coop.save_settings(PORT_DIR, self.coop)
             else:
                 bbport_coop.copy_events(PORT_DIR, root)
+            # A public server's name is looked up once: the link and the HTTP ports go to its address,
+            # as to a host's IP.
+            address = bbport_coop.resolve_host(settings['host_ip'])
+            if not address:
+                raise RuntimeError(_(bbport_coop.UNKNOWN_SERVER_TEXT).format(settings['host_ip']))
+            # The id for this server: its own when it refused the player's one id (coop_watch_line).
+            account, secret = bbport_coop.player_id_for(settings, settings['host_ip'])
+            settings = dict(settings, host_ip=address, server=settings['host_ip'], account=account, password=secret)
             user = PORT_DIR / 'user'
             user.mkdir(parents=True, exist_ok=True)
             (user / 'host_overrides.custom.json').write_text(bbport_coop.host_overrides(settings['host_ip']),
@@ -4345,6 +4356,7 @@ class Launcher:
             self.status.configure(text=_('Co-op could not start.', 'Кооператив не запустился.'), fg=BAD)
             self.messagebox.showerror('Bloodborne', failed)
             return
+        playing = (dict(settings), root)
         log_path = bbport_coop.rotate_logs(PORT_DIR)
         # Phase 11: a crash's dump and logs go to the host's server by themselves, alongside.
         threading.Thread(target=bbport_coop.send_reports, args=(PORT_DIR, dict(settings)),
@@ -4362,10 +4374,49 @@ class Launcher:
             self.process = None
             return
         self.job = GameJob(self.process)
+        self.coop_playing = playing
         threading.Thread(target=self.read_output, args=(self.process, self.job, log_path), daemon=True).start()
         self.set_running(True, preparing=True)
         self.status.configure(text=_('Preparing the game; it opens in its own window…',
                                      'Подготовка игры; она откроется в своём окне…'), fg=GOLD)
+
+    def coop_watch_line(self, line):
+        """A line of the co-op game's log. A server refuses a new id whose virtual address another account
+        has (docs/HOSTED_SERVER.md): the launcher then makes a new id for that server, saves it and starts the
+        game again, NEW_ID_TRIES times; after that it stops the game and the status line says why."""
+        if not getattr(self, 'coop_playing', None) or getattr(self, 'coop_new_id', None):
+            return
+        tries = getattr(self, 'coop_id_tries', 0)
+        what = bbport_coop.id_retry(line, tries)
+        if what is None:
+            return
+        if what == 'retry':
+            self.coop_id_tries = tries + 1
+            # For this server only: the friends' home hosts keep the player's one id (and its worlds).
+            self.coop['server_ids'] = bbport_coop.with_server_id(self.coop, self.coop_playing[0]['server'])['server_ids']
+            try:
+                bbport_coop.save_settings(PORT_DIR, self.coop)
+            except OSError:
+                pass
+            self.status.configure(text=_(bbport_coop.NEW_ID_TEXT), fg=GOLD)
+        else:
+            self.status.configure(text=_(bbport_coop.NEW_ID_FAILED_TEXT).format(tries), fg=BAD)
+        self.coop_new_id = what
+        if self.job:
+            self.job.terminate()
+
+    def coop_game_ended(self):
+        """The co-op game ended: started again with the new id coop_watch_line made, or the status line
+        keeps saying why it was stopped."""
+        what, self.coop_new_id = getattr(self, 'coop_new_id', None), None
+        playing, self.coop_playing = getattr(self, 'coop_playing', None), None
+        if what == 'retry' and playing:
+            settings, root = playing
+            account, secret = bbport_coop.player_id_for(self.coop, settings['server'])
+            self.coop_start_game(dict(settings, account=account, password=secret), root, None, '')
+        elif what == 'give_up':
+            self.status.configure(text=_(bbport_coop.NEW_ID_FAILED_TEXT).format(getattr(self, 'coop_id_tries', 0)),
+                                  fg=BAD)
 
     def browse_game(self, var):
         chosen = self.filedialog.askdirectory(title=_('Choose the folder with eboot.bin', 'Выберите папку с eboot.bin'),
@@ -5531,7 +5582,9 @@ class Launcher:
                         self.job.close()
                     self.set_running(False)
                     self.refresh_status()
+                    self.coop_game_ended()
                 else:
+                    self.coop_watch_line(item)
                     if game_is_up(item):  # mods, patches and shaders are prepared; the window exists
                         self.set_running(True)
                         self.status.configure(text=_('The game is running.', 'Игра запущена.'), fg=GOLD)

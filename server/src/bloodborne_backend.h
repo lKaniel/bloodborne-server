@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <QByteArray>
+#include <QHash>
 #include <QList>
 #include <QSet>
 #include <QString>
@@ -72,6 +73,14 @@ struct BackendReply {
     QList<std::pair<QByteArray, QByteArray>> headers;
 };
 
+// Who a request acts as (http_gate.h): a Login the account it names, every other service the
+// UserId in its body; neither for a GET (ss.info, status) or a body that names none.
+struct BackendIdentity {
+    std::optional<QString> account;
+    std::optional<qint64> userId;
+};
+BackendIdentity IdentityOf(const BackendRequest& request);
+
 class ContentStore;
 
 class BloodborneBackend {
@@ -88,6 +97,8 @@ public:
     }
     // users, blood_messages, tombstones, ghosts, chalice_dungeons: rows in each.
     Json Counts() const;
+    // The UserId Login gives `account`; nothing while the store has none for it.
+    std::optional<qint64> UserIdOf(const QString& account);
 
 private:
     Json Service(const QString& path, const Json& request);
@@ -106,6 +117,7 @@ private:
     // (UserId, broadcast text's CRC-32) already delivered; in memory on purpose, so a restart
     // sends a waiting broadcast again.
     std::set<std::pair<qint64, quint32>> m_broadcastSent;
+    QHash<QString, qint64> m_userIds; // lower-cased account -> its UserId, as Login gave it
 };
 
 } // namespace Bloodborne::Backend

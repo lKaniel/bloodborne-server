@@ -65,6 +65,12 @@ struct Endpoint {
 constexpr quint16 VirtualPort = 3658;
 Endpoint VirtualEndpointOf(const QByteArray& online_id);
 
+// Phase 11: whether a hello signed in, and when not, the text its game hears (empty: the usual).
+struct SignInVerdict {
+    bool accepted = false;
+    QByteArray refusal;
+};
+
 struct Hello {
     quint8 version = LinkVersion;
     QByteArray online_id;
@@ -135,6 +141,7 @@ public:
         struct Linked {
             QByteArray online_id;
             Endpoint virtual_endpoint;
+            Endpoint endpoint;
         };
         QList<Linked> linked;
     };
@@ -162,9 +169,18 @@ public:
     }
 
     // Phase 11: whether a hello's player id and secret sign in. Without it every hello does.
-    using SignIn = std::function<bool(const QByteArray& online_id, const QByteArray& secret)>;
+    // Hosted (docs/HOSTED_SERVER.md): nothing yet while the password is checked on another thread;
+    // the hello gets no answer and the game's next one (a second later) gets the verdict.
+    // A refusal may say why (a new id on another account's address: the launcher makes another).
+    using SignIn = std::function<std::optional<SignInVerdict>(const QByteArray& online_id,
+                                                              const QByteArray& secret)>;
     void SetSignIn(SignIn sign_in) {
         this->sign_in = std::move(sign_in);
+    }
+
+    // Hosted: the build every game must say (empty: the first linked game's, as before).
+    void SetRequiredBuild(QByteArray build) {
+        required_build = std::move(build);
     }
 
     int Members() const {
@@ -174,6 +190,19 @@ public:
     QByteArray Build() const;
     // The virtual address of the game linked from `real`, nothing when none is.
     std::optional<Endpoint> VirtualOf(const Endpoint& real) const;
+
+    // The operator's view (admin.h): every link.
+    struct LinkRow {
+        Endpoint endpoint;
+        QByteArray online_id;
+        QByteArray build;
+        qint64 last_heard_ms = 0;
+    };
+    QList<LinkRow> Links() const;
+    // The operator's kick: the links of `online_id` (when not empty) or from `ipv4` (when not 0)
+    // forgotten now, the others told they went. A game whose link is forgotten hears no more pongs
+    // and says hello again, as after any outage.
+    Result Kick(const QByteArray& online_id, quint32 ipv4, qint64 now_ms);
 
 private:
     struct Link {
@@ -217,6 +246,7 @@ private:
     PartyOf party_of;
     PacketRoutes packet_routes;
     SignIn sign_in;
+    QByteArray required_build;
 };
 
 } // namespace ServerLink

@@ -17,6 +17,7 @@
 #include <QTcpSocket>
 #include <database.h>
 #include "config.h"
+#include "http_gate.h"
 #include "matching_types.h"
 #include "protocol.h"
 #include "score_cache.h"
@@ -59,6 +60,9 @@ struct SharedState {
 
     // Matchmaking shared state
     MatchingSharedState matching;
+
+    // The players of each address's signed-in links, for the HTTP ports (http_gate.h).
+    HttpGate::Gate httpGate;
 
     // Live usage stats for the read-only stats HTTP server
     mutable QReadWriteLock usageLock;
@@ -238,6 +242,10 @@ private slots:
     void OnDisconnected();
 
 private:
+    // The fuzz tests (tests/fuzz) feed bytes and sign in without a socket.
+    friend struct ClientSessionFuzz;
+    // Bytes the socket read: every whole packet in them, and the rest kept for the next.
+    void Take(const QByteArray& bytes);
     void ProcessPacket(uint16_t command, uint64_t packetId, const QByteArray& payload);
     ErrorType DispatchCommand(CommandType cmd, StreamExtractor& se, QByteArray& reply);
 

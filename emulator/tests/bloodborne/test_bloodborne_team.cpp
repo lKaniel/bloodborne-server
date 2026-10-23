@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include "coop/team_code.h"
 #include "core/bloodborne_party.h"
 #include "core/bloodborne_team.h"
 
@@ -1148,4 +1149,35 @@ TEST(TeamLobbyName, TheNameIsReadOnceTheLoadedSaveIsIn) {
     EXPECT_FALSE(CharacterNameReadable(10'000, 9'000, 50'000)) << "an open before the load";
     EXPECT_FALSE(CharacterNameReadable(10'000, 12'000, 12'000 + CharacterNameSettleMs - 1));
     EXPECT_TRUE(CharacterNameReadable(10'000, 12'000, 12'000 + CharacterNameSettleMs));
+}
+
+// A friend the hosted lobby does not list: the team screen's typed code and name.
+TEST(TeamMenuRequest, ACodeIsCleanedUpAsTyped) {
+    const bbcoop::TeamRequest join = TeamMenuRequest(bbcoop::TeamRequest::JOIN_CODE, " abc-23z ");
+    EXPECT_EQ(join.action(), bbcoop::TeamRequest::JOIN_CODE);
+    EXPECT_EQ(join.code(), "ABC23Z");
+    EXPECT_TRUE(join.member().empty());
+    // Not a code (0 and O are not in the alphabet): sent as typed, the server refuses it.
+    EXPECT_EQ(TeamMenuRequest(bbcoop::TeamRequest::JOIN_CODE, "ABC0OZ").code(), "ABC0OZ");
+}
+
+TEST(TeamMenuRequest, EachActionNamesItsField) {
+    using Action = bbcoop::TeamRequest;
+    EXPECT_EQ(TeamMenuRequest(Action::INVITE_NAME, "Lady Maria").name(), "Lady Maria");
+    EXPECT_EQ(TeamMenuRequest(Action::INVITE, "00ab").member(), "00ab");
+    EXPECT_EQ(TeamMenuRequest(Action::ACCEPT, "t1").team(), "t1");
+    EXPECT_EQ(TeamMenuRequest(Action::FORGET_WORLD, "w1").world(), "w1");
+    const bbcoop::TeamRequest fresh = TeamMenuRequest(Action::NEW_CODE, "");
+    EXPECT_EQ(fresh.action(), Action::NEW_CODE);
+    EXPECT_TRUE(fresh.member().empty() && fresh.code().empty());
+}
+
+TEST(TeamCode, NormalizedAndShown) {
+    using namespace BloodborneCoop;
+    EXPECT_EQ(NormalizeTeamCode("k7m 2qx"), "K7M2QX");
+    EXPECT_EQ(NormalizeTeamCode("K7M2Q"), "");   // too short
+    EXPECT_EQ(NormalizeTeamCode("K7M2QXX"), ""); // too long
+    EXPECT_EQ(NormalizeTeamCode("K7M2Q1"), "");  // 1 is not in the alphabet
+    EXPECT_EQ(FormatTeamCode("K7M2QX"), "K7M 2QX");
+    EXPECT_EQ(NormalizeTeamCode(FormatTeamCode("K7M2QX")), "K7M2QX");
 }

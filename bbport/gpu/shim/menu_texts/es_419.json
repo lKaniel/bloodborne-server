@@ -377,5 +377,11 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Campo de visión vertical en grados; la cámara del juego tiene 43. Todas las cámaras se amplían en la misma medida. Se aplica al reiniciar el juego.",
  "Mute in the background": "Silenciar en segundo plano",
  "The game is silent while its window is not the active one.": "El juego no suena mientras su ventana no es la activa.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Los botones que el juego muestra en pantalla. Automático sigue a lo que usas: las teclas asignadas abajo mientras usas teclado y mouse, los botones del control (PlayStation, Xbox o Switch) mientras usas uno, y cambia al cambiar tú. Un cambio aquí se aplica al reiniciar."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Los botones que el juego muestra en pantalla. Automático sigue a lo que usas: las teclas asignadas abajo mientras usas teclado y mouse, los botones del control (PlayStation, Xbox o Switch) mientras usas uno, y cambia al cambiar tú. Un cambio aquí se aplica al reiniciar.",
+ "Name of the hunter to invite": "Nombre del cazador a invitar",
+ "Code of the team to join": "Código del equipo al que unirse",
+ "Team code": "Código de equipo",
+ "Invite by name": "Invitar por nombre",
+ "New code": "Nuevo código",
+ "Join by code": "Unirse con código"
 }

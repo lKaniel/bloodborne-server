@@ -3,15 +3,25 @@
 #include "bloodborne_world.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
 #include <set>
+#include <thread>
+#include <utility>
 
 #include <QCryptographicHash>
 #include <QDate>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QtEndian>
 #ifdef Q_OS_WIN
@@ -60,6 +70,14 @@ QByteArray Serialized(const google::protobuf::MessageLite& message) {
         message.SerializeToArray(bytes.data(), static_cast<int>(bytes.size()));
     }
     return bytes;
+}
+
+// A journal record as the journal keeps it: its size (u32 little-endian), then the record.
+QByteArray Framed(const bbcoop::JournalRecord& record) {
+    const QByteArray bytes = Serialized(record);
+    QByteArray framed(4, Qt::Uninitialized);
+    qToLittleEndian<quint32>(static_cast<quint32>(bytes.size()), framed.data());
+    return framed + bytes;
 }
 
 QString Hex(quint64 value) {
@@ -117,6 +135,7 @@ std::optional<WorldStore::Loaded> WorldStore::Load(QStringList& log) const {
     while (bytes.size() - at >= 4) {
         const quint32 size = qFromLittleEndian<quint32>(bytes.constData() + at);
         if (bytes.size() - at - 4 < static_cast<qsizetype>(size)) {
+            loaded.journal_cut = true;
             log.append(QStringLiteral("world store %1: the journal ends in a cut record (%2 "
                                       "bytes left), read up to it")
                            .arg(folder)
@@ -125,6 +144,7 @@ std::optional<WorldStore::Loaded> WorldStore::Load(QStringList& log) const {
         }
         bbcoop::JournalRecord record;
         if (!record.ParseFromArray(bytes.constData() + at + 4, static_cast<int>(size))) {
+            loaded.journal_cut = true;
             log.append(QStringLiteral("world store %1: a journal record does not read, stopped "
                                       "there")
                            .arg(folder));
@@ -135,6 +155,9 @@ std::optional<WorldStore::Loaded> WorldStore::Load(QStringList& log) const {
             loaded.journal.append(std::move(record));
         }
     }
+    if (at < bytes.size()) {
+        loaded.journal_cut = true;
+    }
     return loaded;
 }
 
@@ -144,11 +167,8 @@ bool WorldStore::Append(const bbcoop::JournalRecord& record) {
     if (!journal.open(QIODevice::WriteOnly | QIODevice::Append)) {
         return false;
     }
-    const QByteArray bytes = Serialized(record);
-    char size[4];
-    qToLittleEndian<quint32>(static_cast<quint32>(bytes.size()), size);
-    return journal.write(size, 4) == 4 && journal.write(bytes) == bytes.size() &&
-           SyncToDisk(journal);
+    const QByteArray bytes = Framed(record);
+    return journal.write(bytes) == bytes.size() && SyncToDisk(journal);
 }
 
 bool WorldStore::Compact(const bbcoop::StoredWorld& world, const QDate& today) {
@@ -215,13 +235,273 @@ bool WorldStore::SaveTrades(const bbcoop::StoredTrades& trades) {
     return file.commit();
 }
 
+struct WorldWriter::State {
+    using Task = std::function<void(State&)>;
+    using Clock = std::chrono::steady_clock;
+    static constexpr int LogLines = 100; // between two TakeLog: a full disk says it once a record
+
+    qint64 commit_ms;
+    int commit_records;
+
+    mutable std::mutex mutex;
+    std::condition_variable wake;    // the thread: tasks, a drain or the end
+    std::condition_variable drained; // Drain
+    std::deque<Task> tasks;
+    std::multiset<QString> moving;
+    std::multiset<QString> pending; // the folders with tasks queued (Pending)
+    bool running = false;           // the thread has tasks out of the queue
+    bool stop = false;
+    quint64 drains_wanted = 0;
+    quint64 drains_done = 0;
+    QStringList log;
+    int log_dropped = 0;
+    std::atomic<bool> abandon{false};
+    std::atomic<quint64> synced{0};
+    std::atomic<quint64> commits{0};
+
+    // The thread's own: the journals written to since the last commit.
+    std::map<QString, std::unique_ptr<QFile>> journals;
+    int unsynced = 0;
+    Clock::time_point first_unsynced;
+
+    std::thread thread;
+
+    void Log(QString line) {
+        const std::lock_guard lock{mutex};
+        if (log.size() < LogLines) {
+            log.append(std::move(line));
+        } else {
+            ++log_dropped;
+        }
+    }
+
+    // A task that writes in `folder`: Pending until it ran.
+    void Push(const QString& folder, Task task) {
+        {
+            const std::lock_guard lock{mutex};
+            pending.insert(folder);
+            tasks.push_back([folder, task = std::move(task)](State& s) {
+                task(s);
+                const std::lock_guard lock{s.mutex};
+                s.pending.erase(s.pending.find(folder));
+            });
+        }
+        wake.notify_one();
+    }
+
+    // The journals written to reach the disk.
+    void Commit() {
+        if (unsynced == 0 || abandon) {
+            return;
+        }
+        for (auto& [folder, file] : journals) {
+            if (!SyncToDisk(*file)) {
+                Log(QStringLiteral("world store %1: the journal could not be synced").arg(folder));
+            }
+        }
+        journals.clear();
+        synced += static_cast<quint64>(unsynced);
+        ++commits;
+        unsynced = 0;
+    }
+
+    void Append(const QString& folder, const bbcoop::JournalRecord& record) {
+        std::unique_ptr<QFile>& file = journals[folder];
+        if (!file) {
+            QDir{}.mkpath(folder);
+            file = std::make_unique<QFile>(QDir{folder}.filePath(JournalFile));
+            if (!file->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Unbuffered)) {
+                Log(QStringLiteral("world store %1: the journal does not open (%2)")
+                        .arg(folder, file->errorString()));
+                journals.erase(folder);
+                return;
+            }
+        }
+        // One write for the record: a crash cuts at most the last one. A write that fails is
+        // taken back, so the records after it are not behind a cut one.
+        const QByteArray bytes = Framed(record);
+        const qint64 size = file->size();
+        if (file->write(bytes) != bytes.size()) {
+            Log(QStringLiteral("world store %1: a journal record could not be written (%2)")
+                    .arg(folder, file->errorString()));
+            file->resize(size);
+            return;
+        }
+        if (unsynced++ == 0) {
+            first_unsynced = Clock::now();
+        }
+        if (unsynced >= commit_records) {
+            Commit();
+        }
+    }
+
+    void Run() {
+        std::unique_lock lock{mutex};
+        while (!abandon) {
+            if (!tasks.empty()) {
+                std::deque<Task> batch;
+                batch.swap(tasks);
+                running = true;
+                lock.unlock();
+                for (Task& task : batch) {
+                    if (abandon) {
+                        return;
+                    }
+                    task(*this);
+                }
+                lock.lock();
+                running = false;
+                continue;
+            }
+            const auto deadline = first_unsynced + std::chrono::milliseconds{commit_ms};
+            if (unsynced > 0 && (stop || drains_wanted > drains_done || Clock::now() >= deadline)) {
+                lock.unlock();
+                Commit();
+                lock.lock();
+                continue;
+            }
+            if (unsynced == 0) {
+                drains_done = drains_wanted;
+                drained.notify_all();
+                if (stop) {
+                    return;
+                }
+                wake.wait(lock);
+            } else {
+                wake.wait_until(lock, deadline);
+            }
+        }
+    }
+};
+
+WorldWriter::WorldWriter(qint64 commit_ms, int commit_records) : state{std::make_unique<State>()} {
+    state->commit_ms = commit_ms;
+    state->commit_records = std::max(commit_records, 1);
+    state->thread = std::thread{[this] { state->Run(); }};
+}
+
+WorldWriter::~WorldWriter() {
+    {
+        const std::lock_guard lock{state->mutex};
+        state->stop = true;
+    }
+    state->wake.notify_one();
+    state->thread.join();
+}
+
+void WorldWriter::Append(const QString& folder, bbcoop::JournalRecord record) {
+    state->Push(folder,
+                [folder, record = std::move(record)](State& s) { s.Append(folder, record); });
+}
+
+void WorldWriter::Compact(const QString& folder, bbcoop::StoredWorld world, const QDate& today) {
+    state->Push(folder, [folder, world = std::move(world), today](State& s) {
+        // Its records on disk before the world that holds them: the journal is cut only after
+        // world.pb is written (WorldStore::Compact), and a world that does not write keeps them.
+        s.Commit();
+        if (!WorldStore{folder}.Compact(world, today)) {
+            s.Log(QStringLiteral("world store %1: the world could not write, its journal kept")
+                      .arg(folder));
+        }
+    });
+}
+
+void WorldWriter::SaveTrades(const QString& folder, bbcoop::StoredTrades trades) {
+    state->Push(folder, [folder, trades = std::move(trades)](State& s) {
+        if (!WorldStore{folder}.SaveTrades(trades)) {
+            s.Log(QStringLiteral("world store %1: the trades could not write").arg(folder));
+        }
+    });
+}
+
+void WorldWriter::Save(const QString& path, QByteArray bytes) {
+    state->Push(QFileInfo{path}.path(), [path, bytes = std::move(bytes)](State& s) {
+        QDir{}.mkpath(QFileInfo{path}.path());
+        QSaveFile file{path};
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() ||
+            !file.commit()) {
+            s.Log(QStringLiteral("could not write %1").arg(path));
+        }
+    });
+}
+
+void WorldWriter::Move(const QString& parent, const QString& name, const QString& to) {
+    const QString key = QDir{parent}.filePath(name);
+    {
+        const std::lock_guard lock{state->mutex};
+        state->moving.insert(key);
+    }
+    state->Push(key, [parent, name, to, key](State& s) {
+        s.Commit(); // no journal open in it
+        QDir dir{parent};
+        if (dir.exists(name)) {
+            dir.mkpath(QFileInfo{dir.filePath(to)}.path());
+            if (!dir.rename(name, to)) {
+                s.Log(QStringLiteral("could not move %1 to %2").arg(key, dir.filePath(to)));
+            }
+        }
+        const std::lock_guard lock{s.mutex};
+        s.moving.erase(s.moving.find(key));
+    });
+}
+
+bool WorldWriter::Moving(const QString& parent, const QString& name) const {
+    const std::lock_guard lock{state->mutex};
+    return state->moving.contains(QDir{parent}.filePath(name));
+}
+
+bool WorldWriter::Pending(const QString& folder) const {
+    const std::lock_guard lock{state->mutex};
+    return state->pending.contains(folder);
+}
+
+void WorldWriter::Drain() {
+    std::unique_lock lock{state->mutex};
+    const quint64 wanted = ++state->drains_wanted;
+    state->wake.notify_one();
+    state->drained.wait(lock, [&] { return state->drains_done >= wanted || state->abandon; });
+}
+
+void WorldWriter::Abandon() {
+    state->abandon = true;
+    state->wake.notify_one();
+    state->drained.notify_all();
+}
+
+QStringList WorldWriter::TakeLog() {
+    const std::lock_guard lock{state->mutex};
+    QStringList log;
+    log.swap(state->log);
+    if (state->log_dropped > 0) {
+        log.append(QStringLiteral("world store: %1 more lines like these").arg(state->log_dropped));
+        state->log_dropped = 0;
+    }
+    return log;
+}
+
+quint64 WorldWriter::Synced() const {
+    return state->synced;
+}
+
+quint64 WorldWriter::Commits() const {
+    return state->commits;
+}
+
 Service::Service(QString folder, qint64 heartbeat_ms, int compact_records, qint64 compact_ms)
-    : folder{std::move(folder)}, heartbeat_ms{heartbeat_ms}, compact_records{compact_records},
-      compact_ms{compact_ms}, lobby{[] {
+    : folder{std::move(folder)},
+      writer{this->folder.isEmpty() ? nullptr : std::make_unique<WorldWriter>()},
+      heartbeat_ms{heartbeat_ms}, compact_records{compact_records}, compact_ms{compact_ms},
+      lobby{[] {
           return QStringLiteral("%1")
               .arg(QRandomGenerator::global()->generate64(), 16, 16, QLatin1Char('0'))
               .toStdString();
       }} {}
+
+void Service::Drain() {
+    if (writer) {
+        writer->Drain();
+    }
+}
 
 const WorldLogHost* Service::World(const QByteArray& party) const {
     const auto found = worlds.find(FolderOf(party));
@@ -247,47 +527,132 @@ Service::Result Service::Load(qint64 now_ms) {
     LoadWorldList(result);
     const QDir dir{folder};
     for (const QString& name : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        auto store = std::make_unique<WorldStore>(dir.filePath(name));
-        const auto loaded = store->Load(result.log);
-        if (!loaded) {
-            continue;
-        }
-        PartyWorld& world = worlds[name];
-        world.name = name;
-        world.world = loaded->world.world();
-        world.logs = loaded->world.logs();
-        world.last_wipe_ms = loaded->world.last_wipe_ms();
-        world.journal_from = loaded->world.journal_from();
-        world.records = world.journal_from;
-        world.host.Restore(StateOf(loaded->world.host()));
-        for (const auto& [member, state] : world.host.Save().members) {
-            world.proposed[member] = state.kills;
-        }
-        for (const bbcoop::JournalRecord& record : loaded->journal) {
-            Replay(world, record);
-            world.records = std::max<quint64>(world.records, record.number() + 1);
-        }
-        if (const auto trades = store->LoadTrades()) {
-            world.trades.Restore(*trades, now_ms);
-            result.log.append(QStringLiteral("party world %1: %2 open trades, %3 grants owed")
-                                  .arg(name)
-                                  .arg(world.trades.OpenTrades())
-                                  .arg(world.trades.PendingGrants()));
-        }
-        world.store = std::move(store);
-        world.compacted_ms = now_ms;
-        result.log.append(QStringLiteral("party world %1 loaded: log %2 at seq %3, %4 kills "
-                                         "(%5 journal records)")
-                              .arg(name, Hex(world.host.Epoch()))
-                              .arg(world.host.Last())
-                              .arg(WorldLogKillCount(world.host.Kills()))
-                              .arg(loaded->journal.size()));
-        if (!loaded->journal.isEmpty()) {
-            Compact(world, now_ms);
-        }
+        LoadWorld(name, now_ms, result);
     }
     loaded();
     return result;
+}
+
+bool Service::LoadWorld(const QString& name, qint64 now_ms, Result& result) {
+    // A world put out of memory may still have writes queued (and a new party's folder has none:
+    // no wait for the other worlds' writes on the link's thread).
+    const QString path = QDir{folder}.filePath(name);
+    if (writer && writer->Pending(path)) {
+        writer->Drain();
+    }
+    auto store = std::make_unique<WorldStore>(path);
+    const auto loaded = store->Load(result.log);
+    if (!loaded) {
+        return false;
+    }
+    PartyWorld& world = worlds[name];
+    world.name = name;
+    world.world = loaded->world.world();
+    world.logs = loaded->world.logs();
+    world.last_wipe_ms = loaded->world.last_wipe_ms();
+    world.journal_from = loaded->world.journal_from();
+    world.records = world.journal_from;
+    world.host.Restore(StateOf(loaded->world.host()));
+    for (const auto& [member, state] : world.host.Save().members) {
+        world.proposed[member] = state.kills;
+    }
+    for (const bbcoop::JournalRecord& record : loaded->journal) {
+        Replay(world, record);
+        world.records = std::max<quint64>(world.records, record.number() + 1);
+    }
+    if (const auto trades = store->LoadTrades()) {
+        world.trades.Restore(*trades, now_ms);
+        result.log.append(QStringLiteral("party world %1: %2 open trades, %3 grants owed")
+                              .arg(name)
+                              .arg(world.trades.OpenTrades())
+                              .arg(world.trades.PendingGrants()));
+    }
+    world.store = std::move(store);
+    world.compacted_ms = now_ms;
+    if (const auto found = kept.find(name); found != kept.end()) {
+        world.places = std::move(found->second.places);
+        world.boards = std::move(found->second.boards);
+        kept.erase(found);
+    }
+    result.log.append(QStringLiteral("party world %1 loaded: log %2 at seq %3, %4 kills "
+                                     "(%5 journal records)")
+                          .arg(name, Hex(world.host.Epoch()))
+                          .arg(world.host.Last())
+                          .arg(WorldLogKillCount(world.host.Kills()))
+                          .arg(loaded->journal.size()));
+    if (!loaded->journal.isEmpty() || loaded->journal_cut) { // and no record behind a cut one
+        Compact(world, now_ms);
+    }
+    return true;
+}
+
+bool Service::RoomFor(const QString& name, qint64 now_ms, Result& result) {
+    if (worlds.contains(name) || worlds.size() < limits.party_worlds) {
+        return true;
+    }
+    Collect(now_ms, true, result);
+    return worlds.size() < limits.party_worlds;
+}
+
+void Service::Collect(qint64 now_ms, bool all, Result& result) {
+    if (folder.isEmpty()) {
+        return; // its worlds are nowhere else
+    }
+    std::set<QString> in_use;
+    for (const auto& [key, member] : members) {
+        if (!member.party.isEmpty()) {
+            in_use.insert(member.party);
+        }
+    }
+    std::vector<std::pair<qint64, QString>> idle; // since when, which
+    for (auto& [name, world] : worlds) {
+        if (in_use.contains(name)) {
+            world.empty_since_ms.reset();
+            continue;
+        }
+        if (!world.empty_since_ms) {
+            world.empty_since_ms = now_ms;
+        }
+        if (all || now_ms - *world.empty_since_ms >= limits.idle_world_ms) {
+            idle.emplace_back(*world.empty_since_ms, name);
+        }
+    }
+    // For room (`all`) only the oldest few: each is written whole on the way out.
+    std::sort(idle.begin(), idle.end());
+    if (all && idle.size() > CollectAtOnce) {
+        idle.resize(CollectAtOnce);
+    }
+    for (const auto& [since, name] : idle) {
+        const auto it = worlds.find(name);
+        PartyWorld& world = it->second;
+        if (world.records > world.journal_from) {
+            Compact(world, now_ms);
+        }
+        // Where its members stood and its boards are not in the stored world: kept until it is
+        // read again, so a guest still resumes where it was.
+        if (!world.places.empty()) {
+            kept[name] = Kept{std::move(world.places), std::move(world.boards), now_ms};
+        }
+        result.log.append(QStringLiteral("party world %1: nobody in it, out of memory").arg(name));
+        worlds.erase(it);
+    }
+    // Not for ever, for every server: a world that never comes back would keep it.
+    std::erase_if(
+        kept, [&](const auto& entry) { return now_ms - entry.second.since_ms >= limits.kept_ms; });
+    while (kept.size() > limits.kept_worlds) {
+        kept.erase(std::ranges::min_element(
+            kept, {}, [](const auto& entry) { return entry.second.since_ms; }));
+    }
+}
+
+void Service::Drop(quint64 key, const QString& why, Result& result) {
+    const auto found = members.find(key);
+    if (found == members.end()) {
+        return;
+    }
+    result.log.append(QStringLiteral("party world: dropped %1's stream: %2")
+                          .arg(QString::fromStdString(Who(found->second)), why));
+    Forget(endpoints.at(key));
 }
 
 void Service::Replay(PartyWorld& world, const bbcoop::JournalRecord& record) {
@@ -348,7 +713,7 @@ void Service::Journal(PartyWorld& world, bbcoop::JournalRecord record, qint64 no
     record.set_number(world.records++);
     record.set_at_ms(now_ms);
     if (world.store) {
-        world.store->Append(record);
+        writer->Append(world.store->Folder(), std::move(record));
     }
     if (world.records - world.journal_from >= static_cast<quint64>(compact_records)) {
         Compact(world, now_ms);
@@ -368,13 +733,17 @@ void Service::Compact(PartyWorld& world, qint64 now_ms) {
     stored.set_last_wipe_ms(world.last_wipe_ms);
     stored.set_journal_from(world.journal_from);
     *stored.mutable_host() = ToMessage(world.host.Save());
-    world.store->Compact(stored);
+    writer->Compact(world.store->Folder(), std::move(stored));
 }
 
 Service::PartyWorld& Service::WorldFor(const QString& name, qint64 now_ms, Result& result) {
     const auto found = worlds.find(name);
     if (found != worlds.end()) {
         return found->second;
+    }
+    // Collected while nobody was in it, or made before this run: as it was.
+    if (!folder.isEmpty() && LoadWorld(name, now_ms, result)) {
+        return worlds.at(name);
     }
     PartyWorld& world = worlds[name];
     world.name = name;
@@ -422,6 +791,10 @@ void Service::ResetMap(PartyWorld& world, std::uint32_t map, qint64 now_ms) {
 
 void Service::SendTo(Member& member, const bbcoop::Envelope& envelope, qint64 now_ms) {
     member.stream.Send(EncodeEnvelope(envelope), now_ms);
+    if (!member.to_flush) {
+        member.to_flush = true;
+        flush_now.push_back(&member);
+    }
 }
 
 void Service::SendEntries(PartyWorld& world, const std::vector<WorldLogEntry>& entries,
@@ -445,6 +818,18 @@ void Service::OnHello(Member& member, const bbcoop::Hello& hello, qint64 now_ms,
                          ", this server speaks " + std::to_string(CoopProtocol));
     } else if (party.indexOf(':') <= 0 || hello.member().empty()) {
         welcome.set_text("no party key or member name");
+    } else if (hosted.enabled && !OwnName(member, hello.member())) {
+        welcome.set_text("the member name is not this player's");
+    } else if (hosted.enabled) {
+        // Hosted: only the world the player's team plays.
+        const bbcoop::Team* team = lobby.TeamOf(hello.member());
+        if (!party.startsWith("world:") || !team ||
+            QByteArray::fromStdString(team->party()) != party) {
+            welcome.set_text("not in the team that plays this world");
+        }
+    }
+    if (welcome.text().empty() && !RoomFor(FolderOf(party), now_ms, result)) {
+        welcome.set_text("the server has no room for another world now");
     }
     if (!welcome.text().empty()) {
         SendTo(member, answer, now_ms);
@@ -999,11 +1384,18 @@ void Service::TakeTrade(Member& member, PartyWorld& world, const bbcoop::Envelop
                         qint64 now_ms, Result& result) {
     switch (envelope.body_case()) {
     case bbcoop::Envelope::kTradeOffer: {
+        // Hosted: only between members of one started team (a stranger in the party by some other
+        // way is nobody to trade with).
+        const bbcoop::Team* team = hosted.enabled ? lobby.TeamOf(member.name) : nullptr;
         std::set<std::string> online;
         for (const auto& [key, other] : members) {
-            if (other.party == world.name) {
-                online.insert(other.name);
+            if (other.party != world.name) {
+                continue;
             }
+            if (hosted.enabled && (!team || !team->started() || lobby.TeamOf(other.name) != team)) {
+                continue;
+            }
+            online.insert(other.name);
         }
         Deliver(world, world.trades.Offer(member.name, envelope.trade_offer(), online, now_ms),
                 now_ms, result);
@@ -1038,7 +1430,7 @@ void Service::Deliver(PartyWorld& world, TradeDesk::Result trades, qint64 now_ms
             QStringLiteral("party world %1: %2").arg(world.name, QString::fromStdString(line)));
     }
     if (trades.changed && world.store) {
-        world.store->SaveTrades(world.trades.Stored());
+        writer->SaveTrades(world.store->Folder(), world.trades.Stored());
     }
 }
 
@@ -1054,36 +1446,215 @@ void Service::SendToOthers(PartyWorld& world, const Member& from, const bbcoop::
 Service::Result Service::Receive(const ServerLink::Endpoint& from, const QByteArray& online_id,
                                  const QByteArray& body, qint64 now_ms) {
     Result result;
+    CoopStream::Limits stream_limits;
+    stream_limits.message_bytes = limits.message_bytes;
+    stream_limits.chunk_bytes = CoopStream::ChunkBytes + 1;
+    stream_limits.held_bytes = limits.held_bytes;
+    stream_limits.unreliable_channels = 16; // the games send none on this stream
     auto [found, added] =
-        members.try_emplace(from.Key(), QRandomGenerator::global()->generate() | 1u);
+        members.try_emplace(from.Key(), QRandomGenerator::global()->generate() | 1u, stream_limits);
     Member& member = found->second;
+    member.key = from.Key();
     endpoints[from.Key()] = from;
     member.online_id = online_id;
     const auto bytes =
         std::span{reinterpret_cast<const u8*>(body.constData()), static_cast<size_t>(body.size())};
     const std::vector<std::vector<u8>> messages = member.stream.Receive(bytes, now_ms);
+    if (member.stream.Broken()) {
+        Drop(member.key,
+             QStringLiteral("a message past %1 bytes, or a chunk larger than a "
+                            "game sends")
+                 .arg(limits.message_bytes),
+             result);
+        FlushSome(now_ms, result);
+        return result;
+    }
     if (member.stream.TakeRestarted()) {
         result.log.append(QStringLiteral("party world: %1's game started over: waiting for its "
                                          "hello")
                               .arg(QString::fromStdString(Who(member))));
         member.party.clear();
+        // Still in the lobby (its team keeps it), but the new game has heard nothing of it.
+        if (!member.lobby.empty()) {
+            lobby_sent.erase(member.lobby);
+            member.lobby_again = true;
+        }
     }
     for (const std::vector<u8>& message : messages) {
         if (const auto envelope = DecodeEnvelope(message)) {
+            if (const auto why = Oversized(*envelope)) {
+                result.log.append(QStringLiteral("party world: %1's message dropped: %2")
+                                      .arg(QString::fromStdString(Who(member)), *why));
+                continue;
+            }
             Take(member, *envelope, now_ms, result);
         }
     }
-    Flush(now_ms, result);
+    // Its acks, and whatever its messages made the server send.
+    if (!member.to_flush) {
+        member.to_flush = true;
+        flush_now.push_back(&member);
+    }
+    FlushSome(now_ms, result);
     return result;
 }
 
+std::optional<QString> Service::Oversized(const bbcoop::Envelope& envelope) {
+    const auto text = [](const std::string& value, size_t limit) { return value.size() > limit; };
+    const auto many = [](int count, size_t limit) { return static_cast<size_t>(count) > limit; };
+    const auto items = [&](const auto& list) {
+        return many(list.size(), MaxSmallList) ||
+               std::ranges::any_of(list, [&](const bbcoop::TradeItem& item) {
+                   return text(item.name(), MaxTradeItemName) ||
+                          item.data().size() > MaxTradeItemData;
+               });
+    };
+    switch (envelope.body_case()) {
+    case bbcoop::Envelope::kHello:
+        if (text(envelope.hello().party(), MaxPartyKeyBytes) ||
+            text(envelope.hello().member(), MaxNameBytes)) {
+            return QStringLiteral("a party key or member name too long");
+        }
+        break;
+    case bbcoop::Envelope::kLobbyHello:
+        if (text(envelope.lobby_hello().member(), MaxNameBytes) ||
+            text(envelope.lobby_hello().name(), MaxNameBytes)) {
+            return QStringLiteral("a lobby name too long");
+        }
+        break;
+    case bbcoop::Envelope::kTeamRequest: {
+        const bbcoop::TeamRequest& request = envelope.team_request();
+        if (text(request.member(), MaxNameBytes) || text(request.team(), MaxNameBytes) ||
+            text(request.world(), MaxNameBytes) || text(request.character(), MaxCharacterBytes) ||
+            text(request.code(), MaxNameBytes) || text(request.name(), MaxCharacterBytes)) {
+            return QStringLiteral("a team request's field too long");
+        }
+        break;
+    }
+    case bbcoop::Envelope::kKills: {
+        size_t handles = 0;
+        for (const bbcoop::MapKills& map : envelope.kills().kills()) {
+            handles += static_cast<size_t>(map.handles_size()) + 1;
+        }
+        if (handles > MaxKillHandles) {
+            return QStringLiteral("%1 kills").arg(handles);
+        }
+        break;
+    }
+    case bbcoop::Envelope::kShown:
+        if (many(envelope.shown().characters_size(), MaxListEntries)) {
+            return QStringLiteral("too many shown characters");
+        }
+        break;
+    case bbcoop::Envelope::kFlags:
+        if (many(envelope.flags().events_size(), MaxListEntries)) {
+            return QStringLiteral("too many flag events");
+        }
+        break;
+    case bbcoop::Envelope::kMapState:
+        // The map's MapFlagCount flags, one bit each (fewer: WorldLogHost::MapState ignores it).
+        if (envelope.map_state().bits().size() > static_cast<size_t>((MapFlagCount + 7) / 8)) {
+            return QStringLiteral("a map state of %1 bytes")
+                .arg(envelope.map_state().bits().size());
+        }
+        break;
+    case bbcoop::Envelope::kHp:
+        if (many(envelope.hp().enemies_size(), MaxListEntries)) {
+            return QStringLiteral("too many enemies' HP");
+        }
+        break;
+    case bbcoop::Envelope::kEchoes:
+        if (many(envelope.echoes().kills_size(), MaxListEntries)) {
+            return QStringLiteral("too many echoes");
+        }
+        break;
+    case bbcoop::Envelope::kTrophies:
+        if (many(envelope.trophies().ids_size(), MaxSmallList)) {
+            return QStringLiteral("too many trophies");
+        }
+        break;
+    case bbcoop::Envelope::kVitals:
+        if (many(envelope.vitals().hits_size(), MaxSmallList) ||
+            std::ranges::any_of(envelope.vitals().hits(), [&](const bbcoop::ReviveHit& hit) {
+                return text(hit.target(), MaxNameBytes);
+            })) {
+            return QStringLiteral("too many revive hits");
+        }
+        break;
+    case bbcoop::Envelope::kPortrait:
+        if (envelope.portrait().pixels().size() > MaxPortraitBytes) {
+            return QStringLiteral("a portrait of %1 bytes")
+                .arg(envelope.portrait().pixels().size());
+        }
+        break;
+    case bbcoop::Envelope::kTeamSession:
+        if (envelope.team_session().join().size() > MaxJoinBytes) {
+            return QStringLiteral("join data of %1 bytes")
+                .arg(envelope.team_session().join().size());
+        }
+        break;
+    case bbcoop::Envelope::kTeamWorld:
+        if (many(envelope.team_world().on_size(), MaxTeamWorldFlags) ||
+            many(envelope.team_world().blocks_size(), MaxTeamWorldFlags) ||
+            text(envelope.team_world().character(), MaxCharacterBytes)) {
+            return QStringLiteral("a team world too large");
+        }
+        break;
+    case bbcoop::Envelope::kTradeOffer: {
+        const bbcoop::TradeOffer& offer = envelope.trade_offer();
+        if (text(offer.to(), MaxNameBytes) || text(offer.from_name(), MaxCharacterBytes) ||
+            text(offer.to_name(), MaxCharacterBytes) || items(offer.give()) ||
+            items(offer.want())) {
+            return QStringLiteral("a trade offer too large");
+        }
+        break;
+    }
+    case bbcoop::Envelope::kTradeAnswer:
+        if (items(envelope.trade_answer().taken())) {
+            return QStringLiteral("a trade answer too large");
+        }
+        break;
+    default:
+        break;
+    }
+    return std::nullopt;
+}
+
+void Service::FlushSome(qint64 now_ms, Result& result) {
+    std::vector<quint64> over;
+    for (Member* member : std::exchange(flush_now, {})) {
+        member->to_flush = false;
+        for (const std::vector<u8>& body : member->stream.Flush(now_ms)) {
+            result.sends.append(
+                {endpoints.at(member->key), QByteArray(reinterpret_cast<const char*>(body.data()),
+                                                       static_cast<qsizetype>(body.size()))});
+        }
+        if (member->stream.UnackedBytes() > limits.unacked_bytes) {
+            over.push_back(member->key);
+        }
+    }
+    for (const quint64 key : over) {
+        Drop(key, QStringLiteral("over %1 bytes not acked").arg(limits.unacked_bytes), result);
+    }
+}
+
 void Service::Flush(qint64 now_ms, Result& result) {
+    for (Member* member : std::exchange(flush_now, {})) {
+        member->to_flush = false;
+    }
+    std::vector<quint64> over;
     for (auto& [key, member] : members) {
         for (const std::vector<u8>& body : member.stream.Flush(now_ms)) {
             result.sends.append(
                 {endpoints.at(key), QByteArray(reinterpret_cast<const char*>(body.data()),
                                                static_cast<qsizetype>(body.size()))});
         }
+        if (member.stream.UnackedBytes() > limits.unacked_bytes) {
+            over.push_back(key);
+        }
+    }
+    for (const quint64 key : over) {
+        Drop(key, QStringLiteral("over %1 bytes not acked").arg(limits.unacked_bytes), result);
     }
 }
 
@@ -1094,8 +1665,12 @@ Service::Result Service::Tick(qint64 now_ms) {
                               .arg(OfflineGraceMs / 60000));
         Settle(expired, now_ms, result);
     }
-    if (lobby_changed) {
+    if (lobby_changed && (!hosted.enabled || now_ms - lobby_sent_ms >= hosted.lobby_interval_ms)) {
         SendLobby(now_ms);
+    }
+    if (now_ms - collected_ms >= 1000) {
+        collected_ms = now_ms;
+        Collect(now_ms, false, result);
     }
     for (auto& [name, world] : worlds) {
         if (world.records > world.journal_from && now_ms - world.compacted_ms >= compact_ms) {
@@ -1111,6 +1686,9 @@ Service::Result Service::Tick(qint64 now_ms) {
         Deliver(world, world.trades.Expire(now_ms), now_ms, result);
     }
     Flush(now_ms, result);
+    if (writer) {
+        result.log.append(writer->TakeLog());
+    }
     return result;
 }
 
@@ -1156,8 +1734,12 @@ void Service::Forget(const ServerLink::Endpoint& link) {
         });
         if (!elsewhere) {
             lobby.Leave(name);
+            lobby_sent.erase(name);
             lobby_changed = true;
         }
+    }
+    if (found != members.end()) {
+        std::erase(flush_now, &found->second);
     }
     members.erase(link.Key());
     endpoints.erase(link.Key());
@@ -1203,6 +1785,7 @@ const QString TeamWorldFile = QStringLiteral("team_world.pb");
 const QString WorldListFile = QStringLiteral("worlds.pb");
 const QString OldTeamsFile = QStringLiteral("teams.pb");
 const QString ForgottenFolder = QStringLiteral("forgotten");
+const QString KeptWorldFile = QStringLiteral("kept_world.pb");
 constexpr u32 WorldListVersion = 1;
 } // namespace
 
@@ -1210,6 +1793,9 @@ const std::optional<bbcoop::TeamWorld>& Service::TeamWorldOf(PartyWorld& world) 
     if (!world.team_world_read) {
         world.team_world_read = true;
         if (!folder.isEmpty()) {
+            if (writer->Moving(folder, world.name)) {
+                writer->Drain(); // its folder going aside: what it holds after
+            }
             QFile file{QDir{QDir{folder}.filePath(world.name)}.filePath(TeamWorldFile)};
             if (file.open(QIODevice::ReadOnly)) {
                 const QByteArray bytes = file.readAll();
@@ -1255,15 +1841,9 @@ void Service::TakeTeamWorld(Member& member, PartyWorld& world, const bbcoop::Tea
     taken.set_exists(true);
     taken.set_version((before ? before->version() : 0) + 1);
     world.team_world = taken;
-    if (!folder.isEmpty()) {
-        const QString path = QDir{folder}.filePath(world.name);
-        QDir{}.mkpath(path);
-        QSaveFile file{QDir{path}.filePath(TeamWorldFile)};
-        if (!file.open(QIODevice::WriteOnly) || file.write(Serialized(taken)) < 0 ||
-            !file.commit()) {
-            result.log.append(QStringLiteral("team world %1: could not write %2")
-                                  .arg(world.name, file.fileName()));
-        }
+    if (writer) {
+        writer->Save(QDir{QDir{folder}.filePath(world.name)}.filePath(TeamWorldFile),
+                     Serialized(taken));
     }
     result.log.append(QStringLiteral("team world %1: %2's world taken (%3 flags on, version %4)")
                           .arg(world.name, QString::fromStdString(member.name))
@@ -1300,7 +1880,16 @@ void Service::OnLobbyHello(Member& member, const bbcoop::LobbyHello& hello, qint
                                    QString::fromStdString(answer.lobby_state().notice())));
         return;
     }
-    const bool arrived = member.lobby.empty();
+    if (hosted.enabled && !OwnName(member, hello.member())) {
+        bbcoop::Envelope answer;
+        answer.mutable_lobby_state()->set_notice("the member name is not this player's");
+        SendTo(member, answer, now_ms);
+        result.log.append(
+            QStringLiteral("team lobby: refused %1: another player's name %2")
+                .arg(QString::fromStdString(Who(member)), QString::fromStdString(hello.member())));
+        return;
+    }
+    const bool arrived = member.lobby.empty() || std::exchange(member.lobby_again, false);
     member.lobby = hello.member();
     if (arrived) {
         result.log.append(
@@ -1326,7 +1915,7 @@ void Service::OnTeamRequest(Member& member, const bbcoop::TeamRequest& request, 
     if (member.lobby.empty()) {
         return; // nothing before its lobby hello
     }
-    const TeamLobby::Outcome outcome = lobby.Request(member.lobby, request);
+    const TeamLobby::Outcome outcome = lobby.Request(member.lobby, request, now_ms);
     // Kaniel 2026-10-16: the world a Start plays is the team's last played.
     if (request.action() == bbcoop::TeamRequest::START && !outcome.starts.empty()) {
         if (const bbcoop::Team* team = lobby.TeamOf(member.lobby)) {
@@ -1353,7 +1942,7 @@ void Service::OnTeamRequest(Member& member, const bbcoop::TeamRequest& request, 
         envelope.mutable_lobby_state()->set_notice(outcome.notice);
         SendTo(member, envelope, now_ms);
     }
-    PutAside(outcome.forgotten, result);
+    PutAside(outcome.forgotten_lines, QStringLiteral("forgotten"), result);
     if (outcome.changed) {
         StoreWorldList(result);
     }
@@ -1406,7 +1995,11 @@ void Service::ForgetMember(PartyWorld& world, const std::string& name, qint64 no
 
 void Service::Settle(const TeamLobby::Outcome& outcome, qint64 now_ms, Result& result) {
     if (outcome.changed) {
-        SendLobby(now_ms);
+        if (hosted.enabled) {
+            lobby_changed = true; // hosted: with the others at the next tick past the interval
+        } else {
+            SendLobby(now_ms);
+        }
     }
     for (const std::string& name : outcome.starts) {
         bbcoop::TeamStart start = lobby.StartFor(name);
@@ -1434,13 +2027,34 @@ void Service::Settle(const TeamLobby::Outcome& outcome, qint64 now_ms, Result& r
 
 void Service::SendLobby(qint64 now_ms) {
     lobby_changed = false;
+    lobby_sent_ms = now_ms;
     for (auto& [key, member] : members) {
         if (!member.lobby.empty()) {
             bbcoop::Envelope envelope;
             *envelope.mutable_lobby_state() = lobby.StateFor(member.lobby);
+            if (hosted.enabled) {
+                // Only to the players whose own state changed.
+                std::string bytes = envelope.lobby_state().SerializeAsString();
+                std::string& sent = lobby_sent[member.lobby];
+                if (sent == bytes) {
+                    continue;
+                }
+                sent = std::move(bytes);
+            }
             SendTo(member, envelope, now_ms);
         }
     }
+}
+
+void Service::SetHosted(const HostedRules& rules) {
+    hosted = rules;
+    if (rules.enabled) {
+        lobby.SetHosted(rules.lobby_players, rules.worlds_per_player);
+    }
+}
+
+bool Service::OwnName(const Member& member, const std::string& name) const {
+    return name == member.online_id.toHex().toStdString();
 }
 
 QString Service::FolderOf(const QByteArray& party) const {
@@ -1453,7 +2067,7 @@ QString Service::FolderOf(const QByteArray& party) const {
     return PartyFolderName(party);
 }
 
-void Service::StoreWorldList(Result& result) {
+void Service::StoreWorldList(Result& /*result*/) {
     if (folder.isEmpty()) {
         return;
     }
@@ -1465,11 +2079,7 @@ void Service::StoreWorldList(Result& result) {
         kept.set_folder(
             FolderOf(QByteArray::fromStdString(TeamLobby::PartyOf(info.id()))).toStdString());
     }
-    QDir{}.mkpath(folder);
-    QSaveFile file{QDir{folder}.filePath(WorldListFile)};
-    if (!file.open(QIODevice::WriteOnly) || file.write(Serialized(stored)) < 0 || !file.commit()) {
-        result.log.append(QStringLiteral("world list: could not write %1").arg(file.fileName()));
-    }
+    writer->Save(QDir{folder}.filePath(WorldListFile), Serialized(stored));
 }
 
 namespace {
@@ -1626,8 +2236,10 @@ void Service::LoadWorldList(Result& result) {
     }
 }
 
-void Service::PutAside(const std::vector<std::string>& forgotten, Result& result) {
-    for (const std::string& id : forgotten) {
+void Service::PutAside(const std::vector<bbcoop::TeamWorldInfo>& lines, const QString& why,
+                       Result& result) {
+    for (const bbcoop::TeamWorldInfo& line : lines) {
+        const std::string& id = line.id();
         const QString name = FolderOf(QByteArray::fromStdString(TeamLobby::PartyOf(id)));
         world_folders.erase(id);
         const bool linked = std::ranges::any_of(
@@ -1635,30 +2247,208 @@ void Service::PutAside(const std::vector<std::string>& forgotten, Result& result
         if (linked) {
             // A game still in it (it would be made again): its folder stays, off the list.
             result.log.append(
-                QStringLiteral("world list: world %1 forgotten, its folder %2 kept (a game is in "
-                               "it)")
-                    .arg(QString::fromStdString(id), name));
+                QStringLiteral("world list: world %1 %2, its folder %3 kept (a game is in it)")
+                    .arg(QString::fromStdString(id), why, name));
             continue;
         }
         worlds.erase(name);
+        kept.erase(name);
         if (folder.isEmpty()) {
             continue;
         }
-        QDir dir{folder};
-        if (!dir.exists(name)) {
-            continue;
-        }
-        dir.mkpath(ForgottenFolder);
         const QString aside =
             QStringLiteral("%1/%2-%3")
                 .arg(ForgottenFolder, name,
                      QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss")));
-        const bool moved = dir.rename(name, aside);
-        result.log.append(QStringLiteral("world list: world %1 forgotten, its folder %2")
-                              .arg(QString::fromStdString(id),
-                                   moved ? QStringLiteral("is ") + aside
-                                         : QStringLiteral("could not be moved: ") + name));
+        bbcoop::KeptWorld kept;
+        *kept.mutable_info() = line;
+        kept.set_folder(name.toStdString());
+        writer->Save(QDir{QDir{folder}.filePath(name)}.filePath(KeptWorldFile), Serialized(kept));
+        writer->Move(folder, name, aside);
+        result.log.append(QStringLiteral("world list: world %1 %2, its folder goes to %3")
+                              .arg(QString::fromStdString(id), why, aside));
     }
+}
+
+namespace {
+
+qint64 BytesIn(const QString& path) {
+    qint64 bytes = 0;
+    QDirIterator it{path, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories};
+    while (it.hasNext()) {
+        it.next();
+        bytes += it.fileInfo().size();
+    }
+    return bytes;
+}
+
+std::optional<bbcoop::KeptWorld> ReadKept(const QString& world_dir) {
+    QFile file{QDir{world_dir}.filePath(KeptWorldFile)};
+    if (!file.open(QIODevice::ReadOnly)) {
+        return std::nullopt;
+    }
+    const QByteArray bytes = file.readAll();
+    bbcoop::KeptWorld kept;
+    if (!kept.ParseFromArray(bytes.constData(), static_cast<int>(bytes.size())) ||
+        kept.info().id().empty()) {
+        return std::nullopt;
+    }
+    return kept;
+}
+
+} // namespace
+
+std::optional<Service::Place> Service::PlaceOf(const ServerLink::Endpoint& link) const {
+    const auto found = members.find(link.Key());
+    if (found == members.end()) {
+        return std::nullopt;
+    }
+    const Member& member = found->second;
+    Place place{member.lobby, {}, {}, member.map};
+    if (const bbcoop::Team* team = member.lobby.empty() ? nullptr : lobby.TeamOf(member.lobby)) {
+        place.team = team->id();
+        place.world = team->world();
+    }
+    if (const auto world = worlds.find(member.party);
+        world != worlds.end() && place.world.empty()) {
+        place.world = world->second.team_world_id;
+    }
+    return place;
+}
+
+std::vector<Service::WorldRow> Service::WorldRows() const {
+    std::vector<WorldRow> rows;
+    for (const bbcoop::TeamWorldInfo& info : lobby.Worlds()) {
+        WorldRow& row = rows.emplace_back();
+        row.info = info;
+        row.folder = FolderOf(QByteArray::fromStdString(TeamLobby::PartyOf(info.id())));
+        if (!folder.isEmpty()) {
+            row.path = QDir{folder}.filePath(row.folder);
+        }
+        row.games = static_cast<int>(std::ranges::count_if(
+            members, [&](const auto& entry) { return entry.second.party == row.folder; }));
+    }
+    return rows;
+}
+
+qint64 Service::BytesOn(const QString& path) {
+    return BytesIn(path);
+}
+
+std::vector<Service::AsideRow> Service::AsideRows() const {
+    return AsideRowsIn(folder);
+}
+
+std::vector<Service::AsideRow> Service::AsideRowsIn(const QString& folder) {
+    std::vector<AsideRow> rows;
+    if (folder.isEmpty()) {
+        return rows;
+    }
+    const QDir aside{QDir{folder}.filePath(ForgottenFolder)};
+    for (const QString& name : aside.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+        AsideRow& row = rows.emplace_back();
+        row.folder = name;
+        row.bytes = BytesIn(aside.filePath(name));
+        if (const auto kept = ReadKept(aside.filePath(name))) {
+            row.info = kept->info();
+        }
+    }
+    return rows;
+}
+
+std::vector<std::string> Service::Retire(qint64 now_ms, qint64 idle_ms, Result& result) {
+    if (idle_ms <= 0) {
+        return {};
+    }
+    std::vector<bbcoop::TeamWorldInfo> lines = lobby.TakeIdleWorlds(now_ms - idle_ms);
+    // A game still in one (its team gone, its game not yet): it stays listed for now.
+    std::erase_if(lines, [&](const bbcoop::TeamWorldInfo& line) {
+        const QString name = FolderOf(QByteArray::fromStdString(TeamLobby::PartyOf(line.id())));
+        if (std::ranges::none_of(members,
+                                 [&](const auto& entry) { return entry.second.party == name; })) {
+            return false;
+        }
+        lobby.AddWorld(line);
+        return true;
+    });
+    std::vector<std::string> ids;
+    for (const bbcoop::TeamWorldInfo& line : lines) {
+        ids.push_back(line.id());
+    }
+    if (!lines.empty()) {
+        PutAside(lines,
+                 QStringLiteral("retired (not played for %1 days)").arg(idle_ms / 86'400'000),
+                 result);
+        StoreWorldList(result);
+        lobby_changed = true;
+    }
+    return ids;
+}
+
+bool Service::Restore(const QString& aside, qint64 now_ms, QString& said, Result& result) {
+    if (folder.isEmpty()) {
+        said = QStringLiteral("the worlds are kept in memory only");
+        return false;
+    }
+    if (aside.isEmpty() || aside.contains('/') || aside.contains('\\') || aside.startsWith('.')) {
+        said = QStringLiteral("no such folder in %1").arg(ForgottenFolder);
+        return false;
+    }
+    writer->Drain(); // a folder still going aside: there first
+    const QDir dir{folder};
+    const QString from = ForgottenFolder + '/' + aside;
+    if (!QDir{dir.filePath(from)}.exists()) {
+        said = QStringLiteral("no folder %1").arg(from);
+        return false;
+    }
+    bbcoop::KeptWorld kept;
+    if (const auto read = ReadKept(dir.filePath(from))) {
+        kept = *read;
+    } else {
+        // Put aside before its line was kept with it: a new line, its players unknown.
+        QString name = aside;
+        name.remove(QRegularExpression(QStringLiteral("-\\d{8}-\\d{6}$")));
+        kept.set_folder(name.toStdString());
+        kept.mutable_info()->set_id(lobby.NewWorldId());
+        QFile file{QDir{dir.filePath(from)}.filePath(TeamWorldFile)};
+        bbcoop::TeamWorld stored;
+        if (file.open(QIODevice::ReadOnly)) {
+            const QByteArray bytes = file.readAll();
+            if (stored.ParseFromArray(bytes.constData(), static_cast<int>(bytes.size()))) {
+                kept.mutable_info()->set_character(stored.character());
+                kept.mutable_info()->set_flags_on(static_cast<u32>(stored.on_size()));
+                kept.mutable_info()->set_lamps(
+                    LampsLit({stored.on().data(), static_cast<size_t>(stored.on_size())}));
+            }
+        }
+    }
+    const QString name = QString::fromStdString(kept.folder());
+    if (name.isEmpty() || name.contains('/') || dir.exists(name) || worlds.contains(name)) {
+        said = QStringLiteral("its folder %1 is taken").arg(name);
+        return false;
+    }
+    bbcoop::TeamWorldInfo info = kept.info();
+    info.set_played_ms(now_ms);
+    if (info.id().empty() || std::ranges::any_of(lobby.Worlds(), [&](const auto& listed) {
+            return listed.id() == info.id();
+        })) {
+        said = QStringLiteral("world %1 is listed").arg(QString::fromStdString(info.id()));
+        return false;
+    }
+    // Here, at once (drained above): a move queued on the writer would leave the folder missing
+    // to a hello or a Start that comes first, which would make an empty one in its place.
+    if (!QDir{dir}.rename(from, name)) {
+        said = QStringLiteral("could not move %1 to %2").arg(from, name);
+        return false;
+    }
+    lobby.AddWorld(info);
+    world_folders[info.id()] = name;
+    StoreWorldList(result);
+    lobby_changed = true;
+    said = QString::fromStdString(info.id());
+    result.log.append(
+        QStringLiteral("world list: world %1 restored from %2 to %3").arg(said, from, name));
+    return true;
 }
 
 } // namespace BloodborneWorld

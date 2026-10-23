@@ -98,6 +98,105 @@ class AnswersTests(unittest.TestCase):
             self.assertTrue(coop.valid_name(made['account']), 'a new install has its id at once')
             self.assertEqual(coop.load_settings(install)['account'], made['account'], 'saved')
 
+    def test_an_id_whose_address_is_taken_is_made_again(self):
+        # docs/HOSTED_SERVER.md: a server refuses a new id whose virtual address (the 24-bit hash the
+        # games compute, net_link.h VirtualAddressOf) another account has; its refusal starts with
+        # 'address taken:', and the game's log says it (p2p_sockets.cpp OnWelcome, on stderr: console.txt).
+        self.assertEqual(coop.virtual_address('Kaniel'), '10.137.200.5')
+        self.assertEqual(coop.virtual_address('Ada'), '10.195.165.91')
+        taken = ("GPU [Lib.Net] <Error> p2p_sockets.cpp:856 OnWelcome: Server link: the server refused this game: "
+                 "address taken: another account's game has this id's virtual address; the launcher needs a new id\n")
+        build = 'GPU [Lib.Net] <Error> p2p_sockets.cpp:856 OnWelcome: Server link: the server refused this game: ' \
+                'this server runs build abc\n'
+        self.assertTrue(coop.address_taken(taken))
+        self.assertTrue(coop.address_taken('[Lib.Net] linking\n' + build + taken + '[Render] frame\n'),
+                        'the launcher reads the log several lines at a time')
+        self.assertFalse(coop.address_taken(build), 'another refusal: a new id would not help')
+        self.assertFalse(coop.address_taken('address taken: a line the server did not send\n'))
+        self.assertEqual([coop.id_retry(taken, tries) for tries in range(coop.NEW_ID_TRIES + 1)],
+                         ['retry'] * coop.NEW_ID_TRIES + ['give_up'])
+        self.assertIsNone(coop.id_retry(build, 0))
+        self.assertIsNone(coop.id_retry('[Lib.Net] Server link: the server took this game\'s hello\n', 0))
+        # The new id is made as the first was ('p' and 14 hex digits, a 32-digit secret), never at the
+        # address just refused; the other answers stay.
+        settings = dict(coop.DEFAULTS, account='p0123456789abcd', password='a' * 32, host_ip='play.example.com')
+        with mock.patch.object(coop.secrets, 'token_hex', side_effect=['0123456789abcd', 'ffeeddccbbaa99', 'b' * 32]):
+            fresh = coop.with_new_player_id(settings)
+        self.assertEqual((fresh['account'], fresh['password']), ('pffeeddccbbaa99', 'b' * 32))
+        self.assertEqual(settings['account'], 'p0123456789abcd', 'a copy: the old answers are not changed')
+        self.assertEqual(fresh['host_ip'], 'play.example.com')
+        fresh = coop.with_new_player_id(settings)
+        self.assertTrue(coop.valid_name(fresh['account']) and coop.valid_secret(fresh['password']))
+        self.assertGreaterEqual(len(fresh['password']), 32)
+        self.assertNotEqual(coop.virtual_address(fresh['account']), coop.virtual_address(settings['account']))
+
+    def test_a_new_id_is_only_for_the_server_that_refused_the_old_one(self):
+        # A public server refusing the id's address must not change the id the player's friends' home
+        # host knows (their teams and worlds there): the new id is kept for that server only.
+        settings = dict(coop.DEFAULTS, account='p0123456789abcd', password='a' * 32, host_ip='26.1.2.3')
+        self.assertEqual(coop.player_id_for(settings, 'Play.Example.com'), ('p0123456789abcd', 'a' * 32),
+                         'no override: the one id')
+        made = coop.with_server_id(settings, ' Play.Example.com ')
+        self.assertEqual((made['account'], made['password']), ('p0123456789abcd', 'a' * 32), 'the default id stays')
+        self.assertNotIn('server_ids', settings, 'a copy')
+        account, secret = coop.player_id_for(made, 'play.example.com')
+        self.assertNotEqual(account, 'p0123456789abcd')
+        self.assertTrue(coop.valid_name(account) and coop.valid_secret(secret) and len(secret) >= 32)
+        self.assertNotEqual(coop.virtual_address(account), coop.virtual_address('p0123456789abcd'))
+        self.assertEqual(coop.player_id_for(made, 'PLAY.example.com'), (account, secret), 'the name as typed, any case')
+        self.assertEqual(coop.player_id_for(made, '26.1.2.3'), ('p0123456789abcd', 'a' * 32), 'other hosts: the one id')
+        self.assertEqual(coop.player_id_for(made, 'other.example.com'), ('p0123456789abcd', 'a' * 32))
+        again = coop.with_server_id(made, 'play.example.com')
+        self.assertNotEqual(coop.player_id_for(again, 'play.example.com')[0], account, 'refused again: another')
+        self.assertNotEqual(coop.virtual_address(coop.player_id_for(again, 'play.example.com')[0]),
+                            coop.virtual_address(account))
+        self.assertEqual(coop.player_id_for(made, 'play.example.com'), (account, secret), 'the copy is not changed')
+        with tempfile.TemporaryDirectory() as folder:
+            install = Path(folder)
+            # An old coop.json (no overrides) reads as before and is written back the same.
+            old = {key: '' for key in coop.DEFAULTS}
+            old.update(game='G', host_ip='26.1.2.3', account='kaniel', password='pw', role='guest',
+                       p2p_port='auto', harder='off')
+            coop.settings_path(install).parent.mkdir(parents=True)
+            coop.settings_path(install).write_text(json.dumps(old, indent=2) + '\n', encoding='utf-8')
+            loaded = coop.load_settings(install)
+            self.assertEqual((loaded['account'], loaded['password']), ('kaniel', 'pw'))
+            self.assertEqual(coop.player_id_for(loaded, 'play.example.com'), ('kaniel', 'pw'))
+            coop.save_settings(install, loaded)
+            self.assertEqual(json.loads(coop.settings_path(install).read_text(encoding='utf-8')), old)
+            # The override is saved and read back; a broken one is ignored.
+            coop.save_settings(install, coop.with_server_id(loaded, 'play.example.com'))
+            back = coop.load_settings(install)
+            self.assertEqual(back['account'], 'kaniel')
+            self.assertNotEqual(coop.player_id_for(back, 'play.example.com')[0], 'kaniel')
+            saved = json.loads(coop.settings_path(install).read_text(encoding='utf-8'))
+            saved['server_ids'] = {'play.example.com': 'not an id', 'b.example.com': ['bad name!', 'x']}
+            coop.settings_path(install).write_text(json.dumps(saved), encoding='utf-8')
+            self.assertEqual(coop.player_id_for(coop.load_settings(install), 'play.example.com'), ('kaniel', 'pw'))
+
+    def test_a_public_server_is_typed_by_its_name_or_address(self):
+        # Play on a public server (docs/HOSTED_SERVER.md): Host's IP address also takes a server's name.
+        for good in ('play.example.com', 'yharnam-together.net', 'eu-1.Server.example.org', '26.1.2.3', '203.0.113.7'):
+            self.assertTrue(coop.valid_host(good), good)
+        for bad in ('', 'localhost', '127.0.0.1', '1.2.3', '300.1.1.1', 'http://play.example.com',
+                    'play.example.com:31314', 'with space.com', '-bad.example.com', 'bad-.example.com',
+                    'play..example.com', 'a' * 64 + '.com', 'x.' * 127 + 'com'):
+            self.assertFalse(coop.valid_host(bad), bad)
+        settings = dict(coop.DEFAULTS, game='G', host_ip='play.example.com')
+        self.assertEqual(coop.missing(settings), [])
+
+        def nobody(_name):
+            raise OSError('not found')
+        # An address is used as it is; a name is looked up when PLAY starts (the link and the HTTP ports
+        # then get one address, as with a host's IP).
+        self.assertEqual(coop.resolve_host('26.1.2.3', lookup=nobody), '26.1.2.3')
+        self.assertEqual(coop.resolve_host(' play.example.com ', lookup=lambda name: {'play.example.com': '203.0.113.7'}[name]),
+                         '203.0.113.7')
+        self.assertEqual(coop.resolve_host('play.example.com', lookup=nobody), '')
+        self.assertEqual(coop.resolve_host('play.example.com', lookup=lambda _n: '127.0.0.1'), '', 'not this PC')
+        self.assertEqual(coop.resolve_host('localhost', lookup=lambda _n: '203.0.113.7'), '', 'not a valid answer')
+        self.assertIn('{}', coop.UNKNOWN_SERVER_TEXT)
+
     def test_the_old_settings_bat_carries_over(self):
         with tempfile.TemporaryDirectory() as folder:
             bat = Path(folder) / 'settings.bat'
@@ -380,6 +479,18 @@ class PlayTests(unittest.TestCase):
         import bbport_lang
         for language in ('ru', 'ar', 'es', 'pt', 'fr', 'de', 'it', 'pl', 'tr', 'zh', 'ja', 'ko'):
             self.assertTrue(bbport_lang.table(language).get(coop.NO_BACKEND_TEXT), language)
+
+    def test_the_public_server_and_new_id_texts_are_translated_everywhere(self):
+        import bbport_lang
+        texts = [coop.UNKNOWN_SERVER_TEXT, coop.PUBLIC_SERVER_HELP, coop.NEW_ID_TEXT, coop.NEW_ID_FAILED_TEXT]
+        launcher = (Path(__file__).resolve().parents[1] / 'launcher' / 'bbport_launcher_win.py').read_text(encoding='utf-8')
+        for name in ('UNKNOWN_SERVER_TEXT', 'PUBLIC_SERVER_HELP', 'NEW_ID_TEXT', 'NEW_ID_FAILED_TEXT'):
+            self.assertTrue(f'_(bbport_coop.{name})' in launcher, f'the launcher says {name}')
+        for language in ('ru', 'ar', 'es', 'pt', 'fr', 'de', 'it', 'pl', 'tr', 'zh', 'ja', 'ko'):
+            table = bbport_lang.table(language)
+            for text in texts:
+                self.assertTrue(table.get(text), f'{language}: {text}')
+                self.assertEqual(table[text].count('{}'), text.count('{}'), f'{language}: {text}')
 
     def test_every_release_of_the_game_is_known(self):
         # The game's own content-id table (01.09 eboot): Japan, US, EU and Asia releases, each with its

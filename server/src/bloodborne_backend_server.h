@@ -10,6 +10,7 @@
 
 #include "bloodborne_backend.h"
 #include "config.h"
+#include "http_gate.h"
 
 // The game's own online services on their own port (BackendPort, 20443), where the game reaches
 // them through host_overrides.json. On unless BloodborneBackend=false in shadnet.cfg; then (or
@@ -20,13 +21,15 @@ public:
     explicit BloodborneBackendServer(QObject* parent = nullptr);
     ~BloodborneBackendServer();
 
-    bool Start(ConfigManager* config);
+    // `gate`: who may ask (http_gate.h); null answers everyone.
+    bool Start(ConfigManager* config, HttpGate::Gate* gate = nullptr);
 
 private:
     // "http://<address>:<port>" as the game that sent `request` reaches this server.
     QString AddressFor(const QHttpServerRequest& request) const;
 
     ConfigManager* m_config = nullptr;
+    HttpGate::Gate* m_gate = nullptr;
     QString m_fixedAddress;
     quint16 m_port = 0;
     QString m_webApiPort;

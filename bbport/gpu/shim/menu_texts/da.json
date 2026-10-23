@@ -377,5 +377,11 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Lodret synsfelt i grader; spillets kamera har 43. Hvert kamera udvides lige meget. Træder i kraft, når spillet genstartes.",
  "Mute in the background": "Lydløs i baggrunden",
  "The game is silent while its window is not the active one.": "Spillet er stille, mens dets vindue ikke er det aktive.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Knapperne, spillet viser på skærmen. Automatisk følger det, du spiller med: tasterne nedenfor, mens du bruger tastatur og mus, controllerens egne knapper (PlayStation, Xbox eller Switch), mens du bruger en, og skifter undervejs. En ændring her træder i kraft efter en genstart."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Knapperne, spillet viser på skærmen. Automatisk følger det, du spiller med: tasterne nedenfor, mens du bruger tastatur og mus, controllerens egne knapper (PlayStation, Xbox eller Switch), mens du bruger en, og skifter undervejs. En ændring her træder i kraft efter en genstart.",
+ "Name of the hunter to invite": "Navnet på jægeren, der skal inviteres",
+ "Code of the team to join": "Koden til holdet, du vil med på",
+ "Team code": "Holdkode",
+ "Invite by name": "Inviter med navn",
+ "New code": "Ny kode",
+ "Join by code": "Deltag med kode"
 }

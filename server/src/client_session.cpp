@@ -39,7 +39,11 @@ void ClientSession::Start() {
 }
 
 void ClientSession::OnReadyRead() {
-    m_readBuf.append(m_socket->readAll());
+    Take(m_socket->readAll());
+}
+
+void ClientSession::Take(const QByteArray& bytes) {
+    m_readBuf.append(bytes);
 
     while (m_readBuf.size() >= static_cast<int>(HEADER_SIZE)) {
         // Parse header
@@ -61,8 +65,9 @@ void ClientSession::OnReadyRead() {
         uint64_t pktId;
         std::memcpy(&pktId, hdr + 7, 8);
 
-        if (pktSize > MAX_PACKET_SIZE) {
-            qWarning() << "Oversized packet" << pktSize;
+        // A size under the header's would leave the bytes where they are and loop on them for ever.
+        if (pktSize > MAX_PACKET_SIZE || pktSize < HEADER_SIZE) {
+            qWarning() << "Bad packet size" << pktSize;
             m_socket->disconnectFromHost();
             return;
         }
@@ -269,7 +274,9 @@ void ClientSession::CleanupOnDisconnect() {
 
     // A user's joined-session state is linked to presence: going offline
     // auto-leaves all their sessions (owner-migration / owner-bind teardown)
+#ifndef SHADNET_NO_HTTP
     WebApiRoutes::PurgeUserFromSessions(*m_shared, m_info.userId);
+#endif
 
     // Collect send functions for every online friend before releasing the lock,
     // then remove ourselves from the map.

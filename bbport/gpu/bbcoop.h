@@ -236,6 +236,9 @@ typedef struct bbcoop_lobby {
      * world. */
     int world_count, world;
     bbcoop_lobby_world worlds[BBCOOP_LOBBY_WORLDS];
+    /* The team's code ("K7M 2QX"), for its leader to hand out to a friend the lobby does not list
+     * (a hosted server lists 32 players); "" for the others. */
+    char code[16];
 } bbcoop_lobby;
 /* Fills `lobby`; 0 when the team lobby is off. */
 int bbcoop_lobby_view(bbcoop_lobby *lobby);
@@ -244,7 +247,10 @@ int bbcoop_lobby_view(bbcoop_lobby *lobby);
 enum { BBCOOP_TEAM_CREATE = 1, BBCOOP_TEAM_INVITE = 2, BBCOOP_TEAM_ACCEPT = 3,
        BBCOOP_TEAM_DECLINE = 4, BBCOOP_TEAM_LEAVE = 5, BBCOOP_TEAM_REMOVE = 6,
        BBCOOP_TEAM_WORLD = 10 /* the leader picks the world (`id`; "" a new one) */,
-       BBCOOP_TEAM_FORGET_WORLD = 11 /* the leader forgets a world (`id`) */ };
+       BBCOOP_TEAM_FORGET_WORLD = 11 /* the leader forgets a world (`id`) */,
+       BBCOOP_TEAM_JOIN_CODE = 12 /* join the team of a typed code (`id`) */,
+       BBCOOP_TEAM_NEW_CODE = 13 /* the leader: a fresh code, the old one joins no more */,
+       BBCOOP_TEAM_INVITE_NAME = 14 /* invite the player of a typed name (`id`) */ };
 void bbcoop_lobby_request(int action, const char *id);
 /* The title holds a save's load for the team: the team screen is up (bbport_overlay.cpp). */
 int bbcoop_team_screen(void);

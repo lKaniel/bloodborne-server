@@ -377,5 +377,11 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Campo de visão vertical em graus; a câmara do jogo tem 43. Todas as câmaras são alargadas na mesma medida. Aplica-se depois de reiniciar o jogo.",
  "Mute in the background": "Sem som em segundo plano",
  "The game is silent while its window is not the active one.": "O jogo fica em silêncio enquanto a sua janela não for a ativa.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Os botões que o jogo mostra no ecrã. Automático segue aquilo com que jogas: as teclas atribuídas abaixo enquanto usas teclado e rato, os botões do comando (PlayStation, Xbox ou Switch) enquanto usas um, e muda quando mudas. Uma alteração aqui aplica-se depois de reiniciar."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Os botões que o jogo mostra no ecrã. Automático segue aquilo com que jogas: as teclas atribuídas abaixo enquanto usas teclado e rato, os botões do comando (PlayStation, Xbox ou Switch) enquanto usas um, e muda quando mudas. Uma alteração aqui aplica-se depois de reiniciar.",
+ "Name of the hunter to invite": "Nome do caçador a convidar",
+ "Code of the team to join": "Código da equipa a que se juntar",
+ "Team code": "Código da equipa",
+ "Invite by name": "Convidar por nome",
+ "New code": "Novo código",
+ "Join by code": "Entrar com código"
 }

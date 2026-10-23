@@ -424,6 +424,15 @@ public:
 
     // -- users ----------------------------------------------------------------------------
 
+    std::optional<qint64> UserIdOf(const QString& account) {
+        const auto rows =
+            Query(QStringLiteral("SELECT user_id FROM users WHERE account=?"), {account.toLower()});
+        if (rows.empty()) {
+            return std::nullopt;
+        }
+        return ColInt(rows.front(), QStringLiteral("user_id"));
+    }
+
     qint64 Login(const QString& account) {
         const qint64 now = NowEpoch();
         Transaction tx(Db());
@@ -1452,6 +1461,51 @@ bool BloodborneBackend::Open(const BackendOptions& options, QString* error) {
     }
     m_standardUsed.clear();
     return true;
+}
+
+BackendIdentity IdentityOf(const BackendRequest& request) {
+    if (request.method != "POST" || request.body.isEmpty()) {
+        return {};
+    }
+    const auto json = ParseJson(request.body);
+    if (!json || !json->IsObject()) {
+        return {};
+    }
+    const Json messageId = json->Get(QStringLiteral("MessageId"));
+    if (messageId.IsString() && messageId.StringValue() == QStringLiteral("LoginRequest")) {
+        // As Login reads it (no account: "Hunter").
+        const Json given = json->Get(QStringLiteral("PlatformAccountId"));
+        return {Truthy(given) ? PyStr(given) : QStringLiteral("Hunter"), std::nullopt};
+    }
+    const Json userId = json->Get(QStringLiteral("UserId"));
+    if (userId.IsNull()) {
+        return {};
+    }
+    return {std::nullopt, AsInt(userId, 0)};
+}
+
+std::optional<qint64> BloodborneBackend::UserIdOf(const QString& account) {
+    const QString key = account.toLower();
+    if (const auto known = m_userIds.constFind(key); known != m_userIds.constEnd()) {
+        return *known;
+    }
+    std::optional<qint64> userId;
+    if (!m_store) {
+        userId = StableUserId(account);
+    } else {
+        try {
+            userId = m_store->UserIdOf(account);
+        } catch (const PythonError& e) {
+            qWarning().noquote() << "backend: no UserId for" << account << ":" << e.what();
+        }
+    }
+    if (userId) {
+        if (m_userIds.size() > 100'000) {
+            m_userIds.clear();
+        }
+        m_userIds.insert(key, *userId);
+    }
+    return userId;
 }
 
 Json BloodborneBackend::Counts() const {

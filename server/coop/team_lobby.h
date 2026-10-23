@@ -43,6 +43,30 @@ public:
     // `make_id` names a new team or world (random on the server, counted in the tests).
     explicit TeamLobby(std::function<std::string()> make_id);
 
+    // Hosted (docs/HOSTED_SERVER.md): players who do not know each other. A world is its players'
+    // (TeamWorldInfo.members: those of the teams that played it), listed to them only, a
+    // player's last `worlds_per_player`, and forgotten only by them (for themselves; a world
+    // nobody keeps goes). A player's lobby lists its team, its invites and at most
+    // `lobby_players` others not in a team (the server's whole list for everyone was O(n^2)).
+    void SetHosted(size_t lobby_players, size_t worlds_per_player) {
+        hosted = true;
+        this->lobby_players = lobby_players;
+        this->worlds_per_player = worlds_per_player;
+    }
+    bool Hosted() const {
+        return hosted;
+    }
+
+    // A friend the lobby does not list joins by its team's code or is invited by its name. Wrong
+    // codes and names a player tries are counted: past LookupTries in LookupWindowMs every lookup
+    // of it is refused until the oldest is a window old (codes cannot be guessed).
+    static constexpr size_t LookupTries = 5;
+    static constexpr s64 LookupWindowMs = 60 * 1000;
+    // Where team codes come from (random on the server; a test's own).
+    void SetCodeSource(std::function<std::string()> source) {
+        make_code = std::move(source);
+    }
+
     // Kaniel 2026-10-16 (the team menu in game): a member out of a team, removed by its leader or
     // gone itself; the server takes it out of that team's world too.
     struct Departure {
@@ -58,6 +82,7 @@ public:
         std::vector<Departure> departed; // members out of their team
         // Worlds off the list (forgotten by a leader, or past MaxWorlds): their folders go aside.
         std::vector<std::string> forgotten;
+        std::vector<bbcoop::TeamWorldInfo> forgotten_lines; // their lines, as they were
         // Kaniel 2026-10-17: a world's line changed (a character played in it): the list to disk.
         bool worlds_changed = false;
     };
@@ -69,7 +94,8 @@ public:
     // Members gone for OfflineGraceMs leave their teams. The clock of a member starts at the first
     // call that finds it gone.
     Outcome Expire(s64 now_ms);
-    Outcome Request(const std::string& member, const bbcoop::TeamRequest& request);
+    // `now_ms` counts wrong lookups (JOIN_CODE, INVITE_NAME).
+    Outcome Request(const std::string& member, const bbcoop::TeamRequest& request, s64 now_ms = 0);
 
     // What `member` sees.
     bbcoop::LobbyState StateFor(const std::string& member) const;
@@ -91,6 +117,11 @@ public:
     bool NoteWorld(const bbcoop::TeamWorldInfo& note);
     // An id no listed world (nor team) has.
     std::string NewWorldId();
+    // The operator's (admin.h): the worlds last played (never played: made) before `before_ms`
+    // that no team has picked, off the list (and no player's pick); their lines.
+    std::vector<bbcoop::TeamWorldInfo> TakeIdleWorlds(s64 before_ms);
+    // A world put aside back on the list; false when a listed world has its id.
+    bool AddWorld(bbcoop::TeamWorldInfo world);
 
     // The party key of a world: "world:<id>".
     static std::string PartyOf(const std::string& world);
@@ -112,16 +143,38 @@ private:
     // The started team (not `except`) that plays `world`, if any.
     const bbcoop::Team* PlayedBy(const std::string& world, const bbcoop::Team* except) const;
     static void PickWorld(bbcoop::Team& team, const std::string& world);
-    // Past MaxWorlds: the least lately played no team has picked go.
-    void KeepLastWorlds(std::vector<std::string>& forgotten);
+    // Past MaxWorlds: the least lately played no team has picked go. Hosted: each member of the
+    // `started` team past its worlds_per_player leaves its oldest; a world nobody keeps goes.
+    void KeepLastWorlds(const bbcoop::Team& started, std::vector<std::string>& forgotten,
+                        std::vector<bbcoop::TeamWorldInfo>& forgotten_lines);
     // Phase 7: the leader's sign is 0 (it hosts); a guest keeps its own, one without takes the
     // first free of 7, 6, 5.
     static void GiveSigns(bbcoop::Team& team);
     // A started team nobody plays in any more is not started.
     void Settle();
+    // A code no team has.
+    std::string NewCode();
+    // Whether `member` may look up a code or a name now; a wrong one is noted.
+    bool MayLookUp(const std::string& member, s64 now_ms);
+    void WrongLookup(const std::string& member, s64 now_ms);
+    void AddMember(bbcoop::Team& team, const std::string& member);
+
+    // Who is in which team (an index for StateFor), made again after any change.
+    void Index() const;
+    void Changed() const {
+        indexed = false;
+    }
+
+    bool hosted = false;
+    size_t lobby_players = 0;
+    size_t worlds_per_player = 0;
+    mutable bool indexed = false;
+    mutable std::map<std::string, size_t> team_index; // member -> its team's place in `teams`
 
     std::function<std::string()> make_id;
-    std::map<std::string, Player> players; // signed in
+    std::function<std::string()> make_code;
+    std::map<std::string, std::vector<s64>> wrong_lookups; // by player, the last window's
+    std::map<std::string, Player> players;                 // signed in
     std::vector<bbcoop::Team> teams;
     std::vector<bbcoop::TeamWorldInfo> worlds;                      // the last played first
     std::map<std::string, std::vector<bbcoop::TeamInvite>> invites; // by invited member

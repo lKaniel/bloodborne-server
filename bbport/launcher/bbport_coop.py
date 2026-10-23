@@ -65,6 +65,40 @@ def valid_ip(value):
         return False
 
 
+def valid_host(value):
+    """What Host's IP address takes: a host's IPv4 address (valid_ip) or a public server's name
+    (docs/HOSTED_SERVER.md: play.example.com; no scheme, no port: the game picks the ports)."""
+    if valid_ip(value):
+        return True
+    value = value or ''
+    labels = value.split('.')
+    if len(value) > 253 or len(labels) < 2 or all(label.isdigit() for label in labels):
+        return False
+    return all(re.fullmatch(r'[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?', label) for label in labels)
+
+
+# Said when a server's name finds no address at PLAY.
+UNKNOWN_SERVER_TEXT = "Can't find the server {}: check its address and your internet connection."
+# Under Host's IP address.
+PUBLIC_SERVER_HELP = 'Playing on a public server? Type its address here, a name like play.example.com or an IP.'
+
+
+def resolve_host(value, lookup=socket.gethostbyname):
+    """The IPv4 address the game uses for Host's IP address: an address as it is, a server's name looked up
+    (once, at PLAY: the link and the HTTP ports then go to one address, as with a host's IP). '' when the
+    name finds nothing the other players could reach."""
+    value = (value or '').strip()
+    if valid_ip(value):
+        return value
+    if not valid_host(value):
+        return ''
+    try:
+        address = lookup(value)
+    except (OSError, UnicodeError):
+        return ''
+    return address if valid_ip(address) else ''
+
+
 def is_this_pc(value):
     """Whether the host's IP is an address of this PC: then this PC hosts (it starts the server with Start
     server). There is no Player/Host switch (Kaniel 2026-10-16); an address can be bound only where it is the
@@ -149,7 +183,7 @@ def harder_value(hp, damage, poise):
 
 def missing(settings):
     """The answers still to give (or wrong), in the window's order."""
-    checks = (('game', lambda v: bool(v)), ('host_ip', valid_ip))
+    checks = (('game', lambda v: bool(v)), ('host_ip', valid_host))
     return [key for key, ok in checks if not ok(str(settings.get(key, '')))]
 
 
@@ -163,6 +197,97 @@ def with_player_id(settings):
     settings['account'] = 'p' + secrets.token_hex(7)
     settings['password'] = secrets.token_hex(16)
     return settings
+
+
+def virtual_address(online_id):
+    """The game's virtual address for a player id (net_link.h VirtualAddressOf: a 24-bit FNV-1a hash in
+    10.0.0.0/8, never .0 or .255). A server keeps one account at each (docs/HOSTED_SERVER.md)."""
+    value = 2166136261
+    for byte in online_id.encode('utf-8'):
+        value = ((value ^ byte) * 16777619) & 0xFFFFFFFF
+    host = value & 0xFFFFFF
+    if host & 0xFF in (0, 0xFF):
+        host ^= 0x01
+    return str(ipaddress.IPv4Address((10 << 24) | host))
+
+
+def with_new_player_id(settings):
+    """A copy of the settings with a new id, made as with_player_id makes the first, at another
+    address than the old one: the server refused the old one's address (address_taken)."""
+    settings = dict(settings)
+    old = virtual_address(settings.get('account', ''))
+    while True:
+        account = 'p' + secrets.token_hex(7)
+        if virtual_address(account) != old:
+            break
+    settings['account'], settings['password'] = account, secrets.token_hex(16)
+    return settings
+
+
+def server_key(host):
+    """A server's key in `server_ids`: Host's IP address as typed, in lower case. Not the address a name
+    finds: a public server can move to another address and keep its accounts."""
+    return (host or '').strip().lower()
+
+
+def player_id_for(settings, host):
+    """(id, secret) the game signs in with on `host`: the server's own id when one was made for it
+    (with_server_id), else the player's one id."""
+    own = (settings.get('server_ids') or {}).get(server_key(host))
+    if own:
+        return own[0], own[1]
+    return settings.get('account', ''), settings.get('password', '')
+
+
+def with_server_id(settings, host):
+    """A copy of the settings with a new id for `host` only, at another address than the id it refused
+    (address_taken). The player's one id stays: the friends' home hosts know it, with its teams and worlds."""
+    account, secret = player_id_for(settings, host)
+    fresh = with_new_player_id(dict(settings, account=account, password=secret))
+    settings = dict(settings)
+    settings['server_ids'] = dict(settings.get('server_ids') or {})
+    settings['server_ids'][server_key(host)] = [fresh['account'], fresh['password']]
+    return settings
+
+
+def server_ids_of(saved):
+    """The valid entries of coop.json's server_ids ({} in a file from before it)."""
+    found = saved.get('server_ids') if isinstance(saved, dict) else None
+    if not isinstance(found, dict):
+        return {}
+    return {str(host): [pair[0], pair[1]] for host, pair in found.items()
+            if isinstance(pair, list) and len(pair) == 2 and all(isinstance(v, str) for v in pair)
+            and valid_name(pair[0]) and valid_secret(pair[1])}
+
+
+# How the game's log says the server refused its hello (p2p_sockets.cpp OnWelcome, an error: on stderr,
+# so in console.txt, which the launcher follows), and the refusal of a new id whose virtual address
+# another account has (server link_server.cpp RefusalOf).
+REFUSED_LINE = 'Server link: the server refused this game: '
+ADDRESS_TAKEN = 'address taken:'
+# New ids made after such refusals before the launcher gives up and says so.
+NEW_ID_TRIES = 3
+NEW_ID_TEXT = 'The server already has a player at your id\'s address: making a new id and starting again…'
+NEW_ID_FAILED_TEXT = ("The server refused {} new ids (address taken). Try again later, or tell the server's "
+                      'operator.')
+
+
+def address_taken(text):
+    """Whether the game's log (a line, or the several lines the launcher reads at once) has the server
+    refusing this id's address."""
+    for line in text.splitlines():
+        _before, found, reason = line.partition(REFUSED_LINE)
+        if found and reason.lstrip().startswith(ADDRESS_TAKEN):
+            return True
+    return False
+
+
+def id_retry(line, tries):
+    """What the game's log asks for after `tries` new ids: 'retry' (a new id and start again),
+    'give_up' (tell the player), or None (not an address refusal)."""
+    if not address_taken(line):
+        return None
+    return 'retry' if tries < NEW_ID_TRIES else 'give_up'
 
 
 def settings_path(install):
@@ -203,7 +328,9 @@ def read_settings(install):
     path = settings_path(install)
     try:
         saved = json.loads(path.read_text(encoding='utf-8'))
-        return {key: str(saved.get(key, default)) for key, default in DEFAULTS.items()}
+        settings = {key: str(saved.get(key, default)) for key, default in DEFAULTS.items()}
+        settings['server_ids'] = server_ids_of(saved)
+        return settings
     except (OSError, ValueError, AttributeError):
         pass
     bat = Path(install) / 'settings.bat'
@@ -218,8 +345,10 @@ def read_settings(install):
 def save_settings(install, settings):
     path = settings_path(install)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({key: settings.get(key, default) for key, default in DEFAULTS.items()},
-                               indent=2) + '\n', encoding='utf-8')
+    saved = {key: settings.get(key, default) for key, default in DEFAULTS.items()}
+    if settings.get('server_ids'):  # only once a server refused the id: older files stay as they were
+        saved['server_ids'] = settings['server_ids']
+    path.write_text(json.dumps(saved, indent=2) + '\n', encoding='utf-8')
 
 
 # --- the game ---------------------------------------------------------------------------------

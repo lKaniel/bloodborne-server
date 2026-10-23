@@ -21,6 +21,7 @@
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
 #include "common/singleton.h"
+#include "coop/team_code.h"
 #include "core/bloodborne_compass.h"
 #include "core/bloodborne_crash_dump.h"
 #include "core/bloodborne_map.h"
@@ -414,6 +415,8 @@ extern "C" int bbcoop_lobby_view(bbcoop_lobby* lobby) {
         lobby->in_team = 1;
         lobby->leader = team.leader() == me;
         lobby->started = team.started();
+        // The code its leader hands out (the server sends it to the leader only).
+        CopyName(lobby->code, sizeof(lobby->code), BloodborneCoop::FormatTeamCode(team.code()));
         // The leader first.
         std::vector<const bbcoop::TeamMember*> members;
         for (const bbcoop::TeamMember& m : team.members()) {
@@ -600,7 +603,10 @@ extern "C" void bbcoop_team_choose(int what) {
 }
 
 static_assert(BBCOOP_TEAM_WORLD == bbcoop::TeamRequest::WORLD &&
-              BBCOOP_TEAM_FORGET_WORLD == bbcoop::TeamRequest::FORGET_WORLD);
+              BBCOOP_TEAM_FORGET_WORLD == bbcoop::TeamRequest::FORGET_WORLD &&
+              BBCOOP_TEAM_JOIN_CODE == bbcoop::TeamRequest::JOIN_CODE &&
+              BBCOOP_TEAM_NEW_CODE == bbcoop::TeamRequest::NEW_CODE &&
+              BBCOOP_TEAM_INVITE_NAME == bbcoop::TeamRequest::INVITE_NAME);
 
 extern "C" void bbcoop_lobby_request(int action, const char* id) {
     Core::Bloodborne::Coop::TeamLobbyRequest(static_cast<bbcoop::TeamRequest::Action>(action),

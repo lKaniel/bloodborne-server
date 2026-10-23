@@ -171,7 +171,7 @@ int main() {
           Broker::ClaimStatus::Claimed);
     CHECK(broker.Advertise(Parse(sign), sign, 30, partyA).state ==
           Broker::State::Delivered);
-    CHECK(broker.Consume(Parse(removal), 40).retained == 1); // joined
+    CHECK(broker.Consume(Parse(removal), 40, partyA).retained == 1); // joined
 
     const auto again = broker.Advertise(Parse(sign), sign, 50, partyA);
     CHECK(again.state == Broker::State::Advertised);
@@ -200,7 +200,7 @@ int main() {
     broker.Claim(Parse(claim), claim, 20, {}, partyA);
     CHECK(broker.Advertise(Parse(first), first, 30, partyA).state ==
           Broker::State::Delivered);
-    CHECK(broker.Consume(Parse(removal), 40).retained == 1); // joined
+    CHECK(broker.Consume(Parse(removal), 40, partyA).retained == 1); // joined
     broker.Advertise(Parse(second), second, 45, partyA);
     const QByteArray search = Search(1);
     const auto found = broker.Search(Parse(search), 50, {}, partyA);
@@ -220,7 +220,7 @@ int main() {
     const QByteArray claim = Claim("guest-session", 1, 100);
     broker.Advertise(Parse(sign), sign, 10, partyA);
     broker.Claim(Parse(claim), claim, 20, {}, partyA);
-    CHECK(broker.Consume(Parse(removal), 30).retained == 1);
+    CHECK(broker.Consume(Parse(removal), 30, partyA).retained == 1);
     const auto delivered = broker.Advertise(Parse(sign), sign, 40, partyA);
     CHECK(delivered.state == Broker::State::Delivered);
     CHECK(delivered.pendingClaim == claim);
@@ -289,6 +289,23 @@ int main() {
     CHECK(publicBroker.Search(Parse(search), 20, wardPlacement).isEmpty());
     CHECK(publicBroker.StateFor(QStringLiteral("guest-yharnam"), 100, 20) ==
           Broker::State::Preparing);
+  }
+
+  // A removal is the party's like everything else (the emulator sends its key
+  // with every summon request): one from outside the party, by session or by
+  // user, touches nothing.
+  {
+    Broker broker(60'000);
+    broker.Advertise(Parse(signA), signA, 10, partyA);
+    const QByteArray bySession =
+        R"({"MessageId":"SummonDataRemoveRequest","SessionId":"guest-a"})";
+    const QByteArray byUser =
+        R"({"MessageId":"SummonDataRemoveRequest","UserId":100})";
+    CHECK(broker.Consume(Parse(bySession), 20).consumed == 0);
+    CHECK(broker.Consume(Parse(byUser), 20, partyB).consumed == 0);
+    CHECK(broker.StateFor(QStringLiteral("guest-a"), 100, 21) ==
+          Broker::State::Advertised);
+    CHECK(broker.Consume(Parse(byUser), 30, partyA).consumed == 1);
   }
 
   // Header values are untrusted: trimmed, capped, and anything with control

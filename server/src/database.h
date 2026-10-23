@@ -50,6 +50,7 @@ enum class DbError {
     None = 0,         // No error (success)
     ExistingUsername, // Username already exists
     ExistingEmail,    // Email already exists
+    ExistingAddress,  // Another account's game has this id's virtual address (virtual_address.h)
     InvalidInput,     // Invalid input parameters
     InvalidEmail,     // Invalid email format
     Internal,         // Internal database error
@@ -76,8 +77,10 @@ public:
                                         const QString& token, bool checkToken);
     // CheckUser, and with `make` an id never seen before gets its account now (phase 11: a
     // player's id from the launcher, no registering). A known id's password still has to match.
+    // `why`, when given, says why a new id got no account.
     std::optional<UserRecord> SignIn(const QString& npid, const QString& password,
-                                     const QString& token, bool checkToken, bool make);
+                                     const QString& token, bool checkToken, bool make,
+                                     DbError* why = nullptr);
     std::optional<int64_t> GetUserId(const QString& npid);
     std::optional<QString> GetUsername(int64_t userId);
     std::optional<QString> GetAvatarUrl(int64_t userId);
@@ -121,6 +124,10 @@ public:
 private:
     bool Exec(const QString& sql);
     bool Exec(QSqlQuery& q);
+    // Stores the virtual address of every account without one, unless an older account has it.
+    // Whether every account that may have one has its address now (false: not stored, try later).
+    bool AssignVirtualAddresses();
+    bool AddressTaken(quint32 address);
     QByteArray HashPassword(const QString& password, const QByteArray& salt);
     QByteArray GenerateSalt(int bytes = 64);
     QString GenerateToken(int len = 16);

@@ -377,5 +377,11 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "Derece cinsinden dikey görüş alanı; oyunun kamerası 43. Her kamera aynı ölçüde genişletilir. Oyun yeniden başlatıldıktan sonra uygulanır.",
  "Mute in the background": "Arka planda sessiz",
  "The game is silent while its window is not the active one.": "Oyunun penceresi etkin değilken oyun ses çıkarmaz.",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Oyunun ekranda gösterdiği düğmeler. Otomatik, neyle oynadığını izler: klavye ve fare kullanırken aşağıda atanan tuşları, kontrolcü kullanırken onun düğmelerini (PlayStation, Xbox veya Switch) gösterir ve değiştirdiğinde anında değişir. Buradaki bir değişiklik yeniden başlattıktan sonra uygulanır."
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "Oyunun ekranda gösterdiği düğmeler. Otomatik, neyle oynadığını izler: klavye ve fare kullanırken aşağıda atanan tuşları, kontrolcü kullanırken onun düğmelerini (PlayStation, Xbox veya Switch) gösterir ve değiştirdiğinde anında değişir. Buradaki bir değişiklik yeniden başlattıktan sonra uygulanır.",
+ "Name of the hunter to invite": "Davet edilecek avcının adı",
+ "Code of the team to join": "Katılınacak takımın kodu",
+ "Team code": "Takım kodu",
+ "Invite by name": "Adla davet et",
+ "New code": "Yeni kod",
+ "Join by code": "Kodla katıl"
 }

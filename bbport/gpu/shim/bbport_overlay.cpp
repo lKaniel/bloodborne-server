@@ -21,6 +21,7 @@
 
 #include <SDL3/SDL.h>
 #include "../bbcoop.h"
+#include "../bbgpu.h"
 #include "bbport_game_art.h"
 #include "bbport_prompts.h"
 #include "bbport_coop_art.h"
@@ -2748,6 +2749,8 @@ void TextPrompt() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
+    // Over the team screen too (its join by code, invite by name), whatever was clicked last.
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
     ImGui::TextUnformatted(title.c_str());
     ImGui::Separator();
     ImGui::Text("%s_", text.c_str());
@@ -2789,6 +2792,35 @@ struct Focus {
     bool was_in_team = false;
 };
 Focus focus;
+
+// A friend the lobby does not list (a hosted server lists 32 players): the hunter's name to invite,
+// or the team's code to join, typed in the window's text entry (the game's name dialog's, drawn by
+// TextPrompt; Enter or Cross sends it, Escape or Circle not).
+enum class Ask { None, Name, Code };
+Ask asking = Ask::None;
+
+void BeginAsk(Ask what) {
+    const char* prompt = what == Ask::Name ? T("Name of the hunter to invite", "Имя охотника для приглашения")
+                                           : T("Code of the team to join", "Код команды для вступления");
+    if (bbgpu_text_input_begin("", prompt)) {
+        asking = what;
+    }
+}
+
+void PollAsk() {
+    if (asking == Ask::None) {
+        return;
+    }
+    char text[128];
+    const int state = bbgpu_text_input_poll(text, sizeof(text));
+    if (state == 0) {
+        return; // still typing
+    }
+    if (state == 1 && text[0] != 0) {
+        bbcoop_lobby_request(asking == Ask::Name ? BBCOOP_TEAM_INVITE_NAME : BBCOOP_TEAM_JOIN_CODE, text);
+    }
+    asking = Ask::None;
+}
 
 /// One button: its label (drawn centred in `size` at `at`), true when pressed.
 bool Button(ImDrawList* draw, const char* id, const char* label, ImVec2 at, ImVec2 size, bool enabled = true,
@@ -3223,6 +3255,11 @@ void Screen() {
                      ImGui::IsKeyPressed(ImGuiKey_Space, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
     focus.items = 0;
     focus.ids.clear();
+    PollAsk();
+    if (asking != Ask::None) {
+        focus.move = 0; // the pad's other buttons stay with the text entry
+        focus.activate = false;
+    }
     // Kaniel 2026-10-16: opened from the game's System menu (lobby.menu), Circle or Escape closes
     // it, as the game's own pages close.
     if (lobby.menu && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
@@ -3300,6 +3337,10 @@ void Screen() {
     } else {
         status = std::string(lobby.members[0].name) + T("'s team", " — команда") + "   " +
                  std::to_string(lobby.member_count) + T(" of 4", " из 4");
+        if (lobby.leader && lobby.code[0]) {
+            // For a friend the lobby does not list: it types the code (Join by code).
+            status += std::string("   ") + T("Team code", "Код команды") + ": " + lobby.code;
+        }
     }
     ts = ImGui::CalcTextSize(status.c_str());
     draw->AddText(ImVec2(win.x + (size.x - ts.x) * 0.5f, win.y + S(MenuArt::Has(MenuArt::HeaderOrnament) ? 102.0f : 84.0f)),
@@ -3349,6 +3390,27 @@ void Screen() {
     ListRule(draw, right_x, right_x + list_w, lists_y + S(36.0f));
     ImGui::PushFont(MenuArt::Font(), 19.0f);
     const float row_h = S(42.0f), button_w = S(130.0f);
+    {
+        // Beside the lists' titles: a friend not listed, by its name (into this team) or by the
+        // team's code (into its team); the leader makes a new code (the old one joins no more).
+        const ImVec2 ask_size(S(220.0f), S(36.0f));
+        const float ask_y = lists_y - S(4.0f);
+        if (Button(draw, "byname", T("Invite by name", "Пригласить по имени"),
+                   ImVec2(left_x + list_w - ask_size.x, ask_y), ask_size,
+                   lobby.in_team && lobby.member_count < BBCOOP_LOBBY_TEAM && asking == Ask::None)) {
+            BeginAsk(Ask::Name);
+        }
+        if (lobby.in_team && lobby.leader) {
+            if (Button(draw, "newcode", T("New code", "Новый код"), ImVec2(right_x + list_w - ask_size.x, ask_y),
+                       ask_size)) {
+                bbcoop_lobby_request(BBCOOP_TEAM_NEW_CODE, "");
+            }
+        } else if (Button(draw, "bycode", T("Join by code", "Вступить по коду"),
+                          ImVec2(right_x + list_w - ask_size.x, ask_y), ask_size,
+                          lobby.signed_in && !lobby.in_team && asking == Ask::None)) {
+            BeginAsk(Ask::Code);
+        }
+    }
     // As many rows as fit above the world row and the buttons (5 on the old 900 px panel).
     const int rows = 5;
     float y = lists_y + S(50.0f);

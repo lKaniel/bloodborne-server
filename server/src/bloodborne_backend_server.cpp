@@ -42,9 +42,13 @@ QString InFolder(const QString& folder, const QString& name) {
 } // namespace
 
 BloodborneBackendServer::BloodborneBackendServer(QObject* parent) : QObject(parent) {}
-BloodborneBackendServer::~BloodborneBackendServer() = default;
+BloodborneBackendServer::~BloodborneBackendServer() {
+    if (m_gate) {
+        m_gate->SetUserIdOf({});
+    }
+}
 
-bool BloodborneBackendServer::Start(ConfigManager* config) {
+bool BloodborneBackendServer::Start(ConfigManager* config, HttpGate::Gate* gate) {
     m_config = config;
     const BackendConfig settings = config->GetBackend();
     m_port = settings.port;
@@ -84,6 +88,12 @@ bool BloodborneBackendServer::Start(ConfigManager* config) {
         return false;
     }
 
+    // The summons on the WebAPI port name the same UserIds.
+    if (gate) {
+        m_gate = gate;
+        m_gate->SetUserIdOf([this](const QString& account) { return m_backend.UserIdOf(account); });
+    }
+
     m_http = std::make_unique<QHttpServer>(this);
     // Every path and method goes to the backend, as in the Python server.
     m_http->setMissingHandler(this, [this](const QHttpServerRequest& request,
@@ -92,6 +102,24 @@ bool BloodborneBackendServer::Start(ConfigManager* config) {
         backendRequest.method = MethodName(request.method());
         backendRequest.path = request.url().path();
         backendRequest.body = request.body();
+        // Hosted (http_gate.h): only a linked game's address, as one of its players. A GET (the
+        // ss.info a launcher checks before the game runs, the status page) acts as nobody.
+        if (m_gate && m_gate->Enforced() && backendRequest.method != "GET") {
+            const BackendIdentity who = IdentityOf(backendRequest);
+            const auto from = HttpGate::Ipv4Of(request.remoteAddress());
+            const HttpGate::Verdict verdict = !from         ? HttpGate::Verdict::NoLink
+                                              : who.account ? m_gate->ForPlayer(*from, who.account)
+                                                            : m_gate->ForUserId(*from, who.userId);
+            if (verdict != HttpGate::Verdict::Allowed) {
+                qDebug().noquote()
+                    << "backend: refused" << request.remoteAddress().toString()
+                    << backendRequest.path
+                    << (verdict == HttpGate::Verdict::NoLink ? "(no link)" : "(not its player)");
+                responder.sendResponse(QHttpServerResponse(
+                    "text/plain", "Forbidden", QHttpServerResponse::StatusCode::Forbidden));
+                return;
+            }
+        }
         const QString address = AddressFor(request);
         backendRequest.servicesUrl = QStringLiteral("http://%1:%2").arg(address).arg(m_port);
         backendRequest.summonUrl = QStringLiteral("http://%1:%2").arg(address, m_webApiPort);

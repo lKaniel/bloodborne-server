@@ -9,6 +9,10 @@
 
 #include "database.h"
 
+namespace HttpGate {
+class Gate;
+}
+
 namespace WebApiAuth {
 
 struct AuthResult {
@@ -27,6 +31,10 @@ struct AuthResult {
 // Codes (mirror of common PSN WebAPI auth failures):
 //   - missing/malformed Authorization header = 401, code 0x80920002
 //   - token doesn't match any account         = 401, code 0x80920001
+//   - hosted (http_gate.h): the account not linked from the request's address = 403
 AuthResult Authenticate(const QHttpServerRequest& req, Database& db);
+
+// Who may ask (http_gate.h), for every Authenticate; null (the default) answers every token.
+void SetGate(const HttpGate::Gate* gate);
 
 } // namespace WebApiAuth

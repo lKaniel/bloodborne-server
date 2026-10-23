@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <QtEndian>
 #include "coop/packet_routes.h"
+#include "virtual_address.h"
 
 namespace ServerLink {
 
@@ -110,15 +111,7 @@ quint16 Vport(const QByteArray& frame, int at) {
 } // namespace
 
 Endpoint VirtualEndpointOf(const QByteArray& online_id) {
-    quint32 hash = 2166136261u; // FNV-1a
-    for (const char c : online_id) {
-        hash = (hash ^ static_cast<quint8>(c)) * 16777619u;
-    }
-    quint32 host = hash & 0xFFFFFF;
-    if ((host & 0xFF) == 0 || (host & 0xFF) == 0xFF) {
-        host ^= 0x01; // no .0 or .255
-    }
-    return {(10u << 24) | host, VirtualPort};
+    return {VirtualAddressOf(online_id), VirtualPort};
 }
 
 QString Endpoint::Text() const {
@@ -359,7 +352,11 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
     if (hello->version != LinkVersion) {
         refusal = "link version " + QByteArray::number(hello->version) + ", this server speaks " +
                   QByteArray::number(LinkVersion);
-    } else if (!hello->build.isEmpty()) {
+    } else if (!required_build.isEmpty() && !hello->build.isEmpty() &&
+               hello->build != required_build) {
+        refusal = "another build: everyone needs the same release (this game runs " + hello->build +
+                  ", the server needs " + required_build + ")";
+    } else if (!hello->build.isEmpty() && required_build.isEmpty()) {
         // Every other linked game's build (a game saying hello again is not one). Phase 11: a game
         // signs in before its co-op code says the build; none said holds nothing, either way.
         for (const Link& link : std::as_const(members)) {
@@ -370,8 +367,17 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
             }
         }
     }
-    if (refusal.isEmpty() && sign_in && !sign_in(hello->online_id, hello->secret)) {
-        refusal = "sign-in refused: another player has this id (" + hello->online_id + ")";
+    if (refusal.isEmpty() && sign_in) {
+        const std::optional<SignInVerdict> signed_in = sign_in(hello->online_id, hello->secret);
+        if (!signed_in) {
+            return; // still checking: the next hello hears
+        }
+        if (!signed_in->accepted) {
+            refusal =
+                !signed_in->refusal.isEmpty()
+                    ? signed_in->refusal
+                    : "sign-in refused: another player has this id (" + hello->online_id + ")";
+        }
     }
     const Endpoint virtual_endpoint = VirtualEndpointOf(hello->online_id);
     if (refusal.isEmpty()) {
@@ -418,7 +424,7 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
     link.last_heard_ms = now_ms;
     link.quiet = false;
     result.sends.append({from, Encode(Welcome{true, {}})});
-    result.linked.append({link.online_id, link.virtual_endpoint});
+    result.linked.append({link.online_id, link.virtual_endpoint, link.endpoint});
     result.log.append(
         QStringLiteral("server link: %1 %2, build %3, %4 linked")
             .arg(again ? "hello again from" : "linked", Name(link), QString::fromUtf8(link.build))
@@ -531,6 +537,36 @@ void Hub::TellOthers(const Link& about, MemberState state, qint64 gap_ms, Result
             result.sends.append({other.endpoint, told});
         }
     }
+}
+
+QList<Hub::LinkRow> Hub::Links() const {
+    QList<LinkRow> rows;
+    rows.reserve(members.size());
+    for (const Link& link : members) {
+        rows.append({link.endpoint, link.online_id, link.build, link.last_heard_ms});
+    }
+    return rows;
+}
+
+Hub::Result Hub::Kick(const QByteArray& online_id, quint32 ipv4, qint64 now_ms) {
+    Result result;
+    QList<quint64> kicked;
+    for (const Link& link : std::as_const(members)) {
+        if ((!online_id.isEmpty() && link.online_id == online_id) ||
+            (ipv4 != 0 && link.endpoint.ipv4 == ipv4)) {
+            kicked.append(link.endpoint.Key());
+        }
+    }
+    for (const quint64 key : kicked) {
+        const Link link = members.value(key);
+        Unlink(key);
+        result.log.append(QStringLiteral("server link: %1 kicked by the operator, %2 linked")
+                              .arg(Name(link))
+                              .arg(members.size()));
+        TellOthers(link, MemberState::Gone, now_ms - link.last_heard_ms, result);
+        result.gone.append(link.endpoint);
+    }
+    return result;
 }
 
 Hub::Result Hub::Tick(qint64 now_ms) {

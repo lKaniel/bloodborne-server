@@ -34,6 +34,9 @@ ShadNetServer::~ShadNetServer() {
 bool ShadNetServer::Start(ConfigManager* config) {
     m_config = config;
     m_shared.config = config;
+    m_shared.httpGate.SetEnforced(config->IsHttpLinkedOnly());
+    if (config->IsHttpLinkedOnly())
+        qInfo() << "HTTP ports: only addresses with a signed-in link, as its players";
 
     m_dbPath = "db/shadnet.db";
     QDir().mkpath("db");
@@ -81,14 +84,18 @@ bool ShadNetServer::Start(ConfigManager* config) {
         qInfo() << "Matching2 disabled; the games' link (UDP) not started";
     }
 
+#ifndef SHADNET_NO_HTTP
     // Read-only stats HTTP server (live usage + public leaderboards), own port.
-    if (config->IsStatsEnabled()) {
+    // Hosted: off unless HostedStats too (it lists player ids and caches whatever is asked).
+    const HostedConfig hosted = config->GetHosted();
+    if (config->IsStatsEnabled() && (!hosted.enabled || hosted.stats)) {
         m_statsServer = std::make_unique<StatsServer>(this);
         if (!m_statsServer->Start(config, m_scoreCache.get(), &m_shared, m_dbPath)) {
             qWarning() << "StatsServer failed to start; continuing without stats";
             m_statsServer.reset();
         }
     }
+#endif
 
     return true;
 }

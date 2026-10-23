@@ -3,10 +3,12 @@
 // The team lobby's rules (coop/team_lobby.h): teams, invites, Ready and Start,
 // and the server's worlds.
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <string>
 #include <vector>
 
+#include "coop/team_code.h"
 #include "coop/team_lobby.h"
 
 using namespace BloodborneCoop;
@@ -667,6 +669,287 @@ int AWorldsLampsAreCounted() {
   return 0;
 }
 
+// Hosted (docs/HOSTED_SERVER.md): a world is its players'; a lobby lists few
+// others.
+static std::string PlayAWorld(TeamLobby &lobby, const std::string &leader,
+                              const std::string &guest) {
+  lobby.Request(leader, Request(Action::CREATE));
+  lobby.Request(leader, Request(Action::INVITE, guest));
+  lobby.Request(guest, Request(Action::ACCEPT, {}, lobby.TeamOf(leader)->id()));
+  lobby.Request(leader, Request(Action::READY, {}, {}, 0));
+  lobby.Request(guest, Request(Action::READY, {}, {}, 1));
+  lobby.Request(leader, Request(Action::START));
+  return lobby.TeamOf(leader)->world();
+}
+
+static int HostedWorldsAreTheirPlayersOnly() {
+  TeamLobby lobby = NewLobby();
+  lobby.SetHosted(2, 16);
+  for (const char *m : {"a", "b", "c", "d", "e"}) {
+    lobby.Arrive(m, m, false);
+  }
+  const std::string world = PlayAWorld(lobby, "a", "b");
+  CHECK(!world.empty());
+  CHECK(lobby.StateFor("a").worlds_size() == 1);
+  CHECK(lobby.StateFor("b").worlds_size() == 1);
+  CHECK(lobby.StateFor("c").worlds_size() == 0);            // not c's
+  CHECK(lobby.StateFor("a").worlds(0).members_size() == 0); // never sent
+  // c can neither pick it nor forget it.
+  lobby.Request("c", Request(Action::CREATE));
+  bbcoop::TeamRequest pick = Request(Action::WORLD);
+  pick.set_world(world);
+  CHECK(!lobby.Request("c", pick).notice.empty());
+  lobby.Request("c", Request(Action::LEAVE));
+  bbcoop::TeamRequest forget = Request(Action::FORGET_WORLD);
+  forget.set_world(world);
+  CHECK(!lobby.Request("c", forget).notice.empty());
+  // Its players forget it each for themselves; the last one's goes.
+  lobby.Request("a", Request(Action::LEAVE));
+  lobby.Request("b", Request(Action::LEAVE));
+  const TeamLobby::Outcome first = lobby.Request("a", forget);
+  CHECK(first.notice.empty() && first.forgotten.empty());
+  CHECK(lobby.StateFor("a").worlds_size() == 0);
+  CHECK(lobby.StateFor("b").worlds_size() == 1);
+  const TeamLobby::Outcome last = lobby.Request("b", forget);
+  CHECK(last.forgotten == std::vector<std::string>{world});
+  CHECK(lobby.Worlds().empty());
+  // The line put aside with it names the last one who kept it: restored, it is
+  // b's again (a forgot it before, for itself).
+  CHECK(last.forgotten_lines.size() == 1);
+  CHECK(last.forgotten_lines[0].members_size() == 1 &&
+        last.forgotten_lines[0].members(0) == "b");
+  return 0;
+}
+
+static int HostedServersKeepEveryPlayersWorlds() {
+  TeamLobby lobby = NewLobby();
+  lobby.SetHosted(32, 16);
+  for (int pair = 0; pair < 20; ++pair) {
+    const std::string a = "a" + std::to_string(pair);
+    const std::string b = "b" + std::to_string(pair);
+    lobby.Arrive(a, a, false);
+    lobby.Arrive(b, b, false);
+    PlayAWorld(lobby, a, b);
+  }
+  CHECK(lobby.Worlds().size() == 20); // no server-wide cap of MaxWorlds
+  return 0;
+}
+
+static int AHostedLobbyListsFewOthers() {
+  TeamLobby lobby = NewLobby();
+  lobby.SetHosted(3, 16);
+  for (int n = 0; n < 50; ++n) {
+    lobby.Arrive("p" + std::to_string(n), "P" + std::to_string(n), false);
+  }
+  CHECK(lobby.StateFor("p0").players_size() == 3);
+  // Its teammates and the players its team invited are always listed.
+  lobby.Request("p0", Request(Action::CREATE));
+  lobby.Request("p0", Request(Action::INVITE, "p40"));
+  const bbcoop::LobbyState state = lobby.StateFor("p0");
+  CHECK(std::ranges::any_of(state.players(),
+                            [](const auto &p) { return p.member() == "p40"; }));
+  // And the leader who invited a player is listed to it.
+  const bbcoop::LobbyState invited = lobby.StateFor("p40");
+  CHECK(std::ranges::any_of(invited.players(),
+                            [](const auto &p) { return p.member() == "p0"; }));
+  return 0;
+}
+
+// A friend the lobby does not list joins by the team's code: the leader handed
+// it out (its invite), the friend typed it (its accept).
+static int AFriendJoinsByTheTeamsCode() {
+  TeamLobby lobby = NewLobby();
+  lobby.SetHosted(1, 16);
+  for (const char *m : {"a", "b", "c", "d", "e", "f"}) {
+    lobby.Arrive(m, m, false);
+  }
+  lobby.Request("a", Request(Action::CREATE));
+  const std::string code = lobby.StateFor("a").team().code();
+  CHECK(NormalizeTeamCode(code) == code);
+  bbcoop::TeamRequest join = Request(Action::JOIN_CODE);
+  // Typed in lower case with a dash in the middle.
+  std::string typed = code.substr(0, 3) + "-" + code.substr(3);
+  std::ranges::transform(typed, typed.begin(), [](char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  join.set_code(typed);
+  const TeamLobby::Outcome joined = lobby.Request("e", join);
+  CHECK(joined.changed && joined.notice.empty());
+  CHECK(lobby.TeamOf("e") == lobby.TeamOf("a"));
+  // Only the leader sees the code.
+  CHECK(lobby.StateFor("e").team().code().empty());
+  CHECK(lobby.StateFor("a").team().code() == code);
+  // In a team already: refused.
+  CHECK(!lobby.Request("e", join).notice.empty());
+  // A wrong code is refused.
+  bbcoop::TeamRequest wrong = Request(Action::JOIN_CODE);
+  wrong.set_code(code == "222222" ? "333333" : "222222");
+  CHECK(!lobby.Request("b", wrong).notice.empty());
+  CHECK(!lobby.TeamOf("b"));
+  // A full team is refused.
+  join.set_code(code);
+  CHECK(lobby.Request("b", join).notice.empty());
+  CHECK(lobby.Request("c", join).notice.empty());
+  CHECK(!lobby.Request("d", join).notice.empty());
+  CHECK(!lobby.TeamOf("d"));
+  // Only the leader makes a new code; the old one joins no more.
+  CHECK(!lobby.Request("b", Request(Action::NEW_CODE)).notice.empty());
+  lobby.Request("c", Request(Action::LEAVE));
+  CHECK(lobby.Request("a", Request(Action::NEW_CODE)).changed);
+  const std::string fresh = lobby.StateFor("a").team().code();
+  CHECK(fresh != code && NormalizeTeamCode(fresh) == fresh);
+  CHECK(!lobby.Request("d", join).notice.empty());
+  join.set_code(fresh);
+  CHECK(lobby.Request("d", join).notice.empty());
+  CHECK(lobby.TeamOf("d") == lobby.TeamOf("a"));
+  return 0;
+}
+
+static int TeamCodesAreUnique() {
+  TeamLobby lobby = NewLobby();
+  // A source that repeats itself: the second team does not get the first's.
+  lobby.SetCodeSource([n = 0]() mutable {
+    ++n;
+    return n <= 3 ? std::string{"AAAAAA"} : std::string{"BBBBBB"};
+  });
+  lobby.Arrive("a", "a", false);
+  lobby.Arrive("b", "b", false);
+  lobby.Request("a", Request(Action::CREATE));
+  lobby.Request("b", Request(Action::CREATE));
+  CHECK(lobby.StateFor("a").team().code() == "AAAAAA");
+  CHECK(lobby.StateFor("b").team().code() == "BBBBBB");
+  // A new code is never the team's own again.
+  lobby.SetCodeSource([n = 0]() mutable {
+    ++n;
+    return n <= 2 ? std::string{"BBBBBB"} : std::string{"CCCCCC"};
+  });
+  lobby.Request("b", Request(Action::NEW_CODE));
+  CHECK(lobby.StateFor("b").team().code() == "CCCCCC");
+  // The server's own source gives codes in the alphabet.
+  TeamLobby real = NewLobby();
+  real.Arrive("a", "a", false);
+  real.Request("a", Request(Action::CREATE));
+  const std::string code = real.StateFor("a").team().code();
+  CHECK(code.size() == TeamCodeLength && NormalizeTeamCode(code) == code);
+  return 0;
+}
+
+// Wrong codes and names are counted per player: past LookupTries a minute,
+// even a right one waits (guessing 2^30 codes at 5 a minute takes centuries).
+static int WrongLookupsAreLimited() {
+  for (const bool hosted : {false, true}) {
+    TeamLobby lobby = NewLobby();
+    if (hosted) {
+      lobby.SetHosted(32, 16);
+    }
+    lobby.Arrive("a", "Kaniel", false);
+    lobby.Arrive("b", "Ada", false);
+    lobby.Request("a", Request(Action::CREATE));
+    const std::string code = lobby.StateFor("a").team().code();
+    bbcoop::TeamRequest wrong = Request(Action::JOIN_CODE);
+    wrong.set_code(code == "222222" ? "333333" : "222222");
+    for (size_t n = 0; n < TeamLobby::LookupTries; ++n) {
+      CHECK(!lobby.Request("b", wrong, 1000 + static_cast<s64>(n))
+                 .notice.empty());
+    }
+    bbcoop::TeamRequest right = Request(Action::JOIN_CODE);
+    right.set_code(code);
+    const TeamLobby::Outcome held = lobby.Request("b", right, 2000);
+    CHECK(held.notice.find("too many") != std::string::npos);
+    CHECK(!lobby.TeamOf("b"));
+    // Names looked up in vain count too (each player its own).
+    bbcoop::TeamRequest by_name = Request(Action::INVITE_NAME);
+    by_name.set_name("Gehrman");
+    for (size_t n = 0; n < TeamLobby::LookupTries; ++n) {
+      CHECK(lobby.Request("a", by_name, 1000).notice.find("too many") ==
+            std::string::npos);
+    }
+    by_name.set_name("Ada");
+    CHECK(lobby.Request("a", by_name, 2000).notice.find("too many") !=
+          std::string::npos);
+    // A minute after the first wrong tries, it is let in.
+    CHECK(lobby.Request("b", right, 1000 + TeamLobby::LookupWindowMs)
+              .notice.empty());
+    CHECK(lobby.TeamOf("b") == lobby.TeamOf("a"));
+  }
+  return 0;
+}
+
+// A friend not listed (hosted: 32 others) is invited by the name the lobby
+// shows; the invited player is then listed to its inviter.
+static int AFriendIsInvitedByName() {
+  TeamLobby lobby = NewLobby();
+  lobby.SetHosted(3, 16);
+  for (int n = 0; n < 50; ++n) {
+    lobby.Arrive("p" + std::to_string(n), "P" + std::to_string(n), false);
+  }
+  lobby.Arrive("h1", "", false); // "Hunter"
+  lobby.Arrive("h2", "", false); // "Hunter"
+  bbcoop::TeamRequest invite = Request(Action::INVITE_NAME);
+  invite.set_name("p40");
+  CHECK(!lobby.Request("p0", invite).notice.empty()); // no team yet
+  lobby.Request("p0", Request(Action::CREATE));
+  const bool listed_before =
+      std::ranges::any_of(lobby.StateFor("p0").players(),
+                          [](const auto &p) { return p.member() == "p40"; });
+  CHECK(!listed_before);
+  invite.set_name(" p40 "); // case and spaces aside
+  const TeamLobby::Outcome done = lobby.Request("p0", invite, 10);
+  CHECK(done.changed && done.notice.empty());
+  CHECK(lobby.StateFor("p40").invites_size() == 1);
+  CHECK(std::ranges::any_of(lobby.StateFor("p0").players(),
+                            [](const auto &p) { return p.member() == "p40"; }));
+  // Two players of that name: refused, nobody invited.
+  invite.set_name("Hunter");
+  const TeamLobby::Outcome two = lobby.Request("p0", invite, 20);
+  CHECK(two.notice.find("several") != std::string::npos);
+  CHECK(lobby.StateFor("h1").invites_size() == 0);
+  // Nobody of that name, or itself: refused.
+  invite.set_name("Gehrman");
+  CHECK(!lobby.Request("p0", invite, 30).notice.empty());
+  invite.set_name("P0");
+  CHECK(!lobby.Request("p0", invite, 40).notice.empty());
+  return 0;
+}
+
+// A hosted player keeps its newest worlds_per_player worlds: a new one drops
+// it from its oldest (one nobody else keeps goes), so CREATE/START/LEAVE again
+// and again does not grow the list without end.
+static int AHostedPlayersWorldsAreCapped() {
+  TeamLobby lobby = NewLobby();
+  lobby.SetHosted(32, 3);
+  for (const char *m : {"a", "b"}) {
+    lobby.Arrive(m, m, false);
+  }
+  const std::string shared = PlayAWorld(lobby, "a", "b");
+  lobby.Request("a", Request(Action::LEAVE));
+  lobby.Request("b", Request(Action::LEAVE));
+  size_t forgotten = 0;
+  for (int round = 0; round < 10; ++round) {
+    lobby.Request("a", Request(Action::CREATE));
+    lobby.Request("a", Request(Action::READY, {}, {}, 0));
+    const TeamLobby::Outcome go = lobby.Request("a", Request(Action::START));
+    CHECK(go.notice.empty());
+    CHECK(go.forgotten.size() == go.forgotten_lines.size());
+    // Each line put aside still names its player: restored, it is a's again.
+    for (const bbcoop::TeamWorldInfo &line : go.forgotten_lines) {
+      CHECK(std::ranges::count(line.members(), "a") == 1);
+    }
+    forgotten += go.forgotten.size();
+    lobby.Request("a", Request(Action::LEAVE));
+  }
+  size_t mine = 0;
+  for (const bbcoop::TeamWorldInfo &world : lobby.Worlds()) {
+    mine += std::ranges::count(world.members(), "a");
+  }
+  CHECK(mine == 3);
+  CHECK(forgotten == 7); // a's own worlds past its 3; the shared one is b's
+  CHECK(lobby.Worlds().size() == 4);
+  CHECK(lobby.StateFor("b").worlds_size() == 1);
+  CHECK(lobby.StateFor("b").worlds(0).id() == shared);
+  return 0;
+}
+
 int main() {
   int failed = 0;
   failed |= PlayersAreSeenByTheirCharactersName();
@@ -688,6 +971,14 @@ int main() {
   failed |= AWorldsLineSaysWhoPlayedItAndWhenItWasMade();
   failed |= AWorldPlayedNowSaysByWhichTeam();
   failed |= APickBeforeATeamGoesIntoTheTeam();
+  failed |= HostedWorldsAreTheirPlayersOnly();
+  failed |= HostedServersKeepEveryPlayersWorlds();
+  failed |= AHostedPlayersWorldsAreCapped();
+  failed |= AHostedLobbyListsFewOthers();
+  failed |= AFriendJoinsByTheTeamsCode();
+  failed |= TeamCodesAreUnique();
+  failed |= WrongLookupsAreLimited();
+  failed |= AFriendIsInvitedByName();
   if (failed == 0) {
     std::cout << "team lobby: all checks passed\n";
   }

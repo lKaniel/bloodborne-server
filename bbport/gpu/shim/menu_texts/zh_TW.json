@@ -377,5 +377,11 @@
  "Vertical field of view in degrees; the game's camera has 43. Every camera is widened by the same amount. Applies after restarting the game.": "垂直視野角度；遊戲的鏡頭為 43。所有鏡頭按相同幅度放寬。重新啟動遊戲後生效。",
  "Mute in the background": "背景時靜音",
  "The game is silent while its window is not the active one.": "遊戲視窗不是使用中的視窗時，遊戲不發出聲音。",
- "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "遊戲在畫面上顯示的按鍵。自動會跟隨你正在使用的裝置：使用鍵盤和滑鼠時顯示下方綁定的按鍵，使用手把時顯示手把自己的按鍵（PlayStation、Xbox 或 Switch），切換裝置時隨之切換。此處的變更在重新啟動後生效。"
+ "The buttons the game shows on screen. Automatic follows what you play with: the keys bound below while you use the keyboard and mouse, the controller's own buttons (PlayStation, Xbox or Switch) while you use one, switching as you change. A change here applies after a restart.": "遊戲在畫面上顯示的按鍵。自動會跟隨你正在使用的裝置：使用鍵盤和滑鼠時顯示下方綁定的按鍵，使用手把時顯示手把自己的按鍵（PlayStation、Xbox 或 Switch），切換裝置時隨之切換。此處的變更在重新啟動後生效。",
+ "Name of the hunter to invite": "要邀請的獵人名稱",
+ "Code of the team to join": "要加入的隊伍代碼",
+ "Team code": "隊伍代碼",
+ "Invite by name": "依名稱邀請",
+ "New code": "新代碼",
+ "Join by code": "以代碼加入"
 }

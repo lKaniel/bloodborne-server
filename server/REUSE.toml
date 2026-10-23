@@ -35,6 +35,7 @@ path = [
     "documentation/protocol.md",
     "documentation/signaling.md",
     "externals/CMakeLists.txt",
+    "hosting/**",
 ]
 
 precedence = "aggregate"

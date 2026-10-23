@@ -11,7 +11,11 @@
 #include <QSqlQuery>
 #include <QString>
 
+#include "http_gate.h"
+
 namespace {
+
+const HttpGate::Gate* g_gate = nullptr;
 
 QHttpServerResponse JsonErrorReply(QHttpServerResponse::StatusCode status, quint32 code,
                                    const QString& message) {
@@ -32,6 +36,10 @@ constexpr quint32 ERR_INVALID_HEADER = 0x80920002; // missing/malformed Authoriz
 } // namespace
 
 namespace WebApiAuth {
+
+void SetGate(const HttpGate::Gate* gate) {
+    g_gate = gate;
+}
 
 AuthResult Authenticate(const QHttpServerRequest& req, Database& db) {
     AuthResult out;
@@ -75,8 +83,17 @@ AuthResult Authenticate(const QHttpServerRequest& req, Database& db) {
         return out;
     }
 
+    const QString npid = q.value(1).toString();
+    if (g_gate) {
+        const auto from = HttpGate::Ipv4Of(req.remoteAddress());
+        if (!from || g_gate->ForPlayer(*from, npid) != HttpGate::Verdict::Allowed) {
+            out.errorResponse = JsonErrorReply(QHttpServerResponse::StatusCode::Forbidden,
+                                               ERR_INVALID_TOKEN, "Not a linked game's player");
+            return out;
+        }
+    }
     out.userId = q.value(0).toLongLong();
-    out.npid = q.value(1).toString();
+    out.npid = npid;
     return out;
 }
 

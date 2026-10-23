@@ -54,7 +54,7 @@ public:
 
     // Read exactly n raw bytes,needed for fixed-size fields like ComId (12 bytes).
     QByteArray getBytes(int n) {
-        if (m_pos + n > m_data.size()) {
+        if (n < 0 || n > Remaining()) {
             m_error = true;
             return {};
         }
@@ -66,7 +66,7 @@ public:
     // Non-consuming read of n bytes at the current position (e.g. to inspect a
     // leading ComId in the dispatcher without disturbing the handler's own parse).
     QByteArray peekBytes(int n) const {
-        if (m_pos + n > m_data.size())
+        if (n < 0 || n > Remaining())
             return {};
         return QByteArray(m_data.constData() + m_pos, n);
     }
@@ -75,7 +75,9 @@ public:
         uint32_t size = get<uint32_t>();
         if (m_error)
             return {};
-        if (m_pos + (int)size > m_data.size()) {
+        // A size past INT_MAX made m_pos + (int)size negative: a read of up to 4 GB past the
+        // packet (any client, before signing in).
+        if (size > static_cast<uint32_t>(Remaining())) {
             m_error = true;
             return {};
         }
@@ -85,6 +87,10 @@ public:
     }
 
 private:
+    qsizetype Remaining() const {
+        return m_data.size() - m_pos;
+    }
+
     template <typename T>
     static T fromLe(T v) {
         // On little-endian hosts this is a no-op

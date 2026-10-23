@@ -387,7 +387,15 @@ SummonBroker::AdvertiseResult SummonBroker::Advertise(const QJsonObject& body,
                 ++other;
             }
         }
-        it = m_records.find(key);
+        if (m_records.size() >= MaxRecords && !m_records.contains(key)) {
+            auto oldest = m_records.begin();
+            for (auto other = m_records.begin(); other != m_records.end(); ++other) {
+                if (other->updatedAtMs < oldest->updatedAtMs) {
+                    oldest = other;
+                }
+            }
+            m_records.erase(oldest);
+        }
         Record record;
         record.state = State::Advertised;
         record.advertisement = body;
@@ -579,7 +587,8 @@ SummonBroker::ClaimResult SummonBroker::Claim(const QJsonObject& request,
     return result;
 }
 
-SummonBroker::ConsumeResult SummonBroker::Consume(const QJsonObject& request, qint64 nowMs) {
+SummonBroker::ConsumeResult SummonBroker::Consume(const QJsonObject& request, qint64 nowMs,
+                                                  const QByteArray& party) {
     QMutexLocker lock(&m_mutex);
     PurgeExpiredLocked(nowMs);
 
@@ -592,6 +601,9 @@ SummonBroker::ConsumeResult SummonBroker::Consume(const QJsonObject& request, qi
     ConsumeResult result;
     const bool forceConsume = ForceConsumeRequested(request);
     for (auto it = m_records.begin(); it != m_records.end(); ++it) {
+        if (it->party != party) {
+            continue;
+        }
         const bool sessionMatches =
             sessionId.isEmpty() ||
             it->advertisement.value(QStringLiteral("SessionId")).toString() == sessionId;

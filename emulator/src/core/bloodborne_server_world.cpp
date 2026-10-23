@@ -1785,18 +1785,11 @@ std::string CharacterNameOf(std::string_view member) {
 
 void TeamLobbyRequest(bbcoop::TeamRequest::Action action, const std::string& id) {
     bbcoop::Envelope envelope;
-    bbcoop::TeamRequest& request = *envelope.mutable_team_request();
-    request.set_action(action);
-    if (action == bbcoop::TeamRequest::ACCEPT || action == bbcoop::TeamRequest::DECLINE) {
-        request.set_team(id);
-    } else if (action == bbcoop::TeamRequest::WORLD ||
-               action == bbcoop::TeamRequest::FORGET_WORLD) {
-        request.set_world(id);
-    } else {
-        request.set_member(id);
-    }
+    *envelope.mutable_team_request() = TeamMenuRequest(action, id);
+    // A typed code joins a team: not in the log.
     LOG_INFO(Debug, "Co-op team lobby: the menu asks {} {}",
-             bbcoop::TeamRequest::Action_Name(action), id);
+             bbcoop::TeamRequest::Action_Name(action),
+             action == bbcoop::TeamRequest::JOIN_CODE ? std::string{"(a code)"} : id);
     QueueLobby(std::move(envelope));
 }
 
@@ -2214,13 +2207,22 @@ bool RunTeamTitleVerb(const AutoplayCommand& command, bool begun, double elapsed
             request(bbcoop::TeamRequest::CREATE);
         }
     } else if (command.verb == "team-invite" && command.args.size() == 1) {
+        // A hosted lobby lists 32 players: one not listed is invited by its id every 5 s (the
+        // server refuses it while it is not signed in); once invited the lobby lists it.
+        static double invited_at = -100.0;
+        if (!begun) {
+            invited_at = -100.0;
+        }
         const std::string member = BoardMemberOfOnlineId(command.args[0]);
         if (lobby && lobby->has_team()) {
-            for (const bbcoop::LobbyPlayer& player : lobby->players()) {
-                if (player.member() == member) {
-                    request(bbcoop::TeamRequest::INVITE, member);
-                    done = true;
-                }
+            const bool listed =
+                std::ranges::any_of(lobby->players(), [&](const bbcoop::LobbyPlayer& player) {
+                    return player.member() == member;
+                });
+            if (listed || elapsed - invited_at >= 5.0) {
+                invited_at = elapsed;
+                request(bbcoop::TeamRequest::INVITE, member);
+                done = listed;
             }
         }
     } else if (command.verb == "team-accept") {
@@ -2300,13 +2302,10 @@ bool RunTeamMenuVerb(const AutoplayCommand& command, bool begun, double elapsed,
     TeamPlaying(&in_hunt);
     bool done = false;
     if (command.verb == "menu-invite" && !command.args.empty()) {
+        // Listed or not (a hosted lobby lists 32 players): the server refuses one not signed in.
         const std::string member = BoardMemberOfOnlineId(command.args[0]);
-        const bool online =
-            lobby && std::ranges::any_of(lobby->players(), [&](const bbcoop::LobbyPlayer& p) {
-                return p.member() == member;
-            });
         done = member_in_team(member);
-        if (!done && online && lobby->has_team() && ask) {
+        if (!done && lobby && lobby->has_team() && ask) {
             asked_at = elapsed;
             TeamLobbyRequest(bbcoop::TeamRequest::INVITE, member);
         }

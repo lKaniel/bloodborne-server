@@ -74,6 +74,36 @@ int APlayerKeepsItsNewestReports(const QString &folder) {
   return 0;
 }
 
+int ASmallerCapIsKept(const QString &folder) {
+  // A hosted server keeps reports under 8 MB.
+  ReportStore store{folder, 8};
+  CHECK(store.Save("pcap", "crash.dmp", "12345678", At).has_value());
+  CHECK(!store.Save("pcap", "crash.dmp", "123456789", At).has_value());
+  return 0;
+}
+
+int AnAddressSendsSoMany(const QString &) {
+  // Every report costs a password hash: an address gets a burst, then one a
+  // minute; another address has its own.
+  ReportLimiter limiter{3, 60'000};
+  constexpr quint32 Home = 0x0A000001;
+  constexpr quint32 Other = 0x0A000002;
+  qint64 now = 1'000;
+  CHECK(limiter.Allow(Home, now));
+  CHECK(limiter.Allow(Home, now));
+  CHECK(limiter.Allow(Home, now));
+  CHECK(!limiter.Allow(Home, now));
+  CHECK(limiter.Allow(Other, now));
+  now += 60'000;
+  CHECK(limiter.Allow(Home, now));
+  CHECK(!limiter.Allow(Home, now));
+  now += 10 * 60'000; // never more than the burst
+  for (int i = 0; i < 3; ++i)
+    CHECK(limiter.Allow(Home, now));
+  CHECK(!limiter.Allow(Home, now));
+  return 0;
+}
+
 } // namespace
 
 int main() {
@@ -82,7 +112,8 @@ int main() {
     return 1;
   }
   for (const auto test : {AReportIsKeptUnderItsPlayer, ABadNameOrKindIsRefused,
-                          APlayerKeepsItsNewestReports}) {
+                          APlayerKeepsItsNewestReports, ASmallerCapIsKept,
+                          AnAddressSendsSoMany}) {
     if (test(folder.path()) != 0) {
       return 1;
     }
