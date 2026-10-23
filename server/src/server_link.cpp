@@ -299,7 +299,21 @@ bool Hub::SameTeam(const Endpoint& a, const Endpoint& b) const {
         return true; // nobody said the teams (the hub alone)
     }
     const QString party = party_of(a);
-    return !party.isEmpty() && party == party_of(b);
+    const QString other = party_of(b);
+    if (!party.isEmpty() && party == other) {
+        return true;
+    }
+    return Visits(a, b);
+}
+
+bool Hub::Visits(const Endpoint& a, const Endpoint& b) const {
+    if (!visiting || !party_of) {
+        return false;
+    }
+    const QString a_visits = visiting(a);
+    const QString b_visits = visiting(b);
+    return (!a_visits.isEmpty() && a_visits == party_of(b)) ||
+           (!b_visits.isEmpty() && b_visits == party_of(a));
 }
 
 Hub::Result Hub::Receive(const Endpoint& from, const QByteArray& datagram, qint64 now_ms) {
@@ -463,6 +477,14 @@ void Hub::OnData(Link& sender, const QByteArray& datagram, Result& result) {
                                   .arg(data->frame.size())
                                   .arg(Name(*target)));
         }
+        return;
+    }
+    // Invasions: between an invader and the team it visits only the game's own packets go (they
+    // pass the hostile table); our co-op frames (direct vitals, kills, the world's) never.
+    if (Visits(sender.endpoint, target->endpoint) && data->frame.size() >= 9 &&
+        data->frame.mid(4, 4) == "SHAD" &&
+        static_cast<quint8>(data->frame[8]) != BloodborneCoop::GamePacketsType) {
+        ++sender.refused[BloodborneCoop::NativeChannelCount];
         return;
     }
     const auto routed = Routed(sender, *target, data->frame);

@@ -26,6 +26,9 @@ LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_
     connect(m_worldTimer, &QTimer::timeout, this, &LinkServer::OnWorldTick);
     // Phase 7: the link relays only between games of one team (the party of their hello).
     m_link.SetPartyOf([this](const ServerLink::Endpoint& link) { return m_world.PartyOf(link); });
+    // Invasions (docs/INVASIONS.md): and between an invader and the team whose world it visits.
+    m_link.SetVisiting(
+        [this](const ServerLink::Endpoint& link) { return m_world.VisitingOf(link); });
     // Phase 9: and forwards a game packet only to a teammate that needs it.
     m_link.SetPacketRoutes(
         [this](const ServerLink::Endpoint& from, const ServerLink::Endpoint& to, quint32 channel) {
@@ -73,6 +76,18 @@ LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_
                                  .arg(limits.bytes_per_second)
                                  .arg(m_hosted.build.isEmpty() ? QStringLiteral("any")
                                                                : m_hosted.build);
+    }
+    if (shared && shared->config) {
+        const InvasionConfig invasions = shared->config->GetInvasions();
+        BloodborneWorld::InvasionRules rules;
+        rules.enabled = invasions.enabled;
+        rules.kind = invasions.kind;
+        rules.sign = invasions.sign;
+        m_world.SetInvasions(rules);
+        if (rules.enabled)
+            qInfo().noquote() << QStringLiteral("Invasions on: kind 0x%1, sign %2")
+                                     .arg(rules.kind, 0, 16)
+                                     .arg(rules.sign);
     }
     m_dbPath = db_path;
     m_linkTimer->start(500);
@@ -388,7 +403,7 @@ void LinkServer::Apply(const ServerLink::Hub::Result& result) {
     for (const auto& line : result.log)
         qInfo().noquote() << line;
     for (const auto& gone : result.gone) {
-        m_world.Forget(gone);
+        Apply(m_world.Forget(gone));
         if (const auto found = m_linkAddress.constFind(gone.Key());
             found != m_linkAddress.constEnd()) {
             const quint32 address = *found;
@@ -424,6 +439,7 @@ void LinkServer::Apply(const ServerLink::Hub::Result& result) {
     // Phase 11: a game silent too long (died, or down for longer than a blip): its TCP side ends,
     // and the game is told when it is back (its client signs in again by itself).
     for (const auto& lost : result.lost) {
+        Apply(m_world.LinkLost(lost));
         for (auto& [id, end] : m_rpc) {
             if (end->to == lost && end->socket) {
                 CloseRpc(*end);

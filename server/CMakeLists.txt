@@ -70,6 +70,8 @@ set(COOP_SOURCES
     coop/team_lobby.cpp
     coop/trade.h
     coop/trade.cpp
+    coop/invasions.h
+    coop/invasions.cpp
     "${PROTO_OUT}/coop.pb.cc"
 )
 
@@ -317,6 +319,10 @@ if(BUILD_TESTING)
     )
     target_link_libraries(test_team_lobby PRIVATE libprotobuf)
     add_test(NAME team_lobby COMMAND test_team_lobby)
+
+    add_executable(test_invasions EXCLUDE_FROM_ALL tests/test_invasions.cpp coop/invasions.cpp)
+    target_include_directories(test_invasions PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME invasions COMMAND test_invasions)
 
     add_executable(test_room_owner EXCLUDE_FROM_ALL tests/test_room_owner.cpp)
     target_include_directories(test_room_owner PRIVATE src)

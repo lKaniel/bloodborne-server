@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 
 #include <QByteArray>
@@ -28,6 +29,7 @@
 #include "bloodborne_party_boards.h"
 #include "coop.pb.h"
 #include "coop/coop_stream.h"
+#include "coop/invasions.h"
 #include "coop/team_lobby.h"
 #include "coop/trade.h"
 #include "coop/world_log.h"
@@ -120,6 +122,15 @@ struct HostedRules {
     size_t worlds_per_player = 16;
 };
 
+// Invasions (docs/INVASIONS.md): off unless the server's operator turns them on, here or at home.
+// The invader's kind and sign (GameMan +0x16F0 / +0x16F4) are what its game joins the target's
+// session with: placeholders until the retail capture (phase 0) says the real ones.
+struct InvasionRules {
+    bool enabled = false;
+    quint32 kind = 0xFFFFFFFF; // InvasionKind: the co-operator's kind until the capture
+    quint32 sign = 4;          // InvasionSign: the slot after the guests' 7, 6, 5 (a guess)
+};
+
 // What one game can make the service hold (docs/HOSTED_SERVER.md, "Caps"), for every server: far
 // above what a game sends, so only a broken or hostile one meets them.
 struct Limits {
@@ -167,6 +178,9 @@ public:
     };
 
     void SetHosted(const HostedRules& rules);
+    void SetInvasions(const InvasionRules& rules) {
+        invasion_rules = rules;
+    }
     // For the members that link from now on (and the worlds).
     void SetLimits(const Limits& limits) {
         this->limits = limits;
@@ -180,7 +194,12 @@ public:
     // Resends, acks and heartbeats; worlds written whole when their journal grew.
     Result Tick(qint64 now_ms);
     // A link went (its game is gone).
-    void Forget(const ServerLink::Endpoint& link);
+    Result Forget(const ServerLink::Endpoint& link);
+    // A link silent for a while (Hub::Result::lost): an invasion it is in ends.
+    Result LinkLost(const ServerLink::Endpoint& link);
+    // Invasions: the party a hostile visitor's link visits, empty when it visits none (the hub's
+    // teams: it shares the visited party's routing).
+    QString VisitingOf(const ServerLink::Endpoint& link) const;
     // The party a link's game said in its hello, empty before one (phase 7: the hub's teams).
     QString PartyOf(const ServerLink::Endpoint& link) const;
     // Phase 9: whether a game packet on `channel` goes from one link's game to another's, by the
@@ -271,6 +290,32 @@ private:
         // Kaniel 2026-10-16: the team world it was taken out of (removed from the team, or left
         // it): no game packet goes between it and that party until its next hello.
         QString cut_from;
+        // Invasions: the party it visits as an invader (hostile): it shares that party's routing
+        // by the hostile table, and is no member of its world.
+        QString visiting;
+        bool hostile = false;
+        // Its last vitals' level and boss fight (the matcher's).
+        std::uint32_t level = 0;
+        bool boss = false;
+        std::string display; // its lobby hello's name (as players see it)
+    };
+    // Invasions: one invader on its way to (or in) a team world.
+    struct Invasion {
+        quint64 id = 0;
+        quint64 invader = 0;      // its link (Endpoint::Key)
+        std::string invader_name; // its lobby name
+        std::string target;       // the member it hunts: the session's host
+        qint64 matched_ms = 0;
+        bool joined = false;
+        qint64 joined_ms = 0;
+        std::set<int> dropped; // the kinds of its messages dropped (each logged once)
+        // The invader's last vitals: a hostile line on the team's vitals board (its body stays
+        // shown on the team's screens).
+        std::optional<bbcoop::Vitals> vitals;
+    };
+    struct Search {
+        std::uint32_t level = 0;
+        qint64 since_ms = 0;
     };
 
     PartyWorld& WorldFor(const QString& name, qint64 now_ms, Result& result);
@@ -304,6 +349,8 @@ private:
     void TakeBoard(Member& member, PartyWorld& world, const bbcoop::Envelope& envelope,
                    qint64 now_ms, Result& result);
     void SendBoards(PartyWorld& world, unsigned changed, qint64 now_ms, Member* only = nullptr);
+    // The vitals board, with a joined invader's hostile line.
+    bbcoop::VitalsBoard VitalsBoardOf(const PartyWorld& world) const;
     // The enemy owners to the party (or `only`), logged when they changed.
     // The host's session closed (its game gone or started again): the others hear it.
     // Whether the member hosting the party's open session is linked (phase 7).
@@ -368,6 +415,29 @@ private:
     std::map<quint64, Member> members; // by link (Endpoint::Key)
     std::map<quint64, ServerLink::Endpoint> endpoints;
     std::vector<Member*> flush_now; // the members FlushSome flushes
+    // Invasions (docs/INVASIONS.md).
+    void OnInvadeRequest(Member& member, const bbcoop::InvadeRequest& request, qint64 now_ms,
+                         Result& result);
+    // An invader's messages: its map and vitals; the rest dropped (it is in no world here).
+    void TakeHostile(Member& member, const bbcoop::Envelope& envelope, qint64 now_ms,
+                     Result& result);
+    void Match(qint64 now_ms, Result& result);
+    BloodborneCoop::InvasionTarget TargetOf(const PartyWorld& world) const;
+    void JoinInvasion(PartyWorld& world, Invasion& invasion, qint64 now_ms, Result& result);
+    // The invasion of a world over: InvasionEnd to everyone in it, the invader out of its
+    // routing, the cooldowns started.
+    void EndInvasion(const QString& world, bbcoop::InvasionEnd::Reason reason, qint64 now_ms,
+                     Result& result);
+    // What a team member's vitals end (its target killed, a boss, a wipe).
+    void CheckInvasion(const PartyWorld& world, const Member& member, const bbcoop::Vitals& vitals,
+                       std::uint32_t wipe_before, qint64 now_ms, Result& result);
+    // The world whose invasion `link` is the invader of, empty when none.
+    QString InvadedBy(quint64 link) const;
+    // An invasion's link gone: its own (the invader's) or its target's host's.
+    void InvasionLinkGone(quint64 link, qint64 now_ms, Result& result);
+    void Refuse(Member& member, bbcoop::InvasionEnd::Reason reason, const std::string& text,
+                qint64 now_ms);
+
     // Hosted: whether a name a game says is its own (its online id in hex).
     bool OwnName(const Member& member, const std::string& name) const;
 
@@ -380,6 +450,14 @@ private:
     bool lobby_changed = false; // a player's game went: states to send at the next tick
     // The listed worlds' folders by world id, for those not in PartyFolderName("world:<id>").
     std::map<std::string, QString> world_folders;
+
+    InvasionRules invasion_rules;
+    std::map<QString, Invasion> invasions; // by the invaded world
+    std::map<quint64, Search> searches;    // by the invader's link
+    BloodborneCoop::InvasionCooldowns cooldowns;
+    quint64 invasions_made = 0;
+    qint64 matched_ms = 0; // the searches' last look
+    qint64 clock_ms = 0;   // the last time a call said (for the calls that say none)
 };
 
 } // namespace BloodborneWorld

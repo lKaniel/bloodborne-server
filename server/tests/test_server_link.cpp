@@ -544,13 +544,66 @@ int RoutesGamePackets() {
   std::cout << "server link routes game packets: ok\n";
   return 0;
 }
+// Invasions (docs/INVASIONS.md): an invader visiting team a shares its relay
+// (and its quiet notices), but only the game's packets go between them, never
+// our co-op frames; it still reaches no other team.
+int AnInvaderSharesTheVisitedTeamsRelay() {
+  Hub hub;
+  const Endpoint Red{0x7F000001, 40005};
+  hub.SetPartyOf([&](const Endpoint &link) -> QString {
+    if (link == Kaniel || link == Ada) {
+      return QStringLiteral("team-a");
+    }
+    return link == Eileen ? QStringLiteral("team-b") : QString{};
+  });
+  hub.SetVisiting([&](const Endpoint &link) -> QString {
+    return link == Red ? QStringLiteral("team-a") : QString{};
+  });
+  hub.SetPacketRoutes(
+      [](const Endpoint &, const Endpoint &, u32) { return true; });
+  for (const auto &[game, name] :
+       {std::pair{Kaniel, "Kaniel"}, std::pair{Ada, "Ada"},
+        std::pair{Eileen, "Eileen"}, std::pair{Red, "Red"}}) {
+    hub.Receive(game, HelloFrom(name), 0);
+  }
+  BloodborneCoop::GameFrame frame{"Red", 5, 6, 2, {}};
+  frame.entries.push_back(
+      {BloodborneCoop::PacketClass::Unreliable, 0, PacketOn(0x06)});
+  auto result = hub.Receive(
+      Red, Encode(Data{VirtualEndpointOf("Kaniel"), GamePacketsFrame(frame)}),
+      10);
+  CHECK(SentTo(result, Kaniel).size() == 1);
+  result = hub.Receive(
+      Ada, Encode(Data{VirtualEndpointOf("Red"), GamePacketsFrame(frame)}), 20);
+  CHECK(SentTo(result, Red).size() == 1);
+  // Our own frames (another SHAD type) never, either way.
+  const QByteArray coop =
+      QByteArray::fromHex("ffffffff") + "SHAD" + char(0x41) + "vitals";
+  result =
+      hub.Receive(Red, Encode(Data{VirtualEndpointOf("Kaniel"), coop}), 30);
+  CHECK(result.sends.isEmpty());
+  result =
+      hub.Receive(Kaniel, Encode(Data{VirtualEndpointOf("Red"), coop}), 40);
+  CHECK(result.sends.isEmpty());
+  // Team a among itself still carries them; team b never hears the invader.
+  result =
+      hub.Receive(Kaniel, Encode(Data{VirtualEndpointOf("Ada"), coop}), 50);
+  CHECK(SentTo(result, Ada).size() == 1);
+  result = hub.Receive(
+      Red, Encode(Data{VirtualEndpointOf("Eileen"), GamePacketsFrame(frame)}),
+      60);
+  CHECK(result.sends.isEmpty());
+  std::cout << "server link invader relay: ok\n";
+  return 0;
+}
 } // namespace
 
 int main() {
   if (Contracts() != 0 || HelloAndBuilds() != 0 || Relays() != 0 ||
       Liveness() != 0 || TeamOnly() != 0 || VirtualMembers() != 0 ||
       RoutesGamePackets() != 0 || SignsIn() != 0 ||
-      ALongSilenceEndsTheSignIn() != 0) {
+      ALongSilenceEndsTheSignIn() != 0 ||
+      AnInvaderSharesTheVisitedTeamsRelay() != 0) {
     return 1;
   }
   return 0;

@@ -153,6 +153,11 @@ public:
     void SetPartyOf(PartyOf party_of) {
         this->party_of = std::move(party_of);
     }
+    // Invasions (docs/INVASIONS.md): the party a link visits as a hostile invader (empty: none).
+    // A visitor and the visited party's games are one team for the relay.
+    void SetVisiting(PartyOf visiting) {
+        this->visiting = std::move(visiting);
+    }
     // Phase 9: whether a game packet on `channel` goes from one link's game to another's
     // (coop/packet_routes.h). Once set, the hub reads every frame of game packets and forwards
     // only what this lets through; without it frames go unread.
@@ -208,6 +213,8 @@ private:
     void TellOthers(const Link& about, MemberState state, qint64 gap_ms, Result& result);
     QString Name(const Link& link) const;
     bool SameTeam(const Endpoint& a, const Endpoint& b) const;
+    // Invasions: one of them visits the other's party as an invader.
+    bool Visits(const Endpoint& a, const Endpoint& b) const;
     // The frame with only the game packets the routes let reach `target`, or nothing when it is
     // a frame of game packets that does not read.
     std::optional<QByteArray> Routed(Link& sender, const Link& target, const QByteArray& frame);
@@ -224,6 +231,7 @@ private:
     QHash<QPair<quint64, quint64>, quint64> pair_frames;
     quint64 dropped = 0;
     PartyOf party_of;
+    PartyOf visiting;
     PacketRoutes packet_routes;
     SignIn sign_in;
     QByteArray required_build;

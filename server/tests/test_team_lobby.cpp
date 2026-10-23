@@ -751,6 +751,32 @@ static int AHostedLobbyListsFewOthers() {
   return 0;
 }
 
+// Invasions (docs/INVASIONS.md): only the leader lets invaders in; off by
+// default, and the team's members see it.
+int TheLeaderAllowsInvaders() {
+  TeamLobby lobby = NewLobby();
+  lobby.Arrive("a", "Kaniel", false);
+  lobby.Arrive("b", "Ada", false);
+  lobby.Request("a", Request(Action::CREATE));
+  const std::string team = lobby.TeamOf("a")->id();
+  lobby.Request("a", Request(Action::INVITE, "b"));
+  lobby.Request("b", Request(Action::ACCEPT, {}, team));
+  CHECK(!lobby.TeamOf("a")->allow_invaders());
+  bbcoop::TeamRequest allow = Request(Action::INVADERS);
+  allow.set_allow(true);
+  CHECK(!lobby.Request("b", allow).notice.empty());
+  CHECK(!lobby.TeamOf("a")->allow_invaders());
+  CHECK(lobby.Request("a", allow).changed);
+  CHECK(lobby.StateFor("b").team().allow_invaders());
+  allow.set_allow(false);
+  CHECK(lobby.Request("a", allow).changed);
+  CHECK(!lobby.TeamOf("b")->allow_invaders());
+  // Not in a team: nothing to allow.
+  lobby.Arrive("c", "Lisa", false);
+  CHECK(!lobby.Request("c", allow).notice.empty());
+  return 0;
+}
+
 int main() {
   int failed = 0;
   failed |= PlayersAreSeenByTheirCharactersName();
@@ -775,6 +801,7 @@ int main() {
   failed |= HostedWorldsAreTheirPlayersOnly();
   failed |= HostedServersKeepEveryPlayersWorlds();
   failed |= AHostedLobbyListsFewOthers();
+  failed |= TheLeaderAllowsInvaders();
   if (failed == 0) {
     std::cout << "team lobby: all checks passed\n";
   }

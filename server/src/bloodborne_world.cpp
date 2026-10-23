@@ -580,6 +580,10 @@ void Service::Collect(qint64 now_ms, bool all, Result& result) {
             in_use.insert(member.party);
         }
     }
+    // Invasions: the invaded world stays while its invasion runs (the invader itself keeps none).
+    for (const auto& [name, invasion] : invasions) {
+        in_use.insert(name);
+    }
     for (auto it = worlds.begin(); it != worlds.end();) {
         PartyWorld& world = it->second;
         if (in_use.contains(it->first)) {
@@ -610,7 +614,7 @@ void Service::Drop(quint64 key, const QString& why, Result& result) {
     }
     result.log.append(QStringLiteral("party world: dropped %1's stream: %2")
                           .arg(QString::fromStdString(Who(found->second)), why));
-    Forget(endpoints.at(key));
+    result.log.append(Forget(endpoints.at(key)).log);
 }
 
 void Service::Replay(PartyWorld& world, const bbcoop::JournalRecord& record) {
@@ -887,6 +891,11 @@ void Service::OnLifecycle(Member& member, const bbcoop::Lifecycle& lifecycle, qi
     const QString who = QString::fromStdString(member.name);
     switch (lifecycle.event()) {
     case bbcoop::Lifecycle::WIPE:
+        // Invasions: the team wiped with an invader in its world: the invader wins.
+        if (const auto invasion = invasions.find(world.name);
+            invasion != invasions.end() && invasion->second.joined) {
+            EndInvasion(world.name, bbcoop::InvasionEnd::PARTY_WIPED, now_ms, result);
+        }
         if (world.last_wipe_ms != 0 && now_ms - world.last_wipe_ms < WorldLogWipeGraceMs) {
             result.log.append(QStringLiteral("party world %1: %2's wipe: the party's wipe log "
                                              "already started")
@@ -970,6 +979,16 @@ void Service::Take(Member& member, const bbcoop::Envelope& envelope, qint64 now_
     }
     if (envelope.has_team_request()) {
         OnTeamRequest(member, envelope.team_request(), now_ms, result);
+        return;
+    }
+    if (envelope.has_invade_request()) {
+        OnInvadeRequest(member, envelope.invade_request(), now_ms, result);
+        return;
+    }
+    // An invader in a world, or one on its way with no world of its own: in no world here.
+    if (member.hostile || (member.party.isEmpty() &&
+                           (searches.contains(member.key) || !InvadedBy(member.key).isEmpty()))) {
+        TakeHostile(member, envelope, now_ms, result);
         return;
     }
     if (member.party.isEmpty()) {
@@ -1071,6 +1090,9 @@ void Service::Take(Member& member, const bbcoop::Envelope& envelope, qint64 now_
                                                        .arg(relayed.team_session().join().size())
                                                  : QStringLiteral("closed")));
         SendToOthers(world, member, relayed, now_ms);
+        if (!world.session) {
+            EndInvasion(world.name, bbcoop::InvasionEnd::HOST_LEFT, now_ms, result);
+        }
         break;
     }
     case bbcoop::Envelope::kShown:
@@ -1223,6 +1245,15 @@ void Service::TakeBoard(Member& member, PartyWorld& world, const bbcoop::Envelop
         answer(world.boards.Trophies(envelope.trophies()), PartyBoards::TrophyBoard);
         return;
     case bbcoop::Envelope::kVitals: {
+        member.level = envelope.vitals().level();
+        member.boss = envelope.vitals().boss();
+        std::uint32_t wipe_before = 0;
+        if (invasions.contains(world.name)) {
+            const bbcoop::VitalsBoard board = world.boards.VitalsMessage();
+            for (const auto& wipe : board.wipes()) {
+                wipe_before = std::max(wipe_before, wipe.id());
+            }
+        }
         if (const bbcoop::Vitals& vitals = envelope.vitals();
             vitals.map() != 0 && (vitals.vital() == 1 || vitals.vital() == 2) &&
             vitals.has_at()) { // up or down where it stands
@@ -1233,6 +1264,7 @@ void Service::TakeBoard(Member& member, PartyWorld& world, const bbcoop::Envelop
         }
         answer(world.boards.Vitals(member.name, envelope.vitals(), now_ms),
                PartyBoards::VitalsBoard);
+        CheckInvasion(world, member, envelope.vitals(), wipe_before, now_ms, result);
         // Logged when someone's state or the wipes change, not for every HP change.
         static constexpr const char* Vitals[] = {"off", "up", "down", "dead"};
         const bbcoop::VitalsBoard board = world.boards.VitalsMessage();
@@ -1289,7 +1321,7 @@ void Service::SendBoards(PartyWorld& world, unsigned changed, qint64 now_ms, Mem
         *boards.emplace_back().mutable_trophies() = world.boards.TrophyMessage();
     }
     if ((changed & PartyBoards::VitalsBoard) != 0) {
-        *boards.emplace_back().mutable_vitals_board() = world.boards.VitalsMessage();
+        *boards.emplace_back().mutable_vitals_board() = VitalsBoardOf(world);
     }
     for (const bbcoop::Envelope& board : boards) {
         if (only != nullptr) {
@@ -1302,6 +1334,18 @@ void Service::SendBoards(PartyWorld& world, unsigned changed, qint64 now_ms, Mem
             }
         }
     }
+}
+
+bbcoop::VitalsBoard Service::VitalsBoardOf(const PartyWorld& world) const {
+    bbcoop::VitalsBoard board = world.boards.VitalsMessage();
+    if (const auto invasion = invasions.find(world.name);
+        invasion != invasions.end() && invasion->second.joined && invasion->second.vitals) {
+        bbcoop::VitalsBoard::Member& line = *board.add_members();
+        line.set_member(invasion->second.invader_name);
+        *line.mutable_vitals() = *invasion->second.vitals;
+        line.set_hostile(true);
+    }
+    return board;
 }
 
 void Service::SendOwners(PartyWorld& world, qint64 now_ms, Result& result, Member* only) {
@@ -1326,6 +1370,13 @@ void Service::SendOwners(PartyWorld& world, qint64 now_ms, Result& result, Membe
     for (auto& [key, member] : members) {
         if (member.party == world.name) {
             SendTo(member, envelope, now_ms);
+        }
+    }
+    // Invasions: the invader follows the owners too (it travels and sees the enemies by them).
+    if (const auto invasion = invasions.find(world.name);
+        invasion != invasions.end() && invasion->second.joined) {
+        if (const auto invader = members.find(invasion->second.invader); invader != members.end()) {
+            SendTo(invader->second, envelope, now_ms);
         }
     }
 }
@@ -1404,6 +1455,7 @@ void Service::SendToOthers(PartyWorld& world, const Member& from, const bbcoop::
 Service::Result Service::Receive(const ServerLink::Endpoint& from, const QByteArray& online_id,
                                  const QByteArray& body, qint64 now_ms) {
     Result result;
+    clock_ms = now_ms;
     CoopStream::Limits stream_limits;
     stream_limits.message_bytes = limits.message_bytes;
     stream_limits.chunk_bytes = CoopStream::ChunkBytes + 1;
@@ -1432,6 +1484,11 @@ Service::Result Service::Receive(const ServerLink::Endpoint& from, const QByteAr
                                          "hello")
                               .arg(QString::fromStdString(Who(member))));
         member.party.clear();
+        // An invader's game that started over is home: its invasion is over.
+        searches.erase(member.key);
+        if (const QString invaded = InvadedBy(member.key); !invaded.isEmpty()) {
+            EndInvasion(invaded, bbcoop::InvasionEnd::INVADER_LEFT, now_ms, result);
+        }
     }
     for (const std::vector<u8>& message : messages) {
         if (const auto envelope = DecodeEnvelope(message)) {
@@ -1612,6 +1669,30 @@ void Service::Flush(qint64 now_ms, Result& result) {
 
 Service::Result Service::Tick(qint64 now_ms) {
     Result result;
+    clock_ms = now_ms;
+    if (!searches.empty() && now_ms - matched_ms >= InvasionMatchMs) {
+        Match(now_ms, result);
+    }
+    std::vector<QString> due;
+    std::vector<QString> timed_out;
+    for (const auto& [name, invasion] : invasions) {
+        if (!invasion.joined && now_ms - invasion.matched_ms >= InvasionNoticeMs) {
+            due.push_back(name);
+        } else if (invasion.joined && now_ms - invasion.joined_ms >= InvasionMaxMs) {
+            timed_out.push_back(name);
+        }
+    }
+    for (const QString& name : due) {
+        const auto world = worlds.find(name);
+        if (world == worlds.end()) {
+            EndInvasion(name, bbcoop::InvasionEnd::HOST_LEFT, now_ms, result);
+        } else {
+            JoinInvasion(world->second, invasions.at(name), now_ms, result);
+        }
+    }
+    for (const QString& name : timed_out) {
+        EndInvasion(name, bbcoop::InvasionEnd::TIMEOUT, now_ms, result);
+    }
     if (const TeamLobby::Outcome expired = lobby.Expire(now_ms); expired.changed) {
         result.log.append(QStringLiteral("team lobby: members gone for %1 min left their teams")
                               .arg(OfflineGraceMs / 60000));
@@ -1675,9 +1756,13 @@ void Service::CloseSession(PartyWorld& world, qint64 now_ms, Result& result) {
             SendTo(member, closed, now_ms);
         }
     }
+    EndInvasion(world.name, bbcoop::InvasionEnd::HOST_LEFT, now_ms, result);
 }
 
-void Service::Forget(const ServerLink::Endpoint& link) {
+Service::Result Service::Forget(const ServerLink::Endpoint& link) {
+    Result result;
+    searches.erase(link.Key());
+    InvasionLinkGone(link.Key(), clock_ms, result);
     const auto found = members.find(link.Key());
     if (found != members.end() && !found->second.lobby.empty()) {
         const std::string name = found->second.lobby;
@@ -1695,6 +1780,21 @@ void Service::Forget(const ServerLink::Endpoint& link) {
     }
     members.erase(link.Key());
     endpoints.erase(link.Key());
+    return result;
+}
+
+Service::Result Service::LinkLost(const ServerLink::Endpoint& link) {
+    Result result;
+    if (searches.erase(link.Key()) > 0) {
+        result.log.append(QStringLiteral("invasions: a searching invader's link is lost"));
+    }
+    InvasionLinkGone(link.Key(), clock_ms, result);
+    return result;
+}
+
+QString Service::VisitingOf(const ServerLink::Endpoint& link) const {
+    const auto found = members.find(link.Key());
+    return found != members.end() && found->second.hostile ? found->second.visiting : QString{};
 }
 
 QString Service::PartyOf(const ServerLink::Endpoint& link) const {
@@ -1717,7 +1817,14 @@ bool Service::RoutesPacket(const ServerLink::Endpoint& from, const ServerLink::E
         (!target->second.cut_from.isEmpty() && target->second.cut_from == sender->second.party)) {
         return false;
     }
-    const auto world = worlds.find(sender->second.party);
+    // Invasions: a hostile visitor and the team it visits go by the hostile table; the team
+    // member's part in the enemies is the visited world's.
+    const auto visits = [](const Member& visitor, const Member& other) {
+        return visitor.hostile && !visitor.visiting.isEmpty() && visitor.visiting == other.party;
+    };
+    const bool from_visitor = visits(sender->second, target->second);
+    const bool to_visitor = visits(target->second, sender->second);
+    const auto world = worlds.find(from_visitor ? target->second.party : sender->second.party);
     const auto part = [&](const Member& member) {
         if (member.map == 0 || world == worlds.end()) {
             return EnemyPart::None;
@@ -1727,6 +1834,20 @@ bool Service::RoutesPacket(const ServerLink::Endpoint& from, const ServerLink::E
                : owner == member.name ? EnemyPart::Owner
                                       : EnemyPart::Follower;
     };
+    if (from_visitor || to_visitor) {
+        return BloodborneCoop::RoutesHostilePacket(
+            channel,
+            {sender->second.map, target->second.map,
+             from_visitor ? EnemyPart::None : part(sender->second),
+             to_visitor ? EnemyPart::None : part(target->second)},
+            from_visitor);
+    }
+    // A hostile visitor reaches nobody else (nor its own party while away), and games of two
+    // parties never meet (the hub's teams say so too).
+    if (sender->second.hostile || target->second.hostile ||
+        sender->second.party != target->second.party) {
+        return false;
+    }
     return BloodborneCoop::RoutesNativePacket(
         channel,
         {sender->second.map, target->second.map, part(sender->second), part(target->second)});
@@ -1842,6 +1963,7 @@ void Service::OnLobbyHello(Member& member, const bbcoop::LobbyHello& hello, qint
     }
     const bool arrived = member.lobby.empty();
     member.lobby = hello.member();
+    member.display = hello.name();
     if (arrived) {
         result.log.append(
             QStringLiteral("team lobby: %1 (%2) signed in")
@@ -1896,6 +2018,14 @@ void Service::OnTeamRequest(Member& member, const bbcoop::TeamRequest& request, 
     PutAside(outcome.forgotten, result);
     if (outcome.changed) {
         StoreWorldList(result);
+    }
+    // Invasions: the leader turned them off: a running one ends.
+    if (request.action() == bbcoop::TeamRequest::INVADERS && !request.allow()) {
+        if (const bbcoop::Team* team = lobby.TeamOf(member.lobby);
+            team && team->leader() == member.lobby && !team->party().empty()) {
+            EndInvasion(FolderOf(QByteArray::fromStdString(team->party())),
+                        bbcoop::InvasionEnd::INVADERS_OFF, now_ms, result);
+        }
     }
     for (const TeamLobby::Departure& out : outcome.departed) {
         TakeOutOfTeam(out, now_ms, result);
@@ -2212,6 +2342,319 @@ void Service::PutAside(const std::vector<std::string>& forgotten, Result& result
         writer->Move(folder, name, aside);
         result.log.append(QStringLiteral("world list: world %1 forgotten, its folder goes to %2")
                               .arg(QString::fromStdString(id), aside));
+    }
+}
+
+void Service::Refuse(Member& member, bbcoop::InvasionEnd::Reason reason, const std::string& text,
+                     qint64 now_ms) {
+    bbcoop::Envelope envelope;
+    envelope.mutable_invasion_end()->set_reason(reason);
+    envelope.mutable_invasion_end()->set_invader(member.lobby);
+    envelope.mutable_invasion_end()->set_text(text);
+    SendTo(member, envelope, now_ms);
+}
+
+void Service::OnInvadeRequest(Member& member, const bbcoop::InvadeRequest& request, qint64 now_ms,
+                              Result& result) {
+    const QString who = QString::fromStdString(member.lobby.empty() ? Who(member) : member.lobby);
+    const QString invaded = InvadedBy(member.key);
+    if (request.cancel()) {
+        if (searches.erase(member.key) > 0) {
+            Refuse(member, bbcoop::InvasionEnd::INVADER_LEFT, "search cancelled", now_ms);
+            result.log.append(QStringLiteral("invasions: %1 stops looking").arg(who));
+        }
+        if (!invaded.isEmpty()) {
+            EndInvasion(invaded, bbcoop::InvasionEnd::INVADER_LEFT, now_ms, result);
+        }
+        return;
+    }
+    std::string refused;
+    if (!invasion_rules.enabled) {
+        refused = "invasions are off on this server";
+    } else if (member.lobby.empty()) {
+        refused = "sign in to the lobby first";
+    } else if (lobby.TeamOf(member.lobby)) {
+        refused = "leave your team to invade";
+    } else if (!invaded.isEmpty()) {
+        return; // on its way already
+    }
+    if (!refused.empty()) {
+        Refuse(member, bbcoop::InvasionEnd::REFUSED, refused, now_ms);
+        result.log.append(
+            QStringLiteral("invasions: %1 refused: %2").arg(who, QString::fromStdString(refused)));
+        return;
+    }
+    searches[member.key] = {request.level(), now_ms};
+    result.log.append(
+        QStringLiteral("invasions: %1 (level %2) looks for a world").arg(who).arg(request.level()));
+    Match(now_ms, result);
+}
+
+void Service::TakeHostile(Member& member, const bbcoop::Envelope& envelope, qint64 now_ms,
+                          Result& result) {
+    const QString invaded = InvadedBy(member.key);
+    switch (envelope.body_case()) {
+    case bbcoop::Envelope::kMap:
+        member.map = envelope.map().map();
+        return;
+    case bbcoop::Envelope::kVitals: {
+        member.level = envelope.vitals().level();
+        if (envelope.vitals().vital() == 3 && !invaded.isEmpty()) { // Vital: dead
+            EndInvasion(invaded, bbcoop::InvasionEnd::INVADER_DIED, now_ms, result);
+            return;
+        }
+        const auto invasion = invasions.find(invaded);
+        if (invasion == invasions.end() || !invasion->second.joined) {
+            return;
+        }
+        bbcoop::Vitals line = envelope.vitals();
+        line.clear_hits(); // no revives of anyone's
+        if (!invasion->second.vitals ||
+            invasion->second.vitals->SerializeAsString() != line.SerializeAsString()) {
+            invasion->second.vitals = std::move(line);
+            if (const auto world = worlds.find(invaded); world != worlds.end()) {
+                SendBoards(world->second, PartyBoards::VitalsBoard, now_ms);
+            }
+        }
+        return;
+    }
+    default:
+        break;
+    }
+    // Its proposals, boards, trades, hellos: it is in no world here, so they go nowhere.
+    const auto invasion = invasions.find(invaded);
+    if (invasion != invasions.end() &&
+        invasion->second.dropped.insert(static_cast<int>(envelope.body_case())).second) {
+        result.log.append(QStringLiteral("invasions: %1's message %2 dropped (an invader is in no "
+                                         "world)")
+                              .arg(QString::fromStdString(member.lobby))
+                              .arg(static_cast<int>(envelope.body_case())));
+    }
+}
+
+BloodborneCoop::InvasionTarget Service::TargetOf(const PartyWorld& world) const {
+    InvasionTarget target;
+    target.world = world.name.toStdString();
+    target.invaded = invasions.contains(world.name);
+    if (world.session) {
+        const bbcoop::Team* team = lobby.TeamOf(world.session->host());
+        target.session_open = team && team->started() && !team->party().empty() &&
+                              FolderOf(QByteArray::fromStdString(team->party())) == world.name;
+        target.allows_invaders = target.session_open && team->allow_invaders();
+    }
+    for (const auto& [key, member] : members) {
+        if (member.party == world.name && !member.hostile) {
+            ++target.players;
+            target.members.push_back({member.map, member.level, member.boss});
+        }
+    }
+    return target;
+}
+
+void Service::Match(qint64 now_ms, Result& result) {
+    matched_ms = now_ms;
+    cooldowns.Expire(now_ms);
+    std::vector<InvasionTarget> targets;
+    for (const auto& [name, world] : worlds) {
+        if (world.team && world.session) {
+            targets.push_back(TargetOf(world));
+        }
+    }
+    for (auto search = searches.begin(); search != searches.end();) {
+        const auto found = members.find(search->first);
+        if (found == members.end()) {
+            search = searches.erase(search);
+            continue;
+        }
+        Member& invader = found->second;
+        if (now_ms - search->second.since_ms >= InvasionSearchMs) {
+            Refuse(invader, bbcoop::InvasionEnd::NOT_FOUND, "no world to invade now", now_ms);
+            result.log.append(QStringLiteral("invasions: no world found for %1")
+                                  .arg(QString::fromStdString(invader.lobby)));
+            search = searches.erase(search);
+            continue;
+        }
+        std::vector<InvasionTarget*> open;
+        for (InvasionTarget& target : targets) {
+            if (target.world != invader.party.toStdString() &&
+                InvasionRefusal(target, invader.lobby, search->second.level, cooldowns, now_ms)
+                    .empty()) {
+                open.push_back(&target);
+            }
+        }
+        if (open.empty()) {
+            ++search;
+            continue;
+        }
+        InvasionTarget& target =
+            *open[QRandomGenerator::global()->bounded(static_cast<quint32>(open.size()))];
+        target.invaded = true;
+        const QString name = QString::fromStdString(target.world);
+        const PartyWorld& world = worlds.at(name);
+        Invasion& invasion = invasions[name];
+        invasion.id = ++invasions_made;
+        invasion.invader = invader.key;
+        invasion.invader_name = invader.lobby;
+        invasion.target = world.session->host();
+        invasion.matched_ms = now_ms;
+        bbcoop::Envelope notice;
+        notice.mutable_invasion_notice()->set_id(invasion.id);
+        notice.mutable_invasion_notice()->set_in_ms(static_cast<quint32>(InvasionNoticeMs));
+        notice.mutable_invasion_notice()->set_invader(invasion.invader_name);
+        notice.mutable_invasion_notice()->set_target(invasion.target);
+        SendTo(invader, notice, now_ms);
+        for (auto& [key, member] : members) {
+            if (member.party == name && !member.hostile) {
+                SendTo(member, notice, now_ms);
+            }
+        }
+        result.log.append(QStringLiteral("invasions: %1 approaches world %2 (invasion %3, hunting "
+                                         "%4)")
+                              .arg(QString::fromStdString(invasion.invader_name), name)
+                              .arg(invasion.id)
+                              .arg(QString::fromStdString(invasion.target)));
+        search = searches.erase(search);
+    }
+}
+
+void Service::JoinInvasion(PartyWorld& world, Invasion& invasion, qint64 now_ms, Result& result) {
+    const auto found = members.find(invasion.invader);
+    if (found == members.end()) {
+        EndInvasion(world.name, bbcoop::InvasionEnd::INVADER_LEFT, now_ms, result);
+        return;
+    }
+    if (!world.session) {
+        EndInvasion(world.name, bbcoop::InvasionEnd::HOST_LEFT, now_ms, result);
+        return;
+    }
+    Member& invader = found->second;
+    invader.visiting = world.name;
+    invader.hostile = true;
+    invasion.joined = true;
+    invasion.joined_ms = now_ms;
+    // Its slot byte: the configured one, or the first free below the guests' 7/6/5.
+    std::set<std::uint32_t> taken;
+    if (const bbcoop::Team* team = lobby.TeamOf(world.session->host())) {
+        for (const bbcoop::TeamMember& m : team->members()) {
+            taken.insert(m.sign());
+        }
+    }
+    std::uint32_t sign = invasion_rules.sign;
+    for (std::uint32_t free = 4; taken.contains(sign) && free > 0; --free) {
+        sign = free;
+    }
+    bbcoop::Envelope start;
+    bbcoop::InvasionStart& message = *start.mutable_invasion_start();
+    message.set_id(invasion.id);
+    *message.mutable_session() = *world.session;
+    message.mutable_session()->set_kind(invasion_rules.kind);
+    message.mutable_session()->set_sign(sign);
+    message.set_target(invasion.target);
+    if (const auto place = world.places.find(invasion.target); place != world.places.end()) {
+        *message.mutable_at() = place->second.at.at();
+    }
+    *message.mutable_owners() = world.owners.Message();
+    bbcoop::Envelope joined;
+    joined.mutable_invader_joined()->set_id(invasion.id);
+    joined.mutable_invader_joined()->set_member(invasion.invader_name);
+    joined.mutable_invader_joined()->set_target(invasion.target);
+    joined.mutable_invader_joined()->set_name(invader.display);
+    for (auto& [key, member] : members) {
+        if (member.party == world.name && !member.hostile) {
+            if (member.name == invasion.target) {
+                message.set_map(member.map);
+            }
+            SendTo(member, joined, now_ms);
+        }
+    }
+    SendTo(invader, start, now_ms);
+    result.log.append(QStringLiteral("invasions: %1 joins world %2 (invasion %3)")
+                          .arg(QString::fromStdString(invasion.invader_name), world.name)
+                          .arg(invasion.id));
+}
+
+void Service::EndInvasion(const QString& world, bbcoop::InvasionEnd::Reason reason, qint64 now_ms,
+                          Result& result) {
+    const auto found = invasions.find(world);
+    if (found == invasions.end()) {
+        return;
+    }
+    const Invasion invasion = std::move(found->second);
+    invasions.erase(found);
+    bbcoop::Envelope envelope;
+    envelope.mutable_invasion_end()->set_id(invasion.id);
+    envelope.mutable_invasion_end()->set_reason(reason);
+    envelope.mutable_invasion_end()->set_invader(invasion.invader_name);
+    if (const auto invader = members.find(invasion.invader); invader != members.end()) {
+        invader->second.visiting.clear();
+        invader->second.hostile = false;
+        SendTo(invader->second, envelope, now_ms);
+    }
+    for (auto& [key, member] : members) {
+        if (member.party == world && !member.hostile) {
+            SendTo(member, envelope, now_ms);
+        }
+    }
+    cooldowns.Ended(world.toStdString(), invasion.invader_name, now_ms);
+    result.log.append(
+        QStringLiteral("invasions: invasion %1 of world %2 by %3 ends: %4")
+            .arg(invasion.id)
+            .arg(world, QString::fromStdString(invasion.invader_name),
+                 QString::fromStdString(bbcoop::InvasionEnd::Reason_Name(reason)).toLower()));
+}
+
+void Service::CheckInvasion(const PartyWorld& world, const Member& member,
+                            const bbcoop::Vitals& vitals, std::uint32_t wipe_before, qint64 now_ms,
+                            Result& result) {
+    const auto found = invasions.find(world.name);
+    if (found == invasions.end()) {
+        return;
+    }
+    if (vitals.boss()) {
+        EndInvasion(world.name, bbcoop::InvasionEnd::BOSS, now_ms, result);
+        return;
+    }
+    if (!found->second.joined) {
+        return;
+    }
+    if (member.name == found->second.target && vitals.vital() == 3) { // Vital: dead
+        result.log.append(
+            QStringLiteral("invasions: %1 died%2")
+                .arg(QString::fromStdString(member.name),
+                     vitals.killed_by_invader() ? " by the invader's hand" : QString{}));
+        EndInvasion(world.name, bbcoop::InvasionEnd::TARGET_KILLED, now_ms, result);
+        return;
+    }
+    const bbcoop::VitalsBoard board = world.boards.VitalsMessage();
+    for (const auto& wipe : board.wipes()) {
+        if (wipe.id() > wipe_before) {
+            EndInvasion(world.name, bbcoop::InvasionEnd::PARTY_WIPED, now_ms, result);
+            return;
+        }
+    }
+}
+
+QString Service::InvadedBy(quint64 link) const {
+    for (const auto& [world, invasion] : invasions) {
+        if (invasion.invader == link) {
+            return world;
+        }
+    }
+    return {};
+}
+
+void Service::InvasionLinkGone(quint64 link, qint64 now_ms, Result& result) {
+    if (const QString invaded = InvadedBy(link); !invaded.isEmpty()) {
+        EndInvasion(invaded, bbcoop::InvasionEnd::INVADER_LEFT, now_ms, result);
+    }
+    const auto found = members.find(link);
+    if (found == members.end() || found->second.party.isEmpty()) {
+        return;
+    }
+    const auto world = worlds.find(found->second.party);
+    if (world != worlds.end() && world->second.session &&
+        world->second.session->host() == found->second.name) {
+        EndInvasion(world->first, bbcoop::InvasionEnd::HOST_LEFT, now_ms, result);
     }
 }
 

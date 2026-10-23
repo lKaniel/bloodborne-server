@@ -169,6 +169,62 @@ int ARefusedReliablePacketKeepsItsPlace() {
   return 0;
 }
 
+// Invasions (docs/INVASIONS.md): a hostile visitor's packets, by the design's
+// table. `from_visitor`: the invader sends; otherwise a team member sends to
+// it.
+bool Hostile(u32 channel, bool from_visitor, u32 sender_map, u32 target_map,
+             EnemyPart sender = EnemyPart::None,
+             EnemyPart target = EnemyPart::None) {
+  return RoutesHostilePacket(channel, {sender_map, target_map, sender, target},
+                             from_visitor);
+}
+
+int AHostileVisitorGetsOnlyTheDesignsChannels() {
+  // The join handshake and character data: both ways, any map.
+  for (const u32 channel : {0x07u, 0x19u, 0x10u, 0x11u, 0x3Fu, 0x42u, 0x08u,
+                            0x0Au, 0x0Du, 0x13u, 0x3Bu, 0x3Cu, 0x43u}) {
+    CHECK(HostileChannelPolicy(channel) == HostilePolicy::Pass);
+    CHECK(Hostile(channel, true, CentralYharnam, CathedralWard));
+    CHECK(Hostile(channel, false, CentralYharnam, CathedralWard));
+  }
+  // Players, hits on players, throws, forced animations, bullets: one map
+  // only, and a map not known yet lets nothing through (strict).
+  for (const u32 channel :
+       {0x06u, 0x14u, 0x12u, 0x37u, 0x30u, 0x24u, 0x25u, 0x3Eu, 0x40u}) {
+    CHECK(HostileChannelPolicy(channel) == HostilePolicy::SameMap);
+    CHECK(Hostile(channel, true, CentralYharnam, CentralYharnam));
+    CHECK(Hostile(channel, false, CentralYharnam, CentralYharnam));
+    CHECK(!Hostile(channel, true, CentralYharnam, CathedralWard));
+    CHECK(!Hostile(channel, false, CathedralWard, CentralYharnam));
+    CHECK(!Hostile(channel, true, 0, CentralYharnam));
+    CHECK(!Hostile(channel, false, CentralYharnam, 0));
+  }
+  // The enemies: to the invader from its map's owner only, never from it.
+  for (const u32 channel : {0x04u, 0x05u, 0x29u, 0x36u, 0x3Du, 0x41u, 0x17u}) {
+    CHECK(HostileChannelPolicy(channel) == HostilePolicy::OwnersEnemies);
+    CHECK(Hostile(channel, false, CentralYharnam, CentralYharnam,
+                  EnemyPart::Owner));
+    CHECK(!Hostile(channel, false, CentralYharnam, CentralYharnam,
+                   EnemyPart::Follower));
+    CHECK(!Hostile(channel, false, CentralYharnam, CentralYharnam));
+    CHECK(!Hostile(channel, false, CathedralWard, CentralYharnam,
+                   EnemyPart::Owner));
+    CHECK(!Hostile(channel, true, CentralYharnam, CentralYharnam,
+                   EnemyPart::None, EnemyPart::Owner));
+  }
+  // Enemy hits and hand-over, events, objects, items, Insight: never.
+  for (const u32 channel : {0x15u, 0x16u, 0x34u, 0x0Eu, 0x0Fu, 0x31u, 0x2Du,
+                            0x2Eu, 0x2Au, 0x2Bu, 0x2Cu, 0x2Fu, 0x27u, 0x39u}) {
+    CHECK(HostileChannelPolicy(channel) == HostilePolicy::Drop);
+    CHECK(!Hostile(channel, true, CentralYharnam, CentralYharnam,
+                   EnemyPart::None, EnemyPart::Owner));
+    CHECK(!Hostile(channel, false, CentralYharnam, CentralYharnam,
+                   EnemyPart::Owner));
+  }
+  CHECK(!Hostile(NativeChannelCount, false, CentralYharnam, CentralYharnam));
+  return 0;
+}
+
 } // namespace
 
 int main() {
@@ -181,6 +237,8 @@ int main() {
       {"TheEnemiesComeFromTheOwnerOnly", TheEnemiesComeFromTheOwnerOnly},
       {"ARefusedReliablePacketKeepsItsPlace",
        ARefusedReliablePacketKeepsItsPlace},
+      {"AHostileVisitorGetsOnlyTheDesignsChannels",
+       AHostileVisitorGetsOnlyTheDesignsChannels},
   };
   int failed = 0;
   for (const auto &[name, test] : tests) {

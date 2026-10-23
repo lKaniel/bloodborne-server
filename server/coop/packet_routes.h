@@ -150,6 +150,97 @@ constexpr bool RoutesNativePacket(u32 channel, const PacketEnds& ends) {
     return true;
 }
 
+// Invasions (docs/INVASIONS.md): what goes between a hostile visitor (an invader) and the team
+// whose world it visits, strict at first:
+//   Pass           the join handshake (7, 0x19, 0x10, 0x11, 0x3F, 0x42) and character data, both
+//                  ways: the invader's game answers the host's handshake
+//   SameMap        players, hits on players, throws, forced animations, bullets: both on one known
+//                  map (a map not known yet lets nothing through)
+//   OwnersEnemies  the enemies, to the invader from its map's owner only (it runs none)
+//   Drop           enemy hits and hand-over, events, fog and doors, objects, items, Insight: it
+//                  must not change the team's world, nor the team's world its save
+// A channel not listed goes as the native table says (the game's own pass, the rest drop).
+enum class HostilePolicy : u8 { Pass, SameMap, OwnersEnemies, Drop };
+
+constexpr HostilePolicy HostileChannelPolicy(u32 channel) {
+    switch (channel) {
+    case 0x07:
+    case 0x19:
+    case 0x10:
+    case 0x11:
+    case 0x3F:
+    case 0x42: // the join handshake
+    case 0x08:
+    case 0x0A:
+    case 0x0B:
+    case 0x0C:
+    case 0x0D:
+    case 0x13:
+    case 0x3B:
+    case 0x3C:
+    case 0x43: // character data
+        return HostilePolicy::Pass;
+    case 0x06: // player state
+    case 0x14: // hits on players
+    case 0x12:
+    case 0x37:
+    case 0x30: // throws
+    case 0x24:
+    case 0x25: // forced animations
+    case 0x3E:
+    case 0x40: // bullets
+        return HostilePolicy::SameMap;
+    case 0x04:
+    case 0x05:
+    case 0x29:
+    case 0x36:
+    case 0x3D:
+    case 0x41:
+    case 0x17: // the enemies
+        return HostilePolicy::OwnersEnemies;
+    case 0x15:
+    case 0x16:
+    case 0x34: // enemy hits and hand-over
+    case 0x0E:
+    case 0x0F:
+    case 0x31: // events, fog, doors
+    case 0x2A:
+    case 0x2B:
+    case 0x2D:
+    case 0x2E:
+    case 0x2F: // objects
+    case 0x2C: // map items
+    case 0x27: // the boss "thanks" kick
+    case 0x39: // Insight transfer
+        return HostilePolicy::Drop;
+    default:
+        return NativeChannelPolicy(channel) == ChannelPolicy::Pass ? HostilePolicy::Pass
+                                                                   : HostilePolicy::Drop;
+    }
+}
+
+// Whether a packet goes between a hostile visitor and a team member: `from_visitor` when the
+// visitor sends it. `ends` as for RoutesNativePacket (the team member's part from the visited
+// world's owners; the visitor's is None).
+constexpr bool RoutesHostilePacket(u32 channel, const PacketEnds& ends, bool from_visitor) {
+    if (channel >= NativeChannelCount) {
+        return false;
+    }
+    const bool same_map =
+        ends.sender_map != 0 && ends.target_map != 0 && ends.sender_map == ends.target_map;
+    switch (HostileChannelPolicy(channel)) {
+    case HostilePolicy::Pass:
+        return true;
+    case HostilePolicy::SameMap:
+        return same_map;
+    case HostilePolicy::OwnersEnemies:
+        return !from_visitor && same_map && ends.sender == EnemyPart::Owner;
+    case HostilePolicy::Drop:
+        break;
+    }
+    return false;
+}
+
 // The channel of a packet ({u32 channel, u32 size, payload}), or NativeChannelCount when short.
 inline u32 NativePacketChannel(std::span<const u8> packet) {
     if (packet.size() < 8) {

@@ -209,12 +209,22 @@ message Vitals {
     // Kaniel 2026-10-20: was a member's bloodstain, shown to the others (v1.0.2 only); each player
     // sees only its own now.
     reserved 13;
+    // Invasions (docs/INVASIONS.md): the character's level (the matcher's level band; 0: not
+    // said, no band) and whether a boss fight runs in its world (event flag 4000 or the boss
+    // runner): no invader comes then, and one there goes home.
+    uint32 level = 14;
+    bool boss = 15;
+    // A real death that followed an invader's hit (the victim's game says so).
+    bool killed_by_invader = 16;
 }
 message VitalsBoard {
     message Member {
         string member = 1;
         Vitals vitals = 2; // without its hits
         uint32 revive_damage = 3;
+        // Invasions: the invader's line (its body stays shown); never in the panel, wipes,
+        // downs or revives.
+        bool hostile = 4;
     }
     message Wipe {
         uint32 id = 1;
@@ -415,7 +425,75 @@ message Envelope {
         // 38 was EnemiesLetGo (phase 6's far-guest runners, gone in phase 8).
         EnemyHit enemy_hit = 39;
         ResumeAt resume_at = 40;
+        InvadeRequest invade_request = 41;
+        InvasionNotice invasion_notice = 42;
+        InvasionStart invasion_start = 43;
+        InvaderJoined invader_joined = 44;
+        InvasionEnd invasion_end = 45;
     }
+}
+
+// Invasions (docs/INVASIONS.md): a solo player invades a team's world as a hostile phantom. The
+// server matches it to a started team world that allows invaders, tells both sides, joins it after
+// a notice, keeps it out of the world log and ends the invasion itself. A game that does not know
+// these messages never gets one: only a player that asked, and teams whose leader allowed
+// invaders, hear of an invasion.
+
+// game -> server, from a player in no team: find me a world to invade (`cancel`: stop looking, or
+// leave the invasion). The answer is an InvasionNotice once matched, or an InvasionEnd.
+message InvadeRequest {
+    uint32 level = 1; // the invader's character level (0: unknown, no level band)
+    bool cancel = 2;
+}
+
+// server -> the target team's games and the invader: an invader approaches (the team's notice
+// with its countdown); it joins in `in_ms`.
+message InvasionNotice {
+    uint64 id = 1;
+    uint32 in_ms = 2;
+    string invader = 3; // the invader's board name
+    string target = 4;  // the member it hunts (the session's host)
+}
+
+// server -> the invader: join the target's session now. `session` is the target host's
+// TeamSession with the invader's kind and sign (InvasionKind / InvasionSign in shadnet.cfg).
+message InvasionStart {
+    uint64 id = 1;
+    TeamSession session = 2;
+    string target = 3; // the member it hunts
+    uint32 map = 4;    // the target's map as the server last heard it
+    Position at = 5;   // where the target last stood (its last vitals), to travel to first
+    EnemyOwners owners = 6; // the team's enemy owners (sent again as they change while it lasts)
+}
+
+// server -> the target team's games: the invader joined the session: leave it out of the party
+// panel, vitals, revives and enemy owners; its kill is a real death.
+message InvaderJoined {
+    uint64 id = 1;
+    string member = 2; // the invader's board name
+    string target = 3;
+    string name = 4;   // the invader's name as players see it (its lobby name)
+}
+
+// server -> everyone in it: the invasion is over (or, to an invader still looking, refused).
+message InvasionEnd {
+    enum Reason {
+        NONE = 0;
+        INVADER_DIED = 1;   // the team wins
+        TARGET_KILLED = 2;  // the invader wins
+        PARTY_WIPED = 3;    // the invader wins
+        BOSS = 4;           // a boss fight started in the world
+        TIMEOUT = 5;        // InvasionMaxMs ran out
+        INVADER_LEFT = 6;   // its link is lost, its game restarted, or it cancelled
+        HOST_LEFT = 7;      // the target's session closed or its host's link is lost
+        INVADERS_OFF = 8;   // the leader turned invasions off
+        NOT_FOUND = 9;      // no world found in time
+        REFUSED = 10;       // invasions are off on this server, or the player is in a team
+    }
+    uint64 id = 1;
+    Reason reason = 2;
+    string invader = 3;
+    string text = 4;
 }
 
 // Phase 7, server -> game (after its hello): where this member last stood in the team's world
@@ -458,6 +536,9 @@ message TeamRequest {
         // Kaniel 2026-10-17: the leader forgets one of the server's worlds (`world`): off the
         // list, its folder kept aside on the server.
         FORGET_WORLD = 11;
+        // Invasions (docs/INVASIONS.md): the leader allows invaders into the team's world
+        // (`allow`), or turns them off (ending a running invasion).
+        INVADERS = 12;
     }
     Action action = 1;
     string member = 2;
@@ -465,6 +546,7 @@ message TeamRequest {
     uint32 slot = 4;
     string character = 5;
     string world = 6;
+    bool allow = 7; // INVADERS
 }
 
 message LobbyPlayer {
@@ -523,6 +605,8 @@ message Team {
     // its party key ("world:<id>"; empty for a new one): a game in another party is not in it.
     string world = 6;
     string party = 7;
+    // Invasions (docs/INVASIONS.md): the leader allows invaders (off by default).
+    bool allow_invaders = 8;
 }
 
 message TeamInvite {

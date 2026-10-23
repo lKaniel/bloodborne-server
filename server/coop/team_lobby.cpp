@@ -532,6 +532,18 @@ TeamLobby::Outcome TeamLobby::Request(const std::string& member,
         }
         return {.changed = true, .forgotten = {request.world()}};
     }
+    case Action::INVADERS: {
+        // Invasions (docs/INVASIONS.md): the leader's to allow; off ends a running invasion
+        // (the service's).
+        if (!mine || mine->leader() != member) {
+            return refuse("only the team's leader allows invaders");
+        }
+        if (mine->allow_invaders() == request.allow()) {
+            return {};
+        }
+        mine->set_allow_invaders(request.allow());
+        return {.changed = true};
+    }
     case Action::START: {
         if (!mine || mine->leader() != member) {
             return refuse("only the team's leader starts");

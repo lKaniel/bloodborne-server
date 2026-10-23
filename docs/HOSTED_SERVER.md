@@ -59,6 +59,10 @@ Settings: `Hosted`, `HostedBuild`, `HostedBanList`, `HostedLinksPerAddress`,
 `HostedPartyWorlds`, `HostedStats`, `HostedReports`,
 `HttpLinkedOnly`.
 
+Invasions (a solo player invading a team world whose leader allows it) are off unless
+`Invasions=true`, hosted or at home; the server side, its settings and what the games still need:
+[INVASIONS.md](INVASIONS.md).
+
 The games need no change for any of this (the emulator already says its id in hex as its names;
 check the port does too). One game-side change is wanted: on a hosted server the lobby lists 32
 players, so inviting a friend needs invite by name or code.

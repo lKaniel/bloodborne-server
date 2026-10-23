@@ -21,6 +21,7 @@
 
 #include "bloodborne_world.h"
 #include "coop/coop_messages.h"
+#include "coop/invasions.h"
 #include "coop/trade.h"
 
 using namespace BloodborneCoop;
@@ -155,8 +156,34 @@ struct Game {
     request.set_character(character);
     Send(envelope, now_ms);
   }
+  void Invade(u32 level, qint64 now_ms, bool cancel = false) {
+    bbcoop::Envelope envelope;
+    envelope.mutable_invade_request()->set_level(level);
+    envelope.mutable_invade_request()->set_cancel(cancel);
+    Send(envelope, now_ms);
+  }
+  void Vitals(u32 map, u32 vital, qint64 now_ms, u32 level = 0,
+              bool boss = false) {
+    bbcoop::Envelope envelope;
+    envelope.mutable_vitals()->set_map(map);
+    envelope.mutable_vitals()->set_vital(vital);
+    envelope.mutable_vitals()->set_hp(vital == 1 ? 100 : 0);
+    envelope.mutable_vitals()->set_max(100);
+    envelope.mutable_vitals()->set_level(level);
+    envelope.mutable_vitals()->set_boss(boss);
+    envelope.mutable_vitals()->mutable_at()->set_x(1);
+    Send(envelope, now_ms);
+  }
   void Take(const bbcoop::Envelope &envelope, qint64 now_ms) {
-    if (envelope.has_lobby_state()) {
+    if (envelope.has_invasion_notice()) {
+      notices.push_back(envelope.invasion_notice());
+    } else if (envelope.has_invasion_start()) {
+      invasion = envelope.invasion_start();
+    } else if (envelope.has_invader_joined()) {
+      joined.push_back(envelope.invader_joined());
+    } else if (envelope.has_invasion_end()) {
+      ends.push_back(envelope.invasion_end());
+    } else if (envelope.has_lobby_state()) {
       lobby = envelope.lobby_state();
       ++lobby_states;
     } else if (envelope.has_team_start()) {
@@ -248,6 +275,10 @@ struct Game {
   bool online = true; // false: its datagrams are lost
   bool deaf = false;  // true: what the server sends it is lost (it never acks)
   QByteArray online_id; // its link's player id (empty: its name)
+  std::vector<bbcoop::InvasionNotice> notices;
+  std::optional<bbcoop::InvasionStart> invasion;
+  std::vector<bbcoop::InvaderJoined> joined;
+  std::vector<bbcoop::InvasionEnd> ends;
 };
 
 // Datagrams both ways until nothing moves (the service's sends go to the game
@@ -2276,6 +2307,346 @@ int HostedPartiesAreTheirTeamsOnly() {
   return 0;
 }
 
+// Invasions (docs/INVASIONS.md): a started team of two ("aa" hosts, "bb") in
+// Central Yharnam whose leader allows invaders, and "rr", a player in no team.
+constexpr u32 InvadedMap = 0x18010000;
+constexpr u32 RulesKind = 0x1234;
+constexpr u32 RulesSign = 4;
+
+struct InvasionRig {
+  Service service;
+  Game a{1000, "aa", 11};
+  Game b{1001, "bb", 12};
+  Game red{1002, "rr", 13};
+  std::vector<Game *> games{&a, &b, &red};
+  qint64 now = 1'000'000;
+  QByteArray party;
+
+  explicit InvasionRig(bool enabled = true, bool allow = true,
+                       const QString &folder = {},
+                       const BloodborneWorld::Limits &limits = {})
+      : service{folder} {
+    service.SetLimits(limits);
+    if (!folder.isEmpty()) {
+      service.Load(now);
+    }
+    BloodborneWorld::InvasionRules rules;
+    rules.enabled = enabled;
+    rules.kind = RulesKind;
+    rules.sign = RulesSign;
+    service.SetInvasions(rules);
+    for (Game *game : games) {
+      game->LobbyHello(false, now);
+    }
+    Step();
+    a.Team(bbcoop::TeamRequest::CREATE, now);
+    Step();
+    a.Team(bbcoop::TeamRequest::INVITE, now, "bb");
+    Step();
+    b.Team(bbcoop::TeamRequest::ACCEPT, now, {}, a.lobby.team().id());
+    Step();
+    a.Team(bbcoop::TeamRequest::READY, now, {}, {}, 1);
+    b.Team(bbcoop::TeamRequest::READY, now, {}, {}, 2);
+    Step();
+    a.Team(bbcoop::TeamRequest::START, now);
+    Step();
+    party = QByteArray::fromStdString(a.starts.at(0).party());
+    for (Game *game : games) {
+      game->LobbyHello(true, now);
+    }
+    a.claims_host = true;
+    b.claims_host = false;
+    a.Hello(now, party);
+    b.Hello(now, party);
+    Step();
+    bbcoop::Envelope session;
+    session.mutable_team_session()->set_join("NXRV-join");
+    session.mutable_team_session()->set_kind(0xFFFFFFFF);
+    session.mutable_team_session()->set_sign(7);
+    session.mutable_team_session()->set_session(1);
+    a.Send(session, now);
+    a.Map(InvadedMap, now);
+    b.Map(InvadedMap, now);
+    a.Vitals(InvadedMap, 1, now, 50);
+    b.Vitals(InvadedMap, 1, now, 55);
+    Step();
+    if (allow) {
+      Allow(true);
+    }
+  }
+  void Allow(bool allow) {
+    bbcoop::Envelope envelope;
+    envelope.mutable_team_request()->set_action(bbcoop::TeamRequest::INVADERS);
+    envelope.mutable_team_request()->set_allow(allow);
+    a.Send(envelope, now);
+    Step();
+  }
+  void Step(qint64 ms = 0) {
+    now += ms;
+    Pump(service, games, now);
+  }
+  bool Routes(const Game &from, const Game &to, u32 channel) const {
+    return service.RoutesPacket(from.endpoint, to.endpoint, channel);
+  }
+  // rr asks, is told, and joins after the notice.
+  bool Invade() {
+    red.Invade(60, now);
+    red.Map(InvadedMap, now);
+    Step();
+    if (red.notices.empty() || a.notices.empty() || b.notices.empty()) {
+      return false;
+    }
+    Step(InvasionNoticeMs);
+    // The maps again (a member's map not heard of for seconds leaves the
+    // enemy owners).
+    for (Game *game : games) {
+      game->Map(InvadedMap, now);
+    }
+    Step();
+    return red.invasion.has_value();
+  }
+};
+
+bool EndedFor(const Game &game, bbcoop::InvasionEnd::Reason reason) {
+  return !game.ends.empty() && game.ends.back().reason() == reason;
+}
+
+int AnInvaderJoinsATeamWorldAfterANotice() {
+  InvasionRig rig;
+  Game &red = rig.red;
+  red.Invade(60, rig.now);
+  red.Map(InvadedMap, rig.now);
+  rig.Step();
+  // Matched: both sides hear "an invader approaches", nobody joins yet.
+  CHECK(red.notices.size() == 1 && rig.a.notices.size() == 1 &&
+        rig.b.notices.size() == 1);
+  CHECK(rig.a.notices[0].in_ms() == InvasionNoticeMs);
+  CHECK(rig.a.notices[0].invader() == "rr" &&
+        rig.a.notices[0].target() == "aa");
+  CHECK(!red.invasion);
+  CHECK(!rig.Routes(red, rig.a, 0x06));
+  CHECK(rig.service.VisitingOf(red.endpoint).isEmpty());
+  rig.Step(InvasionNoticeMs - 1);
+  CHECK(!red.invasion);
+  rig.a.Map(InvadedMap, rig.now); // the games say their maps every second
+  rig.b.Map(InvadedMap, rig.now);
+  // Past the notice: the invader gets the host's session with its own kind
+  // and sign, the team that it joined.
+  rig.Step(1);
+  CHECK(red.invasion.has_value());
+  CHECK(red.invasion->session().join() == "NXRV-join");
+  CHECK(red.invasion->session().kind() == RulesKind &&
+        red.invasion->session().sign() == RulesSign);
+  CHECK(red.invasion->session().host() == "aa");
+  CHECK(red.invasion->target() == "aa" && red.invasion->map() == InvadedMap);
+  CHECK(rig.a.joined.size() == 1 && rig.b.joined.size() == 1 &&
+        rig.a.joined[0].member() == "rr" &&
+        rig.a.joined[0].name() == "Player rr");
+  // It travels to the target first: where it stood, and whose the enemies are.
+  CHECK(red.invasion->has_at());
+  CHECK(red.invasion->owners().owners_size() >= 1);
+  // The hub sees it in the team's routing, its own party still its own.
+  CHECK(rig.service.VisitingOf(red.endpoint) ==
+        rig.service.PartyOf(rig.a.endpoint));
+  CHECK(rig.service.PartyOf(red.endpoint).isEmpty());
+  // One invader a world: a second one is not matched, and is told so once
+  // its search runs out.
+  Game blue{1003, "bl", 14};
+  rig.games.push_back(&blue);
+  blue.LobbyHello(true, rig.now);
+  blue.Invade(60, rig.now);
+  rig.Step();
+  CHECK(blue.notices.empty());
+  rig.Step(InvasionSearchMs);
+  CHECK(EndedFor(blue, bbcoop::InvasionEnd::NOT_FOUND));
+  CHECK(red.ends.empty());
+  return 0;
+}
+
+int AnInvasionNeedsTheServerAndTheTeamToAllowIt() {
+  {
+    InvasionRig rig{false}; // the kill switch: off by default
+    rig.red.Invade(60, rig.now);
+    rig.Step();
+    CHECK(EndedFor(rig.red, bbcoop::InvasionEnd::REFUSED));
+    CHECK(rig.a.notices.empty());
+  }
+  {
+    InvasionRig rig{true, false}; // the leader did not allow invaders
+    rig.red.Invade(60, rig.now);
+    rig.Step();
+    CHECK(rig.red.notices.empty() && rig.a.notices.empty());
+    rig.Step(InvasionSearchMs);
+    CHECK(EndedFor(rig.red, bbcoop::InvasionEnd::NOT_FOUND));
+  }
+  {
+    InvasionRig rig; // a team's member does not invade
+    rig.b.Invade(60, rig.now);
+    rig.Step();
+    CHECK(EndedFor(rig.b, bbcoop::InvasionEnd::REFUSED));
+  }
+  {
+    InvasionRig rig; // the team in the Hunter's Dream is not invaded
+    rig.a.Map(HuntersDreamMap, rig.now);
+    rig.b.Map(HuntersDreamMap, rig.now);
+    rig.Step();
+    rig.red.Invade(60, rig.now);
+    rig.Step();
+    CHECK(rig.red.notices.empty());
+    // Out in the world again: found at the next search.
+    rig.a.Map(InvadedMap, rig.now);
+    rig.Step(2000);
+    CHECK(rig.red.notices.size() == 1);
+  }
+  return 0;
+}
+
+int AnInvadersPacketsGoByTheHostileTable() {
+  InvasionRig rig;
+  CHECK(rig.Invade());
+  Game &red = rig.red;
+  Game &a = rig.a; // hosts, and runs Central Yharnam's enemies
+  Game &b = rig.b;
+  CHECK(a.OwnerOf(InvadedMap) == "aa");
+  // Players and their hits on one map, both ways; the join handshake.
+  CHECK(rig.Routes(red, a, 0x06) && rig.Routes(a, red, 0x06));
+  CHECK(rig.Routes(red, b, 0x14) && rig.Routes(b, red, 0x14));
+  CHECK(rig.Routes(red, a, 0x07) && rig.Routes(a, red, 0x10));
+  // Never its events, objects, enemy hits, items or Insight.
+  for (const u32 channel :
+       {0x0Eu, 0x0Fu, 0x31u, 0x2Du, 0x15u, 0x16u, 0x34u, 0x2Cu, 0x39u}) {
+    CHECK(!rig.Routes(red, a, channel) && !rig.Routes(red, b, channel));
+  }
+  // The enemies reach it from their owner only, and never come from it.
+  CHECK(rig.Routes(a, red, 0x05) && rig.Routes(a, red, 0x04));
+  CHECK(!rig.Routes(b, red, 0x05) && !rig.Routes(b, red, 0x04));
+  CHECK(!rig.Routes(red, a, 0x05) && !rig.Routes(red, b, 0x04));
+  // The team among itself as before.
+  CHECK(rig.Routes(a, b, 0x0E) && rig.Routes(a, b, 0x05));
+  // Another map: nothing of the players.
+  b.Map(0x18000000, rig.now);
+  rig.Step();
+  CHECK(!rig.Routes(red, b, 0x06) && !rig.Routes(b, red, 0x14));
+  CHECK(rig.Routes(red, a, 0x06));
+  return 0;
+}
+
+int AnInvaderNeverChangesTheTeamsWorld() {
+  InvasionRig rig;
+  CHECK(rig.Invade());
+  Game &red = rig.red;
+  Game &a = rig.a;
+  const BloodborneCoop::WorldLogHost *world = rig.service.World(rig.party);
+  CHECK(world != nullptr);
+  const u64 last = world->Last();
+  red.Propose({{InvadedMap, {0x10014066}}}, rig.now);
+  red.Flags({{1, 12345, true}}, rig.now);
+  red.Hp(0x77, {{0x10014067, 10, 100}}, rig.now);
+  bbcoop::Envelope echoes;
+  echoes.mutable_echoes()->add_kills()->set_echoes(500);
+  red.Send(echoes, rig.now);
+  red.Vitals(InvadedMap, 1, rig.now);
+  rig.Step();
+  CHECK(world->Last() == last);
+  CHECK(!Killed(a, 0x10014066) && !FlagApplied(a, 12345, true));
+  CHECK(a.echoes.empty());
+  CHECK(a.map_board.members_size() == 2);
+  // Its vitals are a hostile line on the board (its body stays shown), never a
+  // member's.
+  bool hostile_line = false;
+  for (const auto &entry : a.vitals_board.members()) {
+    if (entry.member() == "rr") {
+      hostile_line = entry.hostile();
+    } else {
+      CHECK(!entry.hostile());
+    }
+  }
+  CHECK(hostile_line);
+  CHECK(a.OwnerOf(InvadedMap) == "aa");
+  // A member's kill (the area's owner's) still stands.
+  a.Propose({{InvadedMap, {0x10014066}}}, rig.now);
+  rig.Step();
+  CHECK(Killed(a, 0x10014066));
+  return 0;
+}
+
+// Every end the server owns: InvasionEnd to everyone in it, and the invader out
+// of the team's routing again.
+int EachEndTellsEveryoneAndRestoresTheRouting() {
+  using Reason = bbcoop::InvasionEnd;
+  const std::vector<
+      std::pair<Reason::Reason, std::function<void(InvasionRig &)>>>
+      ends{
+          {Reason::INVADER_DIED,
+           [](InvasionRig &rig) { rig.red.Vitals(InvadedMap, 3, rig.now); }},
+          {Reason::TARGET_KILLED,
+           [](InvasionRig &rig) { rig.a.Vitals(InvadedMap, 3, rig.now); }},
+          {Reason::PARTY_WIPED,
+           [](InvasionRig &rig) {
+             rig.a.Vitals(InvadedMap, 2, rig.now);
+             rig.b.Vitals(InvadedMap, 2, rig.now);
+           }},
+          {Reason::BOSS,
+           [](InvasionRig &rig) {
+             rig.b.Vitals(InvadedMap, 1, rig.now, 55, true);
+           }},
+          {Reason::TIMEOUT,
+           [](InvasionRig &rig) {
+             rig.Step(InvasionMaxMs);
+             rig.Step(1000);
+           }},
+          {Reason::INVADER_LEFT,
+           [](InvasionRig &rig) { rig.red.Invade(0, rig.now, true); }},
+          {Reason::INVADER_LEFT,
+           [](InvasionRig &rig) { rig.service.LinkLost(rig.red.endpoint); }},
+          {Reason::HOST_LEFT,
+           [](InvasionRig &rig) {
+             bbcoop::Envelope closed;
+             closed.mutable_team_session()->set_session(1);
+             rig.a.Send(closed, rig.now);
+           }},
+          {Reason::HOST_LEFT,
+           [](InvasionRig &rig) { rig.service.LinkLost(rig.a.endpoint); }},
+          {Reason::INVADERS_OFF, [](InvasionRig &rig) { rig.Allow(false); }},
+      };
+  for (const auto &[reason, end] : ends) {
+    InvasionRig rig;
+    CHECK(rig.Invade());
+    CHECK(rig.Routes(rig.red, rig.a, 0x06));
+    end(rig);
+    rig.Step();
+    CHECK(EndedFor(rig.red, reason));
+    CHECK(EndedFor(rig.a, reason) && EndedFor(rig.b, reason));
+    CHECK(rig.red.ends.size() == 1 && rig.a.ends.size() == 1);
+    CHECK(rig.service.VisitingOf(rig.red.endpoint).isEmpty());
+    CHECK(!rig.Routes(rig.red, rig.a, 0x06) &&
+          !rig.Routes(rig.a, rig.red, 0x14));
+    // The team rests: the same invader is not matched again at once.
+    rig.red.ends.clear();
+    rig.red.notices.clear();
+    rig.red.Invade(60, rig.now);
+    rig.Step(2000);
+    CHECK(rig.red.notices.empty());
+  }
+  // A link forgotten ends it too.
+  InvasionRig rig;
+  CHECK(rig.Invade());
+  rig.red.online = false;
+  rig.service.Forget(rig.red.endpoint);
+  rig.Step();
+  CHECK(EndedFor(rig.a, Reason::INVADER_LEFT));
+  // Ended during the notice: the invader never joins.
+  InvasionRig early;
+  early.red.Invade(60, early.now);
+  early.red.Map(InvadedMap, early.now);
+  early.Step();
+  CHECK(early.red.notices.size() == 1);
+  early.Allow(false);
+  early.Step(InvasionNoticeMs);
+  CHECK(!early.red.invasion && EndedFor(early.red, Reason::INVADERS_OFF));
+  return 0;
+}
+
 // Caps (docs/HOSTED_SERVER.md): a message past the limit drops the member's
 // stream; its game starts the stream over and says hello again.
 int AMessagePastTheLimitDropsTheStream() {
@@ -2505,6 +2876,39 @@ int HostedTradesAreWithinAStartedTeam() {
   return 0;
 }
 
+// Merged with the caps and the world collector (docs/HOSTED_SERVER.md): an
+// invader whose stream breaks its limit is dropped like any game, and its
+// invasion ends; a world with an invasion is never put out of memory, and the
+// invader keeps no world loaded.
+int AnInvasionLivesWithTheCapsAndTheCollector() {
+  {
+    BloodborneWorld::Limits limits;
+    limits.message_bytes = 64 * 1024;
+    InvasionRig rig{true, true, {}, limits};
+    CHECK(rig.Invade());
+    bbcoop::Envelope big;
+    big.mutable_portrait()->set_pixels(std::string(100'000, 'p'));
+    rig.red.Send(big, rig.now);
+    rig.Step();
+    CHECK(EndedFor(rig.a, bbcoop::InvasionEnd::INVADER_LEFT) &&
+          EndedFor(rig.b, bbcoop::InvasionEnd::INVADER_LEFT));
+    CHECK(!rig.Routes(rig.red, rig.a, 0x06));
+  }
+  QTemporaryDir folder;
+  CHECK(folder.isValid());
+  BloodborneWorld::Limits limits;
+  limits.idle_world_ms = 1000;
+  InvasionRig rig{true, true, folder.path(), limits};
+  const int parties = rig.service.Parties();
+  CHECK(rig.Invade());
+  rig.Step(5000);
+  CHECK(rig.service.Parties() == parties);
+  CHECK(rig.service.World(rig.party) != nullptr);
+  CHECK(rig.service.PartyOf(rig.red.endpoint).isEmpty());
+  CHECK(rig.red.ends.empty() && rig.Routes(rig.red, rig.a, 0x06));
+  return 0;
+}
+
 int main() {
   const std::vector<std::pair<const char *, std::function<int()>>> tests{
       {"MembersFollowTheServersLog", MembersFollowTheServersLog},
@@ -2575,6 +2979,18 @@ int main() {
       {"ATeamsWorldComesFromItsHostAndOutlivesTheServer",
        ATeamsWorldComesFromItsHostAndOutlivesTheServer},
       {"ATeamsWorldsAreKeptApart", ATeamsWorldsAreKeptApart},
+      {"AnInvaderJoinsATeamWorldAfterANotice",
+       AnInvaderJoinsATeamWorldAfterANotice},
+      {"AnInvasionNeedsTheServerAndTheTeamToAllowIt",
+       AnInvasionNeedsTheServerAndTheTeamToAllowIt},
+      {"AnInvadersPacketsGoByTheHostileTable",
+       AnInvadersPacketsGoByTheHostileTable},
+      {"AnInvaderNeverChangesTheTeamsWorld",
+       AnInvaderNeverChangesTheTeamsWorld},
+      {"EachEndTellsEveryoneAndRestoresTheRouting",
+       EachEndTellsEveryoneAndRestoresTheRouting},
+      {"AnInvasionLivesWithTheCapsAndTheCollector",
+       AnInvasionLivesWithTheCapsAndTheCollector},
   };
   int failed = 0;
   for (const auto &[name, test] : tests) {
