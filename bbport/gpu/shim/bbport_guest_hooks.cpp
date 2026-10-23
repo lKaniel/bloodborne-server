@@ -37,12 +37,16 @@ constexpr u64 ImageBase = 0x800000000ull;
 #endif
 
 /// Makes [address, address + size) of the game's code writable; Restore puts the protection back
-/// (read-execute on Linux, the one it had on Windows) and flushes the instruction cache there.
+/// (the one it had, as /proc/self/maps lists it on Linux) and flushes the instruction cache on
+/// Windows. The hooks go in while the loader still writes the image (bbgpu_init, before the
+/// community patches): a page left read-execute there made the FPS++ write at 0xbbc40f fault.
 struct CodeWrite {
     void* page = nullptr;
     std::size_t span = 0;
 #ifdef _WIN32
     DWORD previous = 0;
+#else
+    int previous = PROT_READ | PROT_EXEC;
 #endif
     bool Open(u64 address, std::size_t size) {
 #ifdef _WIN32
@@ -53,6 +57,21 @@ struct CodeWrite {
         const long page_size = sysconf(_SC_PAGESIZE);
         page = reinterpret_cast<void*>(address & ~u64(page_size - 1));
         span = (address + size) - reinterpret_cast<u64>(page);
+        if (FILE* maps = std::fopen("/proc/self/maps", "r")) {
+            char line[512];
+            while (std::fgets(line, sizeof(line), maps)) {
+                unsigned long long lo = 0, hi = 0;
+                char perms[8] = {};
+                if (std::sscanf(line, "%llx-%llx %7s", &lo, &hi, perms) == 3 && address >= lo &&
+                    address < hi) {
+                    previous = (perms[0] == 'r' ? PROT_READ : 0) |
+                               (perms[1] == 'w' ? PROT_WRITE : 0) |
+                               (perms[2] == 'x' ? PROT_EXEC : 0);
+                    break;
+                }
+            }
+            std::fclose(maps);
+        }
         return mprotect(page, span, PROT_READ | PROT_WRITE | PROT_EXEC) == 0;
 #endif
     }
@@ -62,7 +81,7 @@ struct CodeWrite {
         VirtualProtect(page, span, previous, &unused);
         FlushInstructionCache(GetCurrentProcess(), page, span);
 #else
-        mprotect(page, span, PROT_READ | PROT_EXEC);
+        mprotect(page, span, previous);
 #endif
     }
 };
