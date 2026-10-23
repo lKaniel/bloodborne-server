@@ -205,6 +205,13 @@ if(BUILD_TESTING)
     target_include_directories(test_request_address PRIVATE src)
     add_test(NAME request_address COMMAND test_request_address)
 
+    add_executable(test_stream_extractor EXCLUDE_FROM_ALL
+        tests/test_stream_extractor.cpp
+    )
+    target_include_directories(test_stream_extractor PRIVATE src)
+    target_link_libraries(test_stream_extractor PRIVATE Qt6::Core)
+    add_test(NAME stream_extractor COMMAND test_stream_extractor)
+
     add_executable(test_ss_info_path EXCLUDE_FROM_ALL
         tests/test_ss_info_path.cpp
     )
