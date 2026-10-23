@@ -53,6 +53,33 @@ EFFECTS={
     'tweak_easy_run':(None,'Sensitive Analog Input (easier to run)'),
     'tweak_ragdoll':(None,'DS1-like physics'),
 }
+# Build check on join: the patches that change the game for everyone in a party (cheats and gameplay
+# tweaks, the launcher's Cheats page) and their short names in the game's build fingerprint; a
+# player whose differ is refused by the co-op server. The rest (frame rate, effects, resolution)
+# change only how the game looks and are only logged.
+GAMEPLAY_PATCHES={
+    'Player No Dead (Read note)':'no death',
+    'Player Stealth (Read note)':'stealth',
+    'Player Silent (Read note)':'silent',
+    'No Rally Decay':'rally no decay',
+    'Enemy Control':'enemy control',
+    'Disable Rally (HP Regain)':'no rally',
+}
+
+
+def build_check_names(names):
+    """(the gameplay patches' short names, the other patches' names), each in the order given."""
+    gameplay=[GAMEPLAY_PATCHES[n] for n in names if n in GAMEPLAY_PATCHES]
+    other=[n for n in names if n not in GAMEPLAY_PATCHES]
+    return gameplay,other
+
+
+def write_build_check_names(out, names):
+    """out/patches-names.json: run.py hands the names to the game (BB_PATCH_GAMEPLAY, BB_PATCH_OTHER)."""
+    gameplay,other=build_check_names(list(dict.fromkeys(names)))
+    (out/'patches-names.json').write_text(json.dumps({'gameplay':gameplay,'other':other})+'\n',encoding='utf-8')
+
+
 # Intel CPUs: the game's tone mapping turns black (DLC areas most; reported as darker than on the
 # PS4): the game code runs natively, and Intel's approximate float instructions differ from the
 # PS4's AMD CPU, so a block the game gates on a computed flag never runs. The community fix runs
@@ -497,6 +524,7 @@ def main():
     if not game_is_patched(version,os.environ,a.app_version):
         blob=struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,0)
         (a.out/'patches.bin').write_bytes(blob)
+        write_build_check_names(a.out,[])
         print(f'Patches: game version {version}, patches are for {a.app_version}: none applied '
               '(30 FPS, no effect or resolution patches)')
         return
@@ -545,6 +573,7 @@ def main():
     blob=struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,len(writes))
     for offset,data in writes: blob+=struct.pack('<QQ',offset,len(data))+data
     (a.out/'patches.bin').write_bytes(blob)
+    write_build_check_names(a.out,[name for name,_,_ in named])
     print(f'Patches: FPS preset {a.fps}; {len(writes)} writes from {names or "none"}')
 
 

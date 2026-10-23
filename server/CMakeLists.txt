@@ -145,6 +145,21 @@ set(SOURCES
 
 add_executable(shadnet ${SOURCES})
 
+# The build's revision (bbcoop_revision.h, BB_SCM_REV), refreshed at every build by the script the
+# game's build runs: a game must run this server's build (the link's build check).
+set(BB_REVISION_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../bbport/gpu/bbcoop/revision.cmake")
+if(EXISTS "${BB_REVISION_SCRIPT}")
+    add_custom_target(shadnet_revision
+        COMMAND ${CMAKE_COMMAND} -DOUT=${CMAKE_CURRENT_BINARY_DIR}/include/bbcoop_revision.h
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR} -P "${BB_REVISION_SCRIPT}"
+        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/include/bbcoop_revision.h)
+    add_dependencies(shadnet shadnet_revision)
+else()
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/include/bbcoop_revision.h"
+         "#pragma once\n#define BB_SCM_REV \"0000000\"\n")
+endif()
+target_include_directories(shadnet PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/include")
+
 # The ss.info template the game's online check reads; the Python backend reads the same file.
 set(BLOODBORNE_SS_INFO_TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/../backend/ss_info_template.xml"
     CACHE FILEPATH "backend/ss_info_template.xml, built into shadnet")
@@ -224,6 +239,10 @@ if(BUILD_TESTING)
     add_executable(test_packet_routes EXCLUDE_FROM_ALL tests/test_packet_routes.cpp)
     target_include_directories(test_packet_routes PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME packet_routes COMMAND test_packet_routes)
+
+    add_executable(test_build_fingerprint EXCLUDE_FROM_ALL tests/test_build_fingerprint.cpp)
+    target_include_directories(test_build_fingerprint PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME build_fingerprint COMMAND test_build_fingerprint)
 
     add_executable(test_rpc_tunnel EXCLUDE_FROM_ALL tests/test_rpc_tunnel.cpp)
     target_include_directories(test_rpc_tunnel PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

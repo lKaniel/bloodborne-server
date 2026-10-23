@@ -73,6 +73,12 @@ public:
         QReadLocker lk(&m_lock);
         return m_bloodborneSeamlessCoop;
     }
+    // Build check on join: whether a game must run this server's own release (CheckServerBuild,
+    // on by default; off for a dev or rig server built apart from the games).
+    bool IsServerBuildChecked() const {
+        QReadLocker lk(&m_lock);
+        return m_checkServerBuild;
+    }
 
     BackendConfig GetBackend() const {
         QReadLocker lk(&m_lock);
@@ -145,6 +151,7 @@ private:
     bool m_statsEnabled = true;
     bool m_matching2Enabled = true;
     bool m_bloodborneSeamlessCoop = false;
+    bool m_checkServerBuild = true;
     BackendConfig m_backend;
     QString m_statsPort = "31320";
     QString m_statsPath = "stats";

@@ -348,8 +348,8 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
             MemoryPatcher::OnGameLoaded();
 #ifdef ARCH_X86_64
             Bloodborne::InstallCrashCatcher(base_virtual_addr, base_size);
-            // The build for the co-op hello; the event files' hash is the port's only.
-            Bloodborne::SetBuildIdentity(Common::g_scm_rev, 0);
+            // The build for the co-op hello; the files' hashes are the port's only.
+            Bloodborne::SetBuildIdentity(Common::g_scm_rev, 0, 0, 0);
             Bloodborne::InstallSeamlessCoopPatches();
             Bloodborne::InstallReverseEngineeringTrace();
 #endif

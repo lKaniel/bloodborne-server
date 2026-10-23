@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <QtEndian>
+#include "coop/build_fingerprint.h"
 #include "coop/packet_routes.h"
 
 namespace ServerLink {
@@ -356,17 +357,38 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
         return;
     }
     QByteArray refusal;
+    QByteArray refusal_logged; // when the game's text says more than its log needs
+    QString checked_aside;     // settings that differ but are only logged
     if (hello->version != LinkVersion) {
         refusal = "link version " + QByteArray::number(hello->version) + ", this server speaks " +
                   QByteArray::number(LinkVersion);
     } else if (!hello->build.isEmpty()) {
-        // Every other linked game's build (a game saying hello again is not one). Phase 11: a game
-        // signs in before its co-op code says the build; none said holds nothing, either way.
+        // Build check on join: the games linked here (a game saying hello again is not one; all
+        // of them run one build, so the first says it) and the server's own release. Phase 11: a
+        // game signs in before its co-op code says the build; none said holds nothing, either way.
+        std::optional<BloodborneCoop::BuildFingerprint> here;
         for (const Link& link : std::as_const(members)) {
-            if (!(link.endpoint == from) && !link.build.isEmpty() && link.build != hello->build) {
-                refusal = "another build: everyone needs the same release (this game runs " +
-                          hello->build + ", the games here run " + link.build + ")";
+            if (!(link.endpoint == from) && !link.build.isEmpty()) {
+                here = BloodborneCoop::ParseBuildFingerprint(link.build.toStdString());
                 break;
+            }
+        }
+        const auto server = server_build.isEmpty()
+                                ? std::nullopt
+                                : BloodborneCoop::ParseBuildFingerprint(server_build.toStdString());
+        const auto build = BloodborneCoop::BuildRefusalOf(
+            hello->build.toStdString(), server ? &*server : nullptr, here ? &*here : nullptr);
+        if (!build.text.empty()) {
+            // The team screen's line first, then the whole reason (the link's text holds 255
+            // bytes: the log has all of it).
+            refusal = QByteArray::fromStdString(build.notice + "\n" + build.text);
+            refusal_logged = QByteArray::fromStdString(build.text);
+        } else if (const auto game =
+                       BloodborneCoop::ParseBuildFingerprint(hello->build.toStdString());
+                   game && here) {
+            if (const std::string other = BloodborneCoop::DescribeDifferences(*game, *here);
+                !other.empty()) {
+                checked_aside = QString::fromStdString(other);
             }
         }
     }
@@ -383,11 +405,17 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
         }
     }
     if (!refusal.isEmpty()) {
-        result.sends.append({from, Encode(Welcome{false, refusal})});
+        result.sends.append({from, Encode(Welcome{false, refusal.left(0xFF)})});
         result.log.append(
             QStringLiteral("server link: refused %1 (%2): %3")
-                .arg(QString::fromUtf8(hello->online_id), from.Text(), QString::fromUtf8(refusal)));
+                .arg(QString::fromUtf8(hello->online_id), from.Text(),
+                     QString::fromUtf8(refusal_logged.isEmpty() ? refusal : refusal_logged)));
         return;
+    }
+    if (!checked_aside.isEmpty()) {
+        result.log.append(
+            QStringLiteral("server link: %1 (%2) runs other settings than the games here (%3)")
+                .arg(QString::fromUtf8(hello->online_id), from.Text(), checked_aside));
     }
     if (!stats_started) {
         stats_started = true;

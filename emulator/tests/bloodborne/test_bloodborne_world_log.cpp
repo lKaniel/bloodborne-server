@@ -206,8 +206,9 @@ TEST(BloodbornePeerHello, AHelloAdvertisesTheWorldLog) {
     const PeerHello hello{.revision = "abc", .member = "6b61", .features = WorldLogFeature};
     const auto payload = EncodePeerHello(hello);
     EXPECT_EQ(DecodePeerHello(payload), hello);
-    // A protocol 1 hello ends after the member: it has no features.
-    const auto old = DecodePeerHello(std::span{payload}.first(payload.size() - 1));
+    // A protocol 1 hello ends after the member: it has no features (nor the build fingerprint
+    // after them, here empty: its u16 length).
+    const auto old = DecodePeerHello(std::span{payload}.first(payload.size() - 3));
     ASSERT_TRUE(old);
     EXPECT_EQ(old->features, 0);
 }

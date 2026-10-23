@@ -4215,3 +4215,45 @@ SCENARIOS["paarl-after-wipe"] = {
     "forbid": {role: SESSION_HOLDS for role in ("host", "guest", "guest2")},
     "timeout": 900,
 }
+
+# Build check on join (Kaniel 2026-10-24): everyone, the server included, runs one build. A game
+# whose settings change the game (harder enemies here) tries to link beside one without them: the
+# server refuses it, naming the setting with both values, on its team screen and in its log; it
+# plays alone. Games on the same settings link (build-check-same).
+HARDER = {"SHADPS4_BLOODBORNE_HARDER_ENEMIES": "3,1.5,3"}
+LINKED = r"Server link: the server took this game's hello"
+SCENARIOS["build-check-harder"] = {
+    "about": "the guest has harder enemies (HP x3 damage x1.5 poise x3), the host the normal "
+             "game: the server refuses the guest's link, saying both settings",
+    "role_settings": {"guest": HARDER},
+    "start_after": {"guest": ["host", LINKED]},
+    "roles": {
+        "host": ["team-alone", START, "wait 5", "sync bc-refused", "done"],
+        "guest": ["team-screen", "title-wait 10", "title-shot refused", "team-alone", START,
+                  "wait 5", "sync bc-refused", "done"],
+    },
+    "syncs": {"bc-refused": {"chapter": "build-check-harder", "roles": ["host", "guest"]}},
+    "expect": {
+        "host": [LINKED, r"Co-op: build fingerprint bb-build 1;.*;harder=off;"],
+        "guest": [r"Co-op: build fingerprint bb-build 1;.*;harder=3,1\.5,3;",
+                  r"the server refused this game: Co-op refused: your harder enemies are HP x3 "
+                  r"damage x1\.5 poise x3, the others use off \| another build: your "
+                  r"harder-enemies setting is HP x3 damage x1\.5 poise x3, the games here use "
+                  r"off: change it in the launcher's co-op settings"],
+    },
+    "forbid": {"host": [r"refused this game"]},
+    "timeout": 300,
+}
+SCENARIOS["build-check-same"] = {
+    "about": "host and guest both with harder enemies: the same build, they link and play in "
+             "one session",
+    "settings": HARDER,
+    "roles": {
+        "host": [START, "wait-session 2 300", "wait 5", "expect-session 2"],
+        "guest": [START, "wait-session 2 300", "wait 5", "expect-session 2"],
+    },
+    "expect": {role: [LINKED, r"Co-op: build fingerprint bb-build 1;.*;harder=3,1\.5,3;"]
+               for role in ("host", "guest")},
+    "forbid": {role: [r"refused this game", *SESSION_HOLDS] for role in ("host", "guest")},
+    "timeout": 300,
+}

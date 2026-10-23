@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "common/types.h"
+#include "coop/build_fingerprint.h"
 #include "coop/packet_routes.h"
 #include "coop/world_log.h"
 #include "core/bloodborne_patch_sites.h"
@@ -1484,7 +1485,8 @@ constexpr u8 PeerHelloType = 0x33;
 // 6: a snapshot ends with the recent flag events (frame 0x3D); the world snapshot on the server.
 // 7: the flags part's after-wipe byte. 8: the host's return point (the ReturnPoint entry, and the
 // map state part ends with it). 9: the members' portraits (PortraitPartType, 0x3E).
-constexpr u8 CoopProtocolVersion = 9;
+// (BloodborneCoop::CoopFrameProtocol: shadNet knows it too, for the build check on join.)
+constexpr u8 CoopProtocolVersion = BloodborneCoop::CoopFrameProtocol;
 constexpr s64 PeerHelloResendMs = 10'000;
 // PeerHello::features: WorldLogFeature when this game runs the world log (it is not switched off,
 // SHADPS4_BLOODBORNE_WORLD_LOG=0). Every member runs one build (Kaniel 2026-10-12): a peer on
@@ -1497,11 +1499,13 @@ struct PeerHello {
     u64 event_files = 0;  // a hash of the map event files the game reads, 0 when unknown
     std::string member;   // the board's name for the member, "" before it has one
     u8 features = 0;      // bits (WorldLogFeature); 0 from a build before protocol 2
+    std::string build;    // the build fingerprint (coop/build_fingerprint.h), "" from an older one
     bool operator==(const PeerHello&) const = default;
 };
 // The payload: protocol, revision (u8 length first), event files (u64), member (u8 length
-// first), features (u8, since protocol 2). A decoder takes a longer payload (fields a later build
-// added) and one without the features (a build before them).
+// first), features (u8, since protocol 2), build fingerprint (u16 length first). A decoder takes a
+// longer payload (fields a later build added) and one without the features or the fingerprint (a
+// build before them).
 std::vector<u8> EncodePeerHello(const PeerHello& hello);
 std::optional<PeerHello> DecodePeerHello(std::span<const u8> payload);
 class PeerBuildCheck {
@@ -1510,11 +1514,26 @@ public:
     std::optional<std::string> Take(const PeerHello& theirs, const PeerHello& mine);
 
 private:
-    std::set<std::tuple<std::string, u8, std::string, u64, u8>> warned;
+    std::set<std::tuple<std::string, u8, std::string, u64, u8, std::string>> warned;
 };
 // A hash of the map event files (*.emevd.dcx) in `folder`, the game's dvdroot_ps4/event (the
 // co-op kit replaces some): names and bytes. 0 when there are none or one cannot be read.
 u64 EventFilesHash(const std::filesystem::path& folder);
+// A hash of one file's bytes (the eboot, patches.bin), 0 when it cannot be read.
+u64 FileHash(const std::filesystem::path& file);
+// Build check on join (Kaniel 2026-10-24): what the game knows of its build, and from its
+// environment (`env`: std::getenv, or a test's) its release (BB_RELEASE_VERSION, the launcher's;
+// "dev" without one), the settings that change the game (harder enemies, the gameplay patches
+// run.py names in BB_PATCH_GAMEPLAY, the co-op rule switches) and, only for the logs, the visual
+// ones (frame rate, mods, other patches). Hashes 0 are unknown.
+struct BuildIdentity {
+    std::string revision;
+    u64 eboot = 0;
+    u64 event_files = 0;
+    u64 patches_bin = 0;
+};
+BloodborneCoop::BuildFingerprint CoopBuildFingerprint(
+    const BuildIdentity& identity, const std::function<const char*(const char*)>& env);
 std::vector<u8> EncodeDirectKills(std::string_view member, std::span<const u32> handles);
 std::optional<DirectKills> DecodeDirectKills(std::span<const u8> payload);
 std::unordered_set<u32> DirectKillHandles(std::span<const DirectKills> kills);

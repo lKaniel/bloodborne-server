@@ -1038,6 +1038,8 @@ def game_environment(s, frame_generation=None):
     env['BB_PATCHES_DIR'] = s['patches_dir'] or str(DATA_DIR / 'patches')
     env['BB_PATCHES_CONFIG'] = str(DATA_DIR / 'patches.json')
     env['BB_LANGUAGE'] = s['language']
+    # Build check on join: the co-op server refuses a game of another release and says both versions.
+    env['BB_RELEASE_VERSION'] = coop_release_version() or 'dev'
     if str(s['player_name']).strip():
         env['BB_USER_NAME'] = str(s['player_name']).strip()
     if str(s.get('addcont', '')).strip():

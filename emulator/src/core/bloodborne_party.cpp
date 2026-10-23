@@ -5475,6 +5475,9 @@ std::vector<u8> EncodePeerHello(const PeerHello& hello) {
     payload.push_back(static_cast<u8>(member));
     payload.insert(payload.end(), hello.member.begin(), hello.member.begin() + member);
     payload.push_back(hello.features);
+    const size_t build = std::min<size_t>(hello.build.size(), 0xFFFF);
+    AppendLittleEndian(payload, static_cast<u16>(build));
+    payload.insert(payload.end(), hello.build.begin(), hello.build.begin() + build);
     return payload;
 }
 
@@ -5492,8 +5495,19 @@ std::optional<PeerHello> DecodePeerHello(std::span<const u8> payload) {
         return std::nullopt;
     }
     hello.member.assign(payload.begin() + member_at + 1, payload.begin() + member_at + 1 + member);
-    if (const size_t features_at = member_at + 1 + member; payload.size() > features_at) {
+    const size_t features_at = member_at + 1 + member;
+    if (payload.size() > features_at) {
         hello.features = payload[features_at];
+    }
+    if (const size_t build_at = features_at + 1; payload.size() > build_at) {
+        if (payload.size() < build_at + 2) {
+            return std::nullopt;
+        }
+        const size_t build = ReadLittleEndian<u16>(payload, build_at);
+        if (payload.size() < build_at + 2 + build) {
+            return std::nullopt;
+        }
+        hello.build.assign(payload.begin() + build_at + 2, payload.begin() + build_at + 2 + build);
     }
     return hello;
 }
@@ -5503,20 +5517,39 @@ std::optional<std::string> PeerBuildCheck::Take(const PeerHello& theirs, const P
     const bool events_differ =
         theirs.event_files != 0 && mine.event_files != 0 && theirs.event_files != mine.event_files;
     const bool features_differ = theirs.features != mine.features;
+    // Build check on join: both say their build fingerprint, so the differences go by field (the
+    // server refused a game on other settings; this names them in the games' logs too).
+    const auto their_build = BloodborneCoop::ParseBuildFingerprint(theirs.build);
+    const auto my_build = BloodborneCoop::ParseBuildFingerprint(mine.build);
+    const std::string fields =
+        their_build && my_build ? BloodborneCoop::DescribeDifferences(*my_build, *their_build) : "";
+    const bool no_fingerprint = my_build && !their_build;
     if (theirs.protocol == mine.protocol && theirs.revision == mine.revision && !events_differ &&
-        !features_differ) {
+        !features_differ && fields.empty() && !no_fingerprint) {
         return std::nullopt;
     }
     if (!warned
              .emplace(theirs.member, theirs.protocol, theirs.revision, theirs.event_files,
-                      theirs.features)
+                      theirs.features, theirs.build)
              .second) {
         return std::nullopt;
     }
-    std::string line = fmt::format("Co-op: {} runs build {}, this game runs {}",
-                                   theirs.member.empty() ? "a peer" : theirs.member,
-                                   theirs.revision.empty() ? "?" : theirs.revision,
-                                   mine.revision.empty() ? "?" : mine.revision);
+    const std::string who = theirs.member.empty() ? "a peer" : theirs.member;
+    if (their_build && my_build) {
+        std::string line = fmt::format("Co-op: {}'s build differs from this game's: {}", who,
+                                       fields.empty() ? "build " + theirs.revision : fields);
+        if (features_differ) {
+            line += fmt::format("; world log {}, this game's {}",
+                                (theirs.features & WorldLogFeature) != 0 ? "on" : "off",
+                                (mine.features & WorldLogFeature) != 0 ? "on" : "off");
+        }
+        return line;
+    }
+    std::string line =
+        fmt::format("Co-op: {} runs build {}{}, this game runs {}", who,
+                    theirs.revision.empty() ? "?" : theirs.revision,
+                    no_fingerprint ? " (no build fingerprint: an older release)" : "",
+                    mine.revision.empty() ? "?" : mine.revision);
     if (theirs.protocol != mine.protocol) {
         line += fmt::format(" (co-op protocol {}, this game's {})", theirs.protocol, mine.protocol);
     }
@@ -5532,6 +5565,63 @@ std::optional<std::string> PeerBuildCheck::Take(const PeerHello& theirs, const P
                             (mine.features & WorldLogFeature) != 0 ? "on" : "off");
     }
     return line;
+}
+
+u64 FileHash(const std::filesystem::path& file) {
+    std::ifstream stream{file, std::ios::binary};
+    if (!stream) {
+        return 0;
+    }
+    // FNV-1a, as EventFilesHash.
+    u64 hash = 0xcbf29ce484222325ull;
+    std::vector<char> chunk(1 << 16);
+    while (stream.read(chunk.data(), static_cast<std::streamsize>(chunk.size())) ||
+           stream.gcount() > 0) {
+        for (std::streamsize i = 0; i < stream.gcount(); ++i) {
+            hash = (hash ^ static_cast<u8>(chunk[i])) * 0x100000001b3ull;
+        }
+    }
+    return hash != 0 ? hash : 1;
+}
+
+BloodborneCoop::BuildFingerprint CoopBuildFingerprint(
+    const BuildIdentity& identity, const std::function<const char*(const char*)>& env) {
+    const auto setting = [&env](const char* name, std::string_view absent) {
+        const char* value = env(name);
+        return std::string{value != nullptr && *value != '\0' ? std::string_view{value} : absent};
+    };
+    // 12 hex digits of a hash (enough to tell files apart; the link's text holds 255 bytes).
+    const auto hash = [](u64 value) {
+        return value != 0 ? fmt::format("{:012x}", value & 0xFFFF'FFFF'FFFFull) : std::string{};
+    };
+    BloodborneCoop::BuildFingerprint build;
+    build.Set("version", setting("BB_RELEASE_VERSION", "dev"));
+    build.Set("revision", BloodborneCoop::FingerprintRevision(identity.revision));
+    build.Set("protocol", std::to_string(CoopProtocolVersion));
+    build.Set("eboot", hash(identity.eboot));
+    build.Set("events", hash(identity.event_files));
+    // The multipliers as the game reads them (ParseHarderEnemies): "off" is the normal game.
+    const auto harder = ParseHarderEnemies(setting("SHADPS4_BLOODBORNE_HARDER_ENEMIES", ""));
+    build.Set("harder",
+              harder ? fmt::format("{:g},{:g},{:g}", harder->hp, harder->damage, harder->poise)
+                     : "off");
+    build.Set("cheats", setting("BB_PATCH_GAMEPLAY", "none"));
+    const char* revive = env("SHADPS4_BLOODBORNE_REVIVE_HITS");
+    std::string rules = fmt::format(
+        "lamp rests {}, revive hits {}",
+        LampRestsEnabled(env("SHADPS4_BLOODBORNE_LAMP_REST")) ? "on" : "off",
+        revive != nullptr && std::string_view{revive} == "presses" ? "presses" : "real");
+    if (SettingIsOn(env("SHADPS4_BLOODBORNE_GUEST_AS_HOST"))) {
+        rules += ", guest as host";
+    }
+    build.Set("rules", rules);
+    // Only logged: they change how the game looks, not what happens in it.
+    build.Set("fps", setting("BB_FPS_PRESET", "?") +
+                         (setting("BB_ONLINE_UNLOCKED_FPS", "") == "1" ? " unlocked" : ""));
+    build.Set("mods", setting("BB_MODS_ENABLED", "1") == "0" ? "off" : "on");
+    build.Set("patches", setting("BB_PATCH_OTHER", "none"));
+    build.Set("pbin", hash(identity.patches_bin));
+    return build;
 }
 
 u64 EventFilesHash(const std::filesystem::path& folder) {

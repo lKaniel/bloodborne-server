@@ -853,7 +853,12 @@ private:
                 TellLinkObserver("welcome", "");
             }
         } else if (!repeated) {
-            LOG_ERROR(Lib_Net, "Server link: the server refused this game: {}", welcome.text);
+            // One line: the build check's refusal is the screen's line, then the whole reason.
+            std::string text = welcome.text;
+            for (size_t at = 0; (at = text.find('\n', at)) != std::string::npos;) {
+                text.replace(at, 1, " | ");
+            }
+            LOG_ERROR(Lib_Net, "Server link: the server refused this game: {}", text);
             TellLinkObserver("refused", welcome.text);
         }
     }

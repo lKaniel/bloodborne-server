@@ -468,6 +468,31 @@ class LaneTest(unittest.TestCase):
         self.assertIn("BloodborneBackend=true\n", again)
         self.assertIn("BloodborneBackend=false\n", run_scenario.with_backend(config, False))
 
+    def test_a_role_can_have_settings_of_its_own(self):
+        # Build check on join: two games on different settings (one with harder enemies).
+        scenario = {"settings": {"A": "1", "B": "2"},
+                    "role_settings": {"guest": {"B": "3", "C": "4"}}}
+        self.assertEqual(run_scenario.scenario_settings(scenario, "host"), {"A": "1", "B": "2"})
+        self.assertEqual(run_scenario.scenario_settings(scenario, "guest"),
+                         {"A": "1", "B": "3", "C": "4"})
+        self.assertEqual(run_scenario.scenario_settings({}, "guest"), {})
+        spec = scenarios.SCENARIOS["build-check-harder"]
+        self.assertEqual(spec["role_settings"]["guest"]["SHADPS4_BLOODBORNE_HARDER_ENEMIES"],
+                         "3,1.5,3")
+        # The guest starts once the host's game is linked: the host's build is the one here.
+        self.assertEqual(run_scenario.start_after(spec, "guest")[0], "host")
+        self.assertIsNone(run_scenario.start_after(spec, "host"))
+
+    def test_a_lanes_shadnet_checks_the_games_against_each_other_not_its_own_build(self):
+        # Build check on join: the rig's servers are built apart from the games (another
+        # checkout, another day), so only the games here count (CheckServerBuild).
+        config = "[General]\nUnsecuredPort=32313\nCheckServerBuild=true\n"
+        changed = run_scenario.with_build_check(config)
+        self.assertIn("CheckServerBuild=false\n", changed)
+        self.assertEqual(changed.count("CheckServerBuild="), 1)
+        self.assertIn("CheckServerBuild=false\n",
+                      run_scenario.with_build_check("[General]\nUnsecuredPort=32313\n"))
+
     def test_a_lane_is_a_copy_of_the_rig_without_its_game_image_and_logs(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)

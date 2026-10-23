@@ -188,6 +188,13 @@ def with_backend(config: str, builtin: bool) -> str:
     return with_value(config, "BackendAddress", "127.0.0.1")
 
 
+def with_build_check(config: str) -> str:
+    """shadnet.cfg's text with the server's own build left out of the build check on join: the rig's
+    servers are built apart from the games (another checkout, another day); the games here still
+    have to match each other."""
+    return with_value(config, "CheckServerBuild", "false")
+
+
 def with_matching_udp_port(config: str, port: int) -> str:
     """shadnet.cfg's text with its MatchingUdpPort set to `port`."""
     return with_setting(config, "MatchingUdpPort", port)
@@ -202,6 +209,7 @@ def configure_shadnet():
         wanted = with_setting(wanted, "UnsecuredPort", SHADNET_PORT)
         wanted = with_setting(wanted, "WebApiPort", WEBAPI_PORT)
         wanted = with_backend(wanted, builtin_backend())
+        wanted = with_build_check(wanted)
         # BB_RIG_BACKEND_STORE=1: the backend keeps messages and chalice dungeons in a fresh file.
         store = lane_dir() / "server" / "rig-content.sqlite"
         store.unlink(missing_ok=True)
@@ -875,6 +883,19 @@ SCENARIO_SETTINGS = {
 }
 
 
+def scenario_settings(scenario: dict, role: str) -> dict[str, str]:
+    """The settings a scenario gives a role's game: its "settings", then the role's own
+    ("role_settings": two games on different settings, the build check on join's)."""
+    return {**scenario.get("settings", {}), **scenario.get("role_settings", {}).get(role, {})}
+
+
+def start_after(scenario: dict, role: str) -> tuple[str, str] | None:
+    """("start_after": {role: [other role, pattern]}) a role's game starts once the other's log
+    shows the pattern (the build check on join: the game here first, then the one it refuses)."""
+    after = scenario.get("start_after", {}).get(role)
+    return (after[0], after[1]) if after else None
+
+
 def game_environment(role: str, script: pathlib.Path | None, party: str,
                      settings: dict[str, str] | None = None) -> dict[str, str]:
     """A role's game's settings: co-op on in `party`, the trace on, the autoplay script if any,
@@ -1260,7 +1281,13 @@ def run(name: str, batch: pathlib.Path, attempt: int = 1, scenario: dict | None 
     processes = {}
     for role in roles:
         clear_go_files(ENGINE.role_dir(role))
-        processes[role] = launch(role, stages[role][0], settings=scenario.get("settings"))
+        if after := start_after(scenario, role):
+            wait_until = time.time() + 180
+            while (time.time() < wait_until and not re.search(after[1], read_log(after[0]))
+                   and processes[after[0]].poll() is None):
+                time.sleep(2)
+            print(f"  {role} starts after {after[0]}'s log said {after[1]!r}")
+        processes[role] = launch(role, stages[role][0], settings=scenario_settings(scenario, role))
         print(f"  started {role}")
         # The next game once this one is in the world, where loading side by side is slow.
         wait_until = time.time() + 90 if ENGINE.staggered_start else 0
@@ -1297,7 +1324,7 @@ def run(name: str, batch: pathlib.Path, attempt: int = 1, scenario: dict | None 
                                      keep_party_files=True)
                     print(f"  {role}: saves put back to {saves}")
                 processes[role] = launch(role, stages[role][stage[role]],
-                                         settings=scenario.get("settings"))
+                                         settings=scenario_settings(scenario, role))
             elif found:
                 done[role] = found.group(1)
                 print(f"  {role} done ({found.group(1)}) after {time.time() - started:.0f} s")
@@ -1713,7 +1740,7 @@ def play(name: str, title: bool = False) -> int:
     processes = {}
     for role in roles:
         processes[role] = launch(role, None if title else scripts[role],
-                                 settings=scenario.get("settings"))
+                                 settings=scenario_settings(scenario, role))
         print(f"started {role}")
         wait_until = time.time() + 90 if ENGINE.staggered_start else 0
         while (time.time() < wait_until and IN_WORLD not in read_log(role)

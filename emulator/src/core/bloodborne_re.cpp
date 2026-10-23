@@ -1138,16 +1138,24 @@ void TickPartyController() {
 
 } // namespace Coop
 
-void SetBuildIdentity(std::string_view revision, u64 event_files) {
+void SetBuildIdentity(std::string_view revision, u64 event_files, u64 eboot, u64 patches_bin) {
+    const std::string build = BloodborneCoop::EncodeBuildFingerprint(
+        CoopBuildFingerprint(BuildIdentity{.revision = std::string{revision},
+                                           .eboot = eboot,
+                                           .event_files = event_files,
+                                           .patches_bin = patches_bin},
+                             [](const char* name) -> const char* { return std::getenv(name); }));
+    LOG_INFO(Debug, "Co-op: build fingerprint {}", build);
     {
         std::scoped_lock lock{peer_hello_mutex};
         own_hello = PeerHello{.revision = std::string{revision},
                               .event_files = event_files,
-                              .features = WorldLogSwitchOn() ? WorldLogFeature : u8{0}};
+                              .features = WorldLogSwitchOn() ? WorldLogFeature : u8{0},
+                              .build = build};
     }
-    // The server link's hello: shadNet takes one build only (see PeerHello).
-    Libraries::Net::SetServerLinkBuild(
-        fmt::format("{} events {:x} protocol {}", revision, event_files, CoopProtocolVersion));
+    // The server link's hello: shadNet takes one build only, its own release's (build check on
+    // join), and refuses another naming what differs.
+    Libraries::Net::SetServerLinkBuild(build);
     Libraries::Net::SetServerLinkObserver([](std::string_view event, std::string_view detail) {
         Trace("link", {{"event", std::string{event}}, {"detail", std::string{detail}}});
     });

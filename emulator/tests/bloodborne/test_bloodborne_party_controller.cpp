@@ -2860,7 +2860,8 @@ TEST(BloodbornePeerHello, AHelloReadsBack) {
     const PeerHello hello{.protocol = CoopProtocolVersion,
                           .revision = "c01b49d3a1b2-dirty",
                           .event_files = 0x0123456789abcdefull,
-                          .member = "6b616e69656c"};
+                          .member = "6b616e69656c",
+                          .build = "bb-build 1;version=1.2.0;harder=off;"};
     const std::vector<u8> payload = EncodePeerHello(hello);
     EXPECT_EQ(DecodePeerHello(payload), hello);
     const auto frame = DecodeCoopFrame(EncodeCoopFrame(PeerHelloType, payload));
@@ -2874,10 +2875,18 @@ TEST(BloodbornePeerHello, AHelloReadsBack) {
     std::vector<u8> longer = payload;
     longer.push_back(7);
     EXPECT_EQ(DecodePeerHello(longer), hello) << "a later build may add fields at the end";
-    // Without its last byte (the features) it is a protocol 1 hello: see
-    // AHelloAdvertisesTheWorldLog.
-    for (size_t size = 0; size + 1 < payload.size(); ++size) {
-        EXPECT_FALSE(DecodePeerHello(std::span{payload}.first(size))) << "cut at " << size;
+    // Without the features it is a protocol 1 hello (see AHelloAdvertisesTheWorldLog), without the
+    // build fingerprint (u16 length, text) an older release's: either reads. Any other cut does
+    // not.
+    const size_t build_at = payload.size() - 2 - hello.build.size();
+    for (size_t size = 0; size < payload.size(); ++size) {
+        const auto cut = DecodePeerHello(std::span{payload}.first(size));
+        if (size == build_at - 1 || size == build_at) {
+            ASSERT_TRUE(cut) << "cut at " << size;
+            EXPECT_TRUE(cut->build.empty());
+        } else {
+            EXPECT_FALSE(cut) << "cut at " << size;
+        }
     }
     std::vector<u8> overlong = payload;
     overlong[1] = 0xFF; // the revision's length runs past the end
@@ -2953,6 +2962,112 @@ TEST(BloodbornePeerHello, EventFilesHashFollowsTheirBytes) {
     write("m24_01_00_00.emevd.dcx", "changed");
     EXPECT_NE(EventFilesHash(folder), hash);
     std::filesystem::remove_all(folder);
+}
+
+// Build check on join: one file's bytes (the eboot, patches.bin), 0 when it cannot be read.
+TEST(BloodborneBuildCheck, FileHashFollowsTheBytes) {
+    const auto file = std::filesystem::temp_directory_path() / "bb_file_hash_test.bin";
+    std::filesystem::remove(file);
+    EXPECT_EQ(FileHash(file), 0u);
+    std::ofstream{file, std::ios::binary} << "eboot";
+    const u64 hash = FileHash(file);
+    EXPECT_NE(hash, 0u);
+    EXPECT_EQ(FileHash(file), hash);
+    std::ofstream{file, std::ios::binary} << "other";
+    EXPECT_NE(FileHash(file), hash);
+    std::filesystem::remove(file);
+}
+
+// The game's build fingerprint: its release (the launcher's BB_RELEASE_VERSION), build, files and
+// the settings that change the game; the visual ones only for the log.
+TEST(BloodborneBuildCheck, TheFingerprintSaysTheBuildAndTheRules) {
+    const BuildIdentity identity{.revision = "08e56cd82c5c4f7d1d2e3f4a5b6c7d8e9f0a1b2c",
+                                 .eboot = 0x1234567890abcdefull,
+                                 .event_files = 0xfedcba0987654321ull,
+                                 .patches_bin = 0x42};
+    const auto none = [](const char*) -> const char* { return nullptr; };
+    const auto plain = CoopBuildFingerprint(identity, none);
+    EXPECT_EQ(BloodborneCoop::EncodeBuildFingerprint(plain),
+              "bb-build 1;version=dev;revision=08e56cd82c5c;protocol=9;eboot=567890abcdef;"
+              "events=ba0987654321;harder=off;cheats=none;rules=lamp rests off, revive hits real;"
+              "fps=?;mods=on;patches=none;pbin=000000000042;");
+
+    const std::map<std::string, std::string> settings{
+        {"BB_RELEASE_VERSION", "1.2.0"},
+        {"SHADPS4_BLOODBORNE_HARDER_ENEMIES", " 3, 1.50 ,3"},
+        {"BB_PATCH_GAMEPLAY", "no death, no rally"},
+        {"SHADPS4_BLOODBORNE_LAMP_REST", "1"},
+        {"SHADPS4_BLOODBORNE_REVIVE_HITS", "presses"},
+        {"SHADPS4_BLOODBORNE_GUEST_AS_HOST", "1"},
+        {"BB_FPS_PRESET", "90"},
+        {"BB_ONLINE_UNLOCKED_FPS", "1"},
+        {"BB_MODS_ENABLED", "0"},
+        {"BB_PATCH_OTHER", "90 FPS++, Sprint Fix (High FPS)"}};
+    const auto env = [&](const char* name) -> const char* {
+        const auto found = settings.find(name);
+        return found == settings.end() ? nullptr : found->second.c_str();
+    };
+    const auto set = CoopBuildFingerprint(identity, env);
+    EXPECT_EQ(set.Get("version"), "1.2.0");
+    EXPECT_EQ(set.Get("harder"), "3,1.5,3") << "the multipliers, as the game reads them";
+    EXPECT_EQ(set.Get("cheats"), "no death, no rally");
+    EXPECT_EQ(set.Get("rules"), "lamp rests on, revive hits presses, guest as host");
+    EXPECT_EQ(set.Get("fps"), "90 unlocked");
+    EXPECT_EQ(set.Get("mods"), "off");
+    EXPECT_EQ(set.Get("patches"), "90 FPS++, Sprint Fix (High FPS)");
+
+    // Harder settings the game takes as the normal game are "off".
+    for (const char* vanilla : {"off", "1,1,1", "0", "nonsense"}) {
+        const auto harder = [&](const char* name) -> const char* {
+            return std::string_view{name} == "SHADPS4_BLOODBORNE_HARDER_ENEMIES" ? vanilla
+                                                                                 : nullptr;
+        };
+        EXPECT_EQ(CoopBuildFingerprint(identity, harder).Get("harder"), "off") << vanilla;
+    }
+    // Unknown files and revision say nothing (never compared).
+    const auto unknown = CoopBuildFingerprint(BuildIdentity{.revision = "0000000"}, none);
+    EXPECT_EQ(unknown.Get("revision"), "");
+    EXPECT_EQ(unknown.Get("eboot"), "");
+    EXPECT_EQ(unknown.Get("events"), "");
+}
+
+// The peers' hellos carry the fingerprint: another game's differences are logged by field (the
+// server refuses the game; this is for the logs of the games already in).
+TEST(BloodborneBuildCheck, APeerOnOtherSettingsIsLoggedByField) {
+    BloodborneCoop::BuildFingerprint build;
+    build.Set("version", "1.2.0");
+    build.Set("harder", "off");
+    build.Set("fps", "60");
+    const PeerHello mine{.protocol = CoopProtocolVersion,
+                         .revision = "c01b49d3",
+                         .event_files = 0x1111,
+                         .member = "6b616e69656c",
+                         .build = BloodborneCoop::EncodeBuildFingerprint(build)};
+    PeerBuildCheck check;
+    PeerHello same = mine;
+    same.member = "4c69";
+    EXPECT_FALSE(check.Take(same, mine));
+
+    PeerHello harder = same;
+    build.Set("harder", "3,1.5,3");
+    build.Set("fps", "90 unlocked");
+    harder.build = BloodborneCoop::EncodeBuildFingerprint(build);
+    const auto warning = check.Take(harder, mine);
+    ASSERT_TRUE(warning);
+    EXPECT_EQ(*warning, "Co-op: 4c69's build differs from this game's: harder-enemies setting off, "
+                        "theirs HP x3 damage x1.5 poise x3; not checked: frame rate 60, theirs "
+                        "90 unlocked");
+    EXPECT_FALSE(check.Take(harder, mine)) << "said once";
+
+    // A hello with no fingerprint (an older release): its revision, as before.
+    PeerHello older = same;
+    older.member = "70";
+    older.revision = "7f3343f0";
+    older.build.clear();
+    const auto old_warning = check.Take(older, mine);
+    ASSERT_TRUE(old_warning);
+    EXPECT_EQ(*old_warning, "Co-op: 70 runs build 7f3343f0 (no build fingerprint: an older "
+                            "release), this game runs c01b49d3");
 }
 
 TEST(BloodborneSharedEnemyHp, InOneWorldAGuestTakesTheHostsNpcHp) {

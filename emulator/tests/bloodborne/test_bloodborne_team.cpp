@@ -933,6 +933,22 @@ TEST(TeamLobby, ARefusedLinkIsShownOnTheTeamScreen) {
     EXPECT_LT(notice.size(), 96u);
 }
 
+// Build check on join: the server's refusal starts with the screen's line (what differs, both
+// values), then the whole reason for the log.
+TEST(TeamLobby, ABuildRefusalShowsWhatDiffers) {
+    const std::string refusal =
+        "Co-op refused: your harder enemies are HP x3 damage x1.5 poise x3, the others use off\n"
+        "another build: your harder-enemies setting is HP x3 damage x1.5 poise x3, the games "
+        "here use off: change it in the launcher's co-op settings";
+    EXPECT_EQ(LinkRefusalNotice(refusal),
+              "Co-op refused: your harder enemies are HP x3 damage x1.5 poise x3, the others use "
+              "off");
+    // Never longer than the screen's line, whatever the server sent.
+    const std::string notice = LinkRefusalNotice(std::string(200, 'x') + "\nreason");
+    EXPECT_LE(notice.size(), BloodborneCoop::RefusalNoticeMax);
+    EXPECT_TRUE(notice.ends_with("...")) << notice;
+}
+
 namespace {
 
 bbcoop::LobbyState WithMember(bbcoop::LobbyState state, const std::string& member, bool ready) {

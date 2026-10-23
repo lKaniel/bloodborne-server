@@ -16,9 +16,20 @@ std::string LinkRefusalNotice(std::string_view refusal) {
     if (refusal.empty()) {
         return {};
     }
-    // The details in brackets (the builds) stay in the log: the screen has one short line.
-    return "The co-op server refused this game: " +
-           std::string{refusal.substr(0, refusal.find(" ("))};
+    std::string notice;
+    if (const size_t line_end = refusal.find('\n'); line_end != std::string_view::npos) {
+        // The build check's refusal: its first line is the screen's (what differs, both values),
+        // the rest the whole reason for the log.
+        notice = refusal.substr(0, line_end);
+    } else {
+        // The details in brackets stay in the log: the screen has one short line.
+        notice = "The co-op server refused this game: " +
+                 std::string{refusal.substr(0, refusal.find(" ("))};
+    }
+    if (notice.size() > BloodborneCoop::RefusalNoticeMax) {
+        notice = notice.substr(0, BloodborneCoop::RefusalNoticeMax - 3) + "...";
+    }
+    return notice;
 }
 
 u32 TeamGuestSign(const bbcoop::LobbyState& lobby, const std::string& me,

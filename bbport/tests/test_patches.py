@@ -467,5 +467,49 @@ class IntelTonemapTests(unittest.TestCase):
         self.assertIn(patches.INTEL_TONEMAP, names)
 
 
+class BuildCheckNamesTests(unittest.TestCase):
+    """Build check on join: the patches that change the game (cheats and gameplay tweaks) must be the
+    same for everyone in a party; the rest (frame rate, effects, resolution) only go in the log."""
+
+    def test_gameplay_patches_get_short_names_and_the_rest_stays_apart(self):
+        gameplay, other = patches.build_check_names(
+            ['60 FPS++', 'Player No Dead (Read note)', 'Disable DoF', 'Disable Rally (HP Regain)'])
+        self.assertEqual(gameplay, ['no death', 'no rally'])
+        self.assertEqual(other, ['60 FPS++', 'Disable DoF'])
+
+    def test_every_cheat_and_gameplay_tweak_of_the_launcher_is_checked(self):
+        for key in ('cheat_no_death', 'cheat_stealth', 'cheat_silent', 'cheat_rally_no_decay',
+                    'cheat_enemy_control', 'tweak_no_rally'):
+            name = patches.EFFECTS[key][1]
+            self.assertIn(name, patches.GAMEPLAY_PATCHES, key)
+        xml = ET.parse(ROOT / 'patches/Bloodborne.xml')
+        names = {m.get('Name') for m in xml.iter('Metadata')}
+        self.assertLessEqual(set(patches.GAMEPLAY_PATCHES), names)
+
+    def test_main_writes_the_names_beside_patches_bin(self):
+        import json
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            header = bytearray(64)
+            header[0:7] = b'\x7fELF\x02\x01\x01'
+            struct.pack_into('<Q', header, 0x20, 64)
+            struct.pack_into('<HH', header, 0x36, 56, 1)
+            (out / 'eboot.elf').write_bytes(bytes(header) + struct.pack('<IIQQQQQQ', 1, 5, 0, 0, 0, 0x6000000,
+                                                                        0x6000000, 0x1000))
+            (out / 'bbport.ini').write_text('cheat_no_death=1\neffect_dof=0\n', encoding='utf-8')
+            run = subprocess.run([sys.executable, str(ROOT / 'scripts/patches.py'), '--out', str(out),
+                                  '--fps', '60', '--settings', str(out / 'bbport.ini'),
+                                  '--game-dir', str(out), '--xml', str(XML)],
+                                 env={**os.environ, 'BB_INTEL_TONEMAP_FIX': '0'},
+                                 capture_output=True, text=True, encoding='utf-8')
+            self.assertEqual(run.returncode, 0, run.stderr)
+            names = json.loads((out / 'patches-names.json').read_text(encoding='utf-8'))
+        self.assertEqual(names['gameplay'], ['no death'])
+        self.assertIn('60 FPS++', names['other'])
+        self.assertIn('Disable DoF', names['other'])
+
+
 if __name__ == '__main__':
     unittest.main()

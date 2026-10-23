@@ -1,11 +1,40 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadNet Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDebug>
+#include <QDir>
+#include <QFile>
 #include <QRandomGenerator>
 #include <QtEndian>
+#include "bbcoop_revision.h"
+#include "config.h"
+#include "coop/build_fingerprint.h"
 #include "link_server.h"
+
+namespace {
+
+// This server's release: BB_RELEASE_VERSION, else the release's VERSION.txt (beside the server's
+// folder, as the launcher reads it), else "" (a dev build).
+QString ReleaseVersion() {
+    const QString given = qEnvironmentVariable("BB_RELEASE_VERSION");
+    if (!given.isEmpty()) {
+        return given;
+    }
+    const QDir folder{QCoreApplication::applicationDirPath()};
+    for (const QString& path : {folder.filePath(QStringLiteral("../VERSION.txt")),
+                                folder.filePath(QStringLiteral("VERSION.txt"))}) {
+        QFile file{path};
+        if (file.open(QIODevice::ReadOnly)) {
+            return QString::fromStdString(
+                BloodborneCoop::ReleaseVersionOf(file.read(4096).toStdString()));
+        }
+    }
+    return {};
+}
+
+} // namespace
 
 LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_port,
                        QObject* parent)
@@ -20,6 +49,17 @@ LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_
     m_link.SetSignIn([this](const QByteArray& online_id, const QByteArray& secret) {
         return SignIn(online_id, secret);
     });
+    // Build check on join: a game runs this server's release, or it is refused.
+    const auto own = BloodborneCoop::EncodeBuildFingerprint(
+        BloodborneCoop::ServerBuildFingerprint(ReleaseVersion().toStdString(), BB_SCM_REV));
+    if (!shared->config || shared->config->IsServerBuildChecked()) {
+        m_link.SetServerBuild(QByteArray::fromStdString(own));
+        qInfo().noquote() << "Link: games must run this server's build:"
+                          << QString::fromStdString(own);
+    } else {
+        qInfo().noquote() << "Link: this server's build (" << QString::fromStdString(own)
+                          << ") is not checked (CheckServerBuild=false): the games here only";
+    }
     connect(m_socket, &QUdpSocket::readyRead, this, &LinkServer::OnReadyRead);
     connect(m_linkTimer, &QTimer::timeout, this, &LinkServer::OnLinkTick);
     connect(m_worldTimer, &QTimer::timeout, this, &LinkServer::OnWorldTick);

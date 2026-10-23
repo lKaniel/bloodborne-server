@@ -99,9 +99,14 @@ extern "C" void bbcoop_install(unsigned char* image, uint64_t eboot_size, void* 
     // rate preset and extra patches (patches.py's names; the patches themselves are compiled
     // into patches.bin), and the map event files the game reads (the kit's co-op ones over the
     // game's). The build and the event files also go to the room's peers (PeerHello).
-    const u64 event_files = Core::Bloodborne::EventFilesHash(
-        std::filesystem::path{game_folder.empty() ? "." : game_folder} / "dvdroot_ps4" / "event");
-    Core::Bloodborne::SetBuildIdentity(BB_SCM_REV, event_files);
+    const auto app0_folder = std::filesystem::path{game_folder.empty() ? "." : game_folder};
+    const u64 event_files = Core::Bloodborne::EventFilesHash(app0_folder / "dvdroot_ps4" / "event");
+    // Build check on join: the game files and patches.bin (run.py names it in BB_PATCHES_FILE)
+    // go into the build fingerprint with the build and the settings.
+    const char* patches_file = std::getenv("BB_PATCHES_FILE");
+    Core::Bloodborne::SetBuildIdentity(
+        BB_SCM_REV, event_files, Core::Bloodborne::FileHash(app0_folder / "eboot.bin"),
+        patches_file != nullptr ? Core::Bloodborne::FileHash(patches_file) : 0);
     const auto environment = [](const char* name, const char* absent) {
         const char* value = std::getenv(name);
         return std::string{value != nullptr && *value != '\0' ? value : absent};
@@ -394,11 +399,15 @@ extern "C" int bbcoop_lobby_view(bbcoop_lobby* lobby) {
     if (!Coop::TeamModeOn()) {
         return 0;
     }
+    // Refused (another build): the screen says why instead of "reaching", also over a lobby the
+    // game's sign-in got before its build was known (the build check on join refuses the hello
+    // that names it; nothing of that lobby works then).
+    const std::string refusal = Libraries::Net::ServerLinkRefusal();
     const auto state = Coop::TeamLobbyState();
-    if (!state) {
-        // Refused (another build): no lobby comes, so the screen says why instead of "reaching".
+    if (!state || !refusal.empty()) {
+        static_assert(sizeof(lobby->notice) > BloodborneCoop::RefusalNoticeMax);
         CopyName(lobby->notice, sizeof(lobby->notice),
-                 Core::Bloodborne::LinkRefusalNotice(Libraries::Net::ServerLinkRefusal()));
+                 Core::Bloodborne::LinkRefusalNotice(refusal));
         return 1;
     }
     const std::string me = Coop::TeamLobbyMember();

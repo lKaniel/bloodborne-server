@@ -182,6 +182,18 @@ def online_frame_env(fps, online, online_unlocked, pace=None, asked=None):
     return {**cap, 'SHADPS4_BLOODBORNE_SEND_PACE': '1'}
 
 
+def build_check_env(out):
+    """Build check on join: the game's build fingerprint names the patches that change the game and the others
+    (patches.py's patches-names.json) and hashes patches.bin (bbcoop/coop.cpp)."""
+    try:
+        names = json.loads((Path(out) / 'patches-names.json').read_text(encoding='utf-8'))
+        gameplay, other = list(names['gameplay']), list(names['other'])
+    except (OSError, ValueError, KeyError, TypeError):
+        gameplay, other = [], []
+    return {'BB_PATCH_GAMEPLAY': ', '.join(gameplay) or 'none', 'BB_PATCH_OTHER': ', '.join(other) or 'none',
+            'BB_PATCHES_FILE': str(Path(out) / 'patches.bin')}
+
+
 def ini_value(path, key):
     try:
         for line in Path(path).read_text(encoding='utf-8', errors='replace').splitlines():
@@ -380,6 +392,7 @@ def main():
                    '--output-res', env.get('BB_OUTPUT_RES', ''),
                    '--patches-dir', env.get('BB_PATCHES_DIR', data / 'patches'),
                    '--patches-config', env.get('BB_PATCHES_CONFIG', data / 'patches.json'))
+        env.update(build_check_env(out))
         # As run.sh (0.5): the GPU memory defaults the renderer is tuned for. Background upload of
         # rewritten GPU memory, command buffers decoded from a copy, small GPU outputs written
         # beside the game's writes; BB_PC_MODEL=1 is the experimental memory and translation
