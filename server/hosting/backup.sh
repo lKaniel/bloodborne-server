@@ -83,10 +83,16 @@ copy_worlds() {
 }
 copy_worlds
 
-# 3. Everything else small: config, score attachments, ban list.
-for p in shadnet.cfg worlds.cfg scoreboards.cfg domains_banlist.txt score_data; do
+# 3. Everything else small: config, score attachments, ban lists, and the server's link key
+#    (LinkKeyFile: its identity, pinned by every game; a lost key breaks every player's pin).
+for p in shadnet.cfg worlds.cfg scoreboards.cfg domains_banlist.txt banned.txt link_key.bin \
+    score_data; do
     if [[ -e $DATA_DIR/$p ]]; then cp -a "$DATA_DIR/$p" "$STAGE_DIR/"; fi
 done
+
+if [[ ! -f $DATA_DIR/link_key.bin ]]; then
+    log "WARNING: no link_key.bin in $DATA_DIR: this backup cannot give the server its key back"
+fi
 
 # 4. Postgres (future: accounts/world index). Custom format so restore can be selective.
 if [[ -n ${PGHOST:-} ]]; then

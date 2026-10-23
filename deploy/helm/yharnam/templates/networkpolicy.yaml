@@ -1,0 +1,133 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $p := .Values.shards.ports -}}
+# Most CNIs do not apply NetworkPolicy to hostNetwork pods: in that mode the node firewall
+# (deploy/terraform, the Hetzner firewall) is what keeps 31313/31320 and the rest closed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "yharnam.shard" . }}
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "yharnam.shardSelector" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # The players: from anywhere, only the game's ports.
+    - ports:
+        - { port: {{ $p.link }}, protocol: UDP }
+        - { port: {{ $p.backend }}, protocol: TCP }
+        - { port: {{ $p.webapi }}, protocol: TCP }
+        {{- if eq .Values.tls.mode "caddy" }}
+        {{- range .Values.tls.caddy.sites }}
+        - { port: {{ .port }}, protocol: TCP }
+        {{- end }}
+        {{- end }}
+  egress:
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    {{- if .Values.directory.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/name: directory
+      ports:
+        - { port: {{ .Values.directory.port }}, protocol: TCP }
+    {{- end }}
+    {{- if eq .Values.tls.mode "caddy" }}
+    # ACME (Let's Encrypt) for the Caddy sidecar.
+    - ports:
+        - { port: 443, protocol: TCP }
+    {{- end }}
+{{- if .Values.backup.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "yharnam.fullname" . }}-backup
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: shadnet-backup
+  policyTypes: [Ingress, Egress]
+  egress:
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+        {{- range .Values.networkPolicy.backupEgressPorts }}
+        - { port: {{ . }}, protocol: TCP }
+        {{- end }}
+{{- end }}
+{{- if .Values.directory.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "yharnam.fullname" . }}-directory
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: directory
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - { port: {{ .Values.directory.port }}, protocol: TCP }
+      {{- if not .Values.directory.ingress.enabled }}
+      from:
+        - podSelector:
+            matchLabels:
+              {{- include "yharnam.shardSelector" . | nindent 14 }}
+        {{- range .Values.networkPolicy.nodeCidrs }}
+        # hostNetwork shards come from their node's address.
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+        {{- with .Values.networkPolicy.monitoringNamespaceSelector }}
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+      {{- end }}
+  egress:
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/name: redis
+      ports:
+        - { port: 6379, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "yharnam.fullname" . }}-redis
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: redis
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/name: directory
+      ports:
+        - { port: 6379, protocol: TCP }
+  egress: []
+{{- end }}
+{{- end }}

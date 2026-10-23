@@ -1,0 +1,28 @@
+yharnam {{ .Values.region }}: {{ .Values.shards.count }} shard(s), exposed by {{ .Values.shards.expose }}.
+
+Each shard makes its link key (link_key.bin, its identity) on its first start. Get its public
+key for the launcher (KNOWN_SERVER_KEYS), and back the file up off the cluster NOW:
+
+  kubectl -n {{ .Release.Namespace }} exec {{ include "yharnam.shard" . }}-0 -c shadnet -- shadnet --admin key
+  kubectl -n {{ .Release.Namespace }} exec {{ include "yharnam.shard" . }}-0 -c shadnet -- cat /data/link_key.bin > {{ .Values.region }}-0.link_key.bin
+
+Operator commands (admin socket inside the pod; server/hosting/README.md lists them):
+
+  kubectl -n {{ .Release.Namespace }} exec {{ include "yharnam.shard" . }}-0 -c shadnet -- shadnet --admin players
+  kubectl -n {{ .Release.Namespace }} exec {{ include "yharnam.shard" . }}-0 -c shadnet -- shadnet --admin stats
+  kubectl -n {{ .Release.Namespace }} exec {{ include "yharnam.shard" . }}-0 -c shadnet -- shadnet --admin ban 203.0.113.7 7d flooding
+
+{{- if eq .Values.shards.expose "loadBalancer" }}
+
+Addresses (EXTERNAL-IP; put them in shards.publicAddresses / DNS):
+  kubectl -n {{ .Release.Namespace }} get svc -l app.kubernetes.io/instance={{ .Release.Name }} -o wide
+{{- end }}
+{{- if eq .Values.shards.updateStrategy "OnDelete" }}
+
+Upgrades do not restart shards (updateStrategy OnDelete). In the maintenance window:
+  kubectl -n {{ .Release.Namespace }} delete pod -l app.kubernetes.io/component=shard,app.kubernetes.io/instance={{ .Release.Name }}
+{{- end }}
+{{- if not .Values.backup.enabled }}
+
+WARNING: backup.enabled=false. The accounts, worlds and link keys live only on the volumes.
+{{- end }}

@@ -7,10 +7,10 @@ SQLite files and protobuf world folders.
 
 | File | What it is | Tested? |
 | --- | --- | --- |
-| `Dockerfile` | Two-stage build on Ubuntu 24.04. Qt 6.8 LTS comes from aqtinstall and protobuf from the submodule. A Debian trixie apt variant is in the comments | Image not built (no Docker daemon, and download.qt.io is blocked here). **Ubuntu 24.04's apt Qt (6.4.2) does NOT build shadNet**: a native build fails in `src/webapi_server.cpp`, which needs Qt 6.8's QHttpServer API. Every other file compiled. |
-| `entrypoint.sh` | Seeds `/data` (cfg files, public-host `shadnet.cfg`), then execs shadNet | No |
+| `Dockerfile` | The one image (this compose file, the Helm chart in `deploy/helm/yharnam`, CI). Multi-stage: Qt 6.8.4 from conda-forge plus QtHttpServer 6.8.3 from source (or aqtinstall with `--build-arg QT_FROM=aqt`), protobuf from the submodule; the runtime is Ubuntu 24.04 with only shadnet and the libraries it loads, user 10001, a healthcheck (`healthcheck.sh`). Context: the repository root | Built and run 2026-10-23 (docs/DEPLOY.md): starts, makes `link_key.bin`, healthy, bbload games link and play. The aqt path was not built (download.qt.io blocked there). **Ubuntu 24.04's apt Qt (6.4.2) does NOT build shadNet** (`src/webapi_server.cpp` needs Qt 6.8's QHttpServer API). |
+| `entrypoint.sh` | Seeds `/data` (cfg files, public-host `shadnet.cfg`, or the chart's config with `SHADNET_CONFIG`), picks a shard's name, address and key by its ordinal under Kubernetes, then execs shadNet | Yes (docker run and kind) |
 | `docker-compose.yml` | shadnet (host network) + backup sidecar; `postgres` and `redis` profiles | `docker compose config` only |
-| `Dockerfile.backup` | Alpine with sqlite3, rsync, restic, rclone, pg_dump; runs backup.sh hourly | No |
+| `Dockerfile.backup` | Ubuntu 24.04 with sqlite3, rsync, restic, rclone, pg_dump; runs backup.sh hourly (the chart runs it as a CronJob) | Built; backup and restore run in the kind test (restic to a local repository) |
 | `backup.sh` / `restore.sh` | Online snapshot → restic (S3/B2/SFTP) or rclone; restore with checks | Tested locally on a fake data folder with `BACKUP_TOOL=none` / `restore.sh dir`. restic/rclone paths not run. |
 | `shadnet.service` | systemd unit (Restart=always, limits, hardening) + backup timer in comments | `systemd-analyze verify` only |
 | `schema.sql` | Draft Postgres schema: accounts, sessions, bans, worlds, membership, snapshots, audit | Loads on PostgreSQL 16 (checked). Nothing uses it yet. |
@@ -43,15 +43,15 @@ git submodule update --init server/externals/protobuf
 cd server/hosting
 cp env.example .env              # fill in RESTIC_REPOSITORY and the keys
 mkdir -p secrets && openssl rand -base64 32 > secrets/restic-password   # keep a copy OFF the server
-docker compose up -d --build
+docker compose up -d --build     # builds from the repository root (Dockerfile.dockerignore)
 docker compose logs -f shadnet
 ```
 
 Firewall: allow inbound 31314/udp (the games' link), 31315/tcp and 20443/tcp only. 31313 stays
 on 127.0.0.1 (`TcpLocalOnly=true`: the games' calls come through the link). Keep 31320 (stats),
-5432 and 6379 closed. **Nothing is encrypted yet** (see docs/HOSTED_SERVER.md, "Before a public
-launch"): player secrets and tokens cross the Internet in clear, and the HTTP ports do not check
-who calls them.
+5432 and 6379 closed. The link is encrypted (link version 4); the HTTP ports (20443, 31315)
+are plain HTTP, open only to linked games' addresses when hosted (docs/HOSTED_SERVER.md). For
+Kubernetes and several regions, see docs/DEPLOY.md.
 
 ## Operator commands
 

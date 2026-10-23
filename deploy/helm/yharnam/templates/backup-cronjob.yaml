@@ -1,0 +1,114 @@
+{{- if .Values.backup.enabled }}
+{{- $shard := include "yharnam.shard" . -}}
+{{- range $i, $_ := until (int .Values.shards.count) }}
+---
+# Shard {{ $i }}'s backup (server/hosting/backup.sh): on the shard's node, its volume mounted
+# read-only, staged in an emptyDir, then restic to <repository>/<region>-{{ $i }}.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $shard }}-{{ $i }}-backup
+  labels:
+    {{- include "yharnam.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ $.Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3000
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- include "yharnam.labels" $ | nindent 12 }}
+            app.kubernetes.io/name: shadnet-backup
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "yharnam.serviceAccountName" $ }}
+          automountServiceAccountToken: false
+          # The shard's volume is ReadWriteOnce: the job runs on the node that has it mounted.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      statefulset.kubernetes.io/pod-name: {{ $shard }}-{{ $i }}
+          {{- with $.Values.shards.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml $.Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: backup
+              image: {{ include "yharnam.image" (dict "image" $.Values.backup.image "default" $.Chart.AppVersion) }}
+              imagePullPolicy: {{ $.Values.backup.image.pullPolicy }}
+              command:
+                - sh
+                - -c
+                # ssh wants its key owner-only; Secret files cannot be.
+                - >-
+                  if [ -d /run/ssh ]; then mkdir -p "$HOME/.ssh" && cp /run/ssh/* "$HOME/.ssh/"
+                  && chmod 700 "$HOME/.ssh" && chmod 600 "$HOME"/.ssh/*; fi;
+                  exec backup.sh
+              securityContext:
+                {{- toYaml $.Values.securityContext | nindent 16 }}
+              env:
+                - { name: DATA_DIR, value: /data }
+                - { name: STAGE_DIR, value: /backup/stage }
+                - { name: HOME, value: /backup }
+                - { name: RESTIC_CACHE_DIR, value: /backup/cache }
+                - { name: BACKUP_TOOL, value: restic }
+                - name: RESTIC_REPOSITORY
+                  value: {{ printf "%s/%s-%d" (trimSuffix "/" $.Values.backup.repository) $.Values.region $i | quote }}
+                - { name: KEEP_HOURLY, value: {{ $.Values.backup.keep.hourly | quote }} }
+                - { name: KEEP_DAILY, value: {{ $.Values.backup.keep.daily | quote }} }
+                - { name: KEEP_WEEKLY, value: {{ $.Values.backup.keep.weekly | quote }} }
+                - { name: KEEP_MONTHLY, value: {{ $.Values.backup.keep.monthly | quote }} }
+                {{- with $.Values.backup.healthcheckUrl }}
+                - { name: HEALTHCHECK_URL, value: {{ . | quote }} }
+                {{- end }}
+                {{- with $.Values.backup.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              envFrom:
+                - secretRef:
+                    name: {{ $.Values.backup.existingSecret }}
+              resources:
+                {{- toYaml $.Values.backup.resources | nindent 16 }}
+              volumeMounts:
+                - { name: data, mountPath: /data, readOnly: true }
+                - { name: work, mountPath: /backup }
+                - { name: tmp, mountPath: /tmp }
+                {{- if $.Values.backup.sshSecret }}
+                - { name: ssh, mountPath: /run/ssh, readOnly: true }
+                {{- end }}
+                {{- with $.Values.backup.extraVolumeMounts }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: data-{{ $shard }}-{{ $i }}
+                readOnly: true
+            - name: work
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
+            {{- if $.Values.backup.sshSecret }}
+            - name: ssh
+              secret:
+                secretName: {{ $.Values.backup.sshSecret }}
+            {{- end }}
+            {{- with $.Values.backup.extraVolumes }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,38 @@
+{{- if eq .Values.tls.mode "ingress" }}
+{{- $shard := include "yharnam.shard" . -}}
+{{- range $i, $h := .Values.tls.ingress.hosts }}
+{{- if lt $i (int $.Values.shards.count) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $shard }}-{{ $i }}
+  labels:
+    {{- include "yharnam.labels" $ | nindent 4 }}
+  {{- with $.Values.tls.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $.Values.tls.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  tls:
+    - hosts: [{{ $h.backend | quote }}, {{ $h.webapi | quote }}]
+      secretName: {{ printf "%s-%d-tls" ($.Values.tls.ingress.tlsSecretPrefix | default $shard) $i }}
+  rules:
+    - host: {{ $h.backend | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: {{ $shard }}-{{ $i }}, port: { name: backend } } }
+    - host: {{ $h.webapi | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: {{ $shard }}-{{ $i }}, port: { name: webapi } } }
+{{- end }}
+{{- end }}
+{{- end }}

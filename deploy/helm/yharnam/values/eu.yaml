@@ -1,0 +1,15 @@
+# EU (Hetzner Falkenstein/Nuremberg/Helsinki). deploy/terraform/environments/eu fills
+# shards.publicAddresses and the image tag; this file holds what is the same on every apply.
+region: eu
+shards:
+  count: 2
+  expose: hostNetwork
+  nodeSelector: { yharnam.dev/role: shard }
+  # Terraform sets publicAddresses, the image tag and persistence (yharnam-local: a static
+  # volume a shard on its Hetzner volume, deploy/terraform/modules/region/helm.tf).
+backup:
+  enabled: true
+  repository: s3:https://s3.eu-central-003.backblazeb2.com/yharnam-backups
+  existingSecret: yharnam-backup
+backendFiles:
+  login_message.txt: "Yharnam Together - EU"

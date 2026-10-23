@@ -1,0 +1,250 @@
+# yharnam: shadNet for one region. docs/DEPLOY.md explains every choice here; values/<region>.yaml
+# overrides it per region.
+
+# Shown in names and in the directory (SHARD_NAME = <region>-<ordinal>).
+region: eu
+
+image:
+  repository: ghcr.io/lkaniel/yharnam-shadnet
+  tag: ""             # default: the chart's appVersion (main); pin sha-<commit>: one build everywhere
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+shards:
+  # One process tops out around 1000 players on one core (docs/HOSTED_SERVER.md, "Load test");
+  # plan ~500 a shard. Every shard is its own server: own accounts, worlds, key and address.
+  count: 1
+
+  # How a shard's ports reach the internet. The server keeps per-address limits and a cookie keyed
+  # by the source address AND port, so the player's real address and port must reach the pod:
+  #   hostNetwork  the pod uses its node's network (no NAT at all). One shard per node (required
+  #                anti-affinity below). The default: Hetzner's load balancers carry no UDP.
+  #   hostPort     the pod's ports bound on its node by the CNI's portmap (DNAT, the source
+  #                kept). One shard per node. Also what the kind test uses.
+  #   loadBalancer one Service of type LoadBalancer a shard (UDP 31314 + TCP 20443/31315, mixed
+  #                protocols, Kubernetes >= 1.26), externalTrafficPolicy: Local (no SNAT to a
+  #                node's address). For GKE/EKS/AKS; see docs/DEPLOY.md for the annotations.
+  expose: hostNetwork
+
+  # The address each shard's games use (DNS name or IP), by ordinal; the directory hands it out
+  # and the HTTP ports' ss.info answers with the address the game used. Terraform fills it in.
+  # Missing entries: the node's address (status.hostIP) in host modes, empty otherwise.
+  publicAddresses: []
+  # loadBalancer mode: per-shard extra Service settings, by ordinal (e.g. a reserved IP).
+  loadBalancer:
+    annotations: {}         # on every shard's Service (cloud-specific, docs/DEPLOY.md)
+    perShard: []            # - loadBalancerIP: 203.0.113.10
+                            #   annotations: {...}
+    loadBalancerSourceRanges: []
+
+  ports:
+    link: 31314        # UDP, the games' link (Noise-encrypted)
+    backend: 20443     # TCP, the game's services (plain HTTP)
+    webapi: 31315      # TCP, summons and WebAPI (plain HTTP)
+  # 31313 (the RPC listener) is never exposed: TcpLocalOnly=true binds it to 127.0.0.1 and the
+  # games reach it through the link's tunnel (link_server.cpp connects to LocalHost).
+
+  persistence:
+    size: 20Gi
+    storageClass: ""   # "" = the cluster's default; Hetzner: hcloud-volumes; k3s: local-path
+    accessModes: [ReadWriteOnce]
+    # Keep the volumes when the release is deleted or scaled down (they hold the link key).
+    retain: true
+
+  # The link key (LinkKeyFile=link_key.bin). shadNet makes one on its first start and keeps it on
+  # the shard's volume. To bring an existing server's key (the launcher pins it), put it in a
+  # Secret with one key a shard: shard-0.bin, shard-1.bin, ...; it is copied in only when the
+  # volume has none, never over one.
+  linkKey:
+    existingSecret: ""
+
+  resources:
+    requests: { cpu: "1", memory: 512Mi }
+    limits: { memory: 2Gi }   # no CPU limit: CFS throttling shows as relay latency spikes
+
+  # A restart kicks every game on the shard; stop takes the worlds' writer thread's drain.
+  terminationGracePeriodSeconds: 60
+  podManagementPolicy: Parallel
+  # Updates only when you delete a pod (a maintenance window, docs/DEPLOY.md "Upgrades"), so a
+  # `helm upgrade` never restarts a shard by itself.
+  updateStrategy: OnDelete
+
+  # Voluntary evictions (drains, autoscaler) of a live shard: 0 blocks them all.
+  pdb:
+    enabled: true
+    maxUnavailable: 0
+
+  nodeSelector: {}          # e.g. yharnam.dev/role: shard (Terraform labels its nodes)
+  tolerations: []
+  affinity: {}              # replaces the default anti-affinity when set
+  priorityClassName: ""
+  podAnnotations: {}
+  podLabels: {}
+  extraEnv: []
+
+  probes:
+    startup: { periodSeconds: 5, failureThreshold: 120, timeoutSeconds: 10 }
+    liveness: { periodSeconds: 30, failureThreshold: 3, timeoutSeconds: 10 }
+    # Each probe is an admin `stats` (one log line); host modes route nothing by readiness.
+    readiness: { periodSeconds: 30, failureThreshold: 3, timeoutSeconds: 10 }
+
+# shadnet.cfg, rendered into a ConfigMap and copied over /data/shadnet.cfg at every start
+# (entrypoint.sh SHADNET_CONFIG). Keys and defaults: server/src/config.cpp; meaning:
+# docs/HOSTED_SERVER.md. Values the chart owns (ports, paths, Host, TcpLocalOnly) are set from
+# shards.ports and are not taken from here.
+config:
+  Hosted: true
+  HostedBuild: ""                 # the build every game must say; empty: the first game decides
+  HostedBanList: banned.txt
+  HostedLinksPerAddress: 8
+  HostedHellosPerSecond: 4
+  HostedNewAccountsPerHour: 5
+  HostedSignupWorkBits: 20
+  HostedSignupWorkMaxBits: 20
+  HostedSignupsPerMinute: 60
+  HostedDatagramsPerSecond: 1500
+  HostedBytesPerSecond: 400000
+  HostedLobbyPlayers: 32
+  HostedLobbyIntervalMs: 250
+  HostedWorldsPerPlayer: 16
+  HostedPartyWorlds: 2048
+  HostedStats: false
+  HostedReports: false
+  HostedAdminSocket: admin.sock
+  HostedRetireDays: 0
+  HttpLinkedOnly: false            # hosted turns the HTTP check on anyway
+  BloodborneSeamlessCoop: true
+  BloodborneBackend: true
+  StatsEnabled: false
+  MakeAccountsAtSignIn: true
+  RegistrationSecretKey: ""
+# Any other shadnet.cfg key (server/src/config.cpp), as Key: value.
+extraConfig: {}
+
+# notice.txt / broadcast.txt / login_message.txt the game's services show (BackendFolder).
+backendFiles: {}
+#  login_message.txt: "Welcome to Yharnam Together (EU)"
+
+# TLS for the HTTP ports. The games speak plain HTTP to 20443/31315 at their link's address and
+# the hosted HTTP check (http_gate.h) reads the connection's source address, so these stay open
+# as they are; TLS here is an extra endpoint for clients that speak HTTPS (launcher, web, status).
+# Behind a proxy every request comes from the proxy's address, which no linked game has, so the
+# check refuses everything but GETs until shadNet trusts a forwarded address. docs/DEPLOY.md.
+tls:
+  mode: none            # none | caddy (a sidecar in each shard pod) | ingress
+  caddy:
+    image: caddy:2.8.4-alpine
+    email: ""           # ACME account email
+    internalCA: false   # true: Caddy's own CA, no ACME (tests; clients will not trust it)
+    # One site a port: TLS on <port> for the shard's public address, proxied to 127.0.0.1:<to>.
+    sites:
+      - { port: 443, to: 20443 }
+      - { port: 8443, to: 31315 }
+    resources:
+      requests: { cpu: 50m, memory: 32Mi }
+      limits: { memory: 128Mi }
+  ingress:
+    className: ""
+    annotations: {}     # e.g. cert-manager.io/cluster-issuer: letsencrypt
+    tlsSecretPrefix: ""  # TLS Secret <prefix>-<ordinal>-tls a shard (cert-manager makes it); default: the shard's name
+    # By ordinal, one host a port (both ports serve paths from /):
+    #   - { backend: s0.eu.example.net, webapi: api-s0.eu.example.net }
+    hosts: []
+
+# Hourly restic backups of each shard's volume (server/hosting/backup.sh: SQLite .backup, then
+# each world's journal before its world.pb, then config, bans and link_key.bin).
+backup:
+  enabled: false
+  image:
+    repository: ghcr.io/lkaniel/yharnam-backup   # server/hosting/Dockerfile.backup
+    tag: ""
+    pullPolicy: IfNotPresent
+  schedule: "17 * * * *"
+  # Each shard gets its own repository: <repository>/<region>-<ordinal>.
+  repository: ""        # s3:https://s3.eu-central-003.backblazeb2.com/bucket/yharnam
+                        # sftp:u123456@u123456.your-storagebox.de:yharnam
+  # Secret with RESTIC_PASSWORD and the target's credentials (AWS_ACCESS_KEY_ID,
+  # AWS_SECRET_ACCESS_KEY, B2_ACCOUNT_ID, ...), all passed as env.
+  existingSecret: ""
+  # sftp (Hetzner Storage Box): a Secret with `config` (Host/Port 23/IdentityFile ~/.ssh/key),
+  # `key` and `known_hosts`, copied into ~/.ssh.
+  sshSecret: ""
+  keep: { hourly: 48, daily: 14, weekly: 8, monthly: 12 }
+  healthcheckUrl: ""
+  extraEnv: []
+  # Extra volumes for the job (an NFS or hostPath repository; the kind test uses one).
+  extraVolumes: []
+  extraVolumeMounts: []
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 1Gi }
+
+# Restore a shard from its backups at its next start (server/hosting/restore.sh, as an init
+# container: shadNet is not running yet). Set shard and a new id, upgrade, then delete that
+# shard's pod. The current data is moved to restore-aside/, never deleted. Each id runs once.
+restore:
+  shard: null           # the ordinal to restore
+  id: ""                # any new word each time (restore-aside/.restored-<id> marks it done)
+  snapshot: latest      # restic snapshot id
+  only: ""              # world:<folder> restores only that world
+
+# The shard directory (optional; one shard needs none): a Deployment plus Redis. Shards get
+# DIRECTORY_URL, SHARD_NAME, SHARD_PUBLIC_ADDRESS and DIRECTORY_TOKEN.
+directory:
+  enabled: false
+  image:
+    repository: ghcr.io/lkaniel/yharnam-directory
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 2
+  port: 8080
+  # Secret holding `token` (DIRECTORY_TOKEN) and `redis-password`. Empty: the chart makes one
+  # and keeps it on upgrades.
+  existingSecret: ""
+  env: []               # extra env for the directory: - { name: X, value: y }
+  command: []           # override the image's entrypoint (a stand-in in tests)
+  args: []
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    tlsSecretName: ""
+  redis:
+    image: redis:7.4-alpine
+    # Ephemeral by design (presence, shard load): no persistence.
+    maxmemory: 128mb
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { memory: 192Mi }
+
+networkPolicy:
+  enabled: true
+  # Namespace labels whose pods may also reach the directory (monitoring, an ingress controller).
+  monitoringNamespaceSelector: {}
+  # The nodes' addresses (hostNetwork shards reach the directory from them): Terraform's network.
+  nodeCidrs: []
+  # Egress for backups: restic's target (any address on 443 / 22 / 23 by default).
+  backupEgressPorts: [443, 22, 23]
+
+serviceAccount:
+  create: true
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile: { type: RuntimeDefault }
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }

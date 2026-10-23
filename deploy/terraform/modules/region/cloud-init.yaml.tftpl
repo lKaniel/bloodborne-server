@@ -1,0 +1,72 @@
+#cloud-config
+# ${node_name}: k3s ${role}, shard ${shard}'s data on its Hetzner volume at ${data_path}.
+package_update: true
+packages: [curl, jq]
+write_files:
+  # A shard relays ~100-200 datagrams a second a player: room for bursts in the socket buffers.
+  - path: /etc/sysctl.d/90-yharnam.conf
+    content: |
+      net.core.rmem_max = 26214400
+      net.core.wmem_max = 26214400
+      net.core.rmem_default = 4194304
+      net.core.wmem_default = 4194304
+      net.core.netdev_max_backlog = 10000
+      fs.inotify.max_user_instances = 1024
+  # Security updates yes, unplanned reboots no: a reboot drops every game (docs/DEPLOY.md).
+  - path: /etc/apt/apt.conf.d/52yharnam-no-reboot
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "false";
+%{ if role == "server" ~}
+  # The cluster's CAs, made by Terraform so it can talk to the API without fetching a kubeconfig.
+  # k3s generates every other CA it needs.
+  - path: /var/lib/rancher/k3s/server/tls/server-ca.crt
+    permissions: "0600"
+    content: ${jsonencode(server_ca)}
+  - path: /var/lib/rancher/k3s/server/tls/server-ca.key
+    permissions: "0600"
+    content: ${jsonencode(server_key)}
+  - path: /var/lib/rancher/k3s/server/tls/client-ca.crt
+    permissions: "0600"
+    content: ${jsonencode(client_ca)}
+  - path: /var/lib/rancher/k3s/server/tls/client-ca.key
+    permissions: "0600"
+    content: ${jsonencode(client_key)}
+%{ endif ~}
+  - path: /usr/local/sbin/yharnam-node-setup
+    permissions: "0700"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      sysctl --system >/dev/null
+      # The volume (attached right after the server is made) and the private network.
+      for i in $(seq 1 120); do [ -e "${volume_dev}" ] && break; sleep 5; done
+      [ -e "${volume_dev}" ] || { echo "volume ${volume_dev} never appeared"; exit 1; }
+      mkdir -p ${data_path}
+      grep -q "${volume_dev}" /etc/fstab || echo "${volume_dev} ${data_path} ext4 discard,nofail,defaults 0 2" >> /etc/fstab
+      mountpoint -q ${data_path} || mount ${data_path}
+      mkdir -p ${data_path}/shard-${shard}
+      chown 10001:10001 ${data_path}/shard-${shard}
+      chmod 0750 ${data_path}/shard-${shard}
+      iface=""
+      for i in $(seq 1 120); do
+        iface=$(ip -o -4 addr show | awk '$4 ~ /^${replace(node_ip, ".", "\\.")}\// { print $2; exit }')
+        [ -n "$iface" ] && break; sleep 5
+      done
+      [ -n "$iface" ] || { echo "no interface with ${node_ip}"; exit 1; }
+      public_ip=$(curl -fsS http://169.254.169.254/hetzner/v1/metadata/public-ipv4)
+      export INSTALL_K3S_VERSION="${k3s_version}" K3S_TOKEN="${k3s_token}"
+      common="--node-name ${node_name} --node-ip ${node_ip} --node-external-ip $public_ip --flannel-iface $iface"
+      common="$common --node-label yharnam.dev/role=shard --node-label yharnam.dev/shard=${shard}"
+%{ if role == "server" ~}
+      curl -sfL https://get.k3s.io | sh -s - server $common \
+        --advertise-address ${node_ip} --tls-san $public_ip --tls-san ${node_ip} \
+        --disable traefik --disable servicelb --disable local-storage \
+        --secrets-encryption --write-kubeconfig-mode 0600 \
+        --cluster-cidr 10.42.0.0/16 --service-cidr 10.43.0.0/16
+%{ else ~}
+      export K3S_URL="https://${api_ip}:6443"
+      until curl -sk -o /dev/null "https://${api_ip}:6443/ping"; do sleep 5; done
+      curl -sfL https://get.k3s.io | sh -s - agent $common
+%{ endif ~}
+runcmd:
+  - [/usr/local/sbin/yharnam-node-setup]

@@ -1,0 +1,24 @@
+# A one-node kind cluster for the chart's smoke test (deploy/kind/smoke.sh). The shard runs with
+# hostPort on the node (values/kind.yaml); these map the node's ports to the host's. Host ports
+# are 41314/40443/41315 so a shadNet already running on the host keeps 31314.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    # A folder of the host as the test's restic repository (values/kind.yaml backup).
+    extraMounts:
+      - { hostPath: /tmp/yharnam-kind-restic, containerPath: /restic }
+    extraPortMappings:
+      - { containerPort: 31314, hostPort: 41314, protocol: UDP, listenAddress: 127.0.0.1 }
+      - { containerPort: 20443, hostPort: 40443, protocol: TCP, listenAddress: 127.0.0.1 }
+      - { containerPort: 31315, hostPort: 41315, protocol: TCP, listenAddress: 127.0.0.1 }
+    # The test box (cgroup v1) ran with the cgroupfs driver; on cgroup v2 hosts these can go.
+    # Its pods also needed runc-oom-shim.sh (smoke.sh KIND_OOM_SHIM=1).
+    kubeadmConfigPatches:
+      - |
+        kind: KubeletConfiguration
+        cgroupDriver: cgroupfs
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+      SystemdCgroup = false

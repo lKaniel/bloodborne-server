@@ -1,0 +1,29 @@
+# The kind test (deploy/kind/smoke.sh): one node, the images loaded with `kind load`, a host
+# folder as the restic repository.
+region: kind
+image:
+  repository: yharnam-shadnet
+  tag: local
+  pullPolicy: Never
+shards:
+  count: 1
+  expose: hostPort        # smoke.sh also runs it with hostNetwork
+  persistence: { storageClass: standard, size: 1Gi }
+  resources:
+    requests: { cpu: 500m, memory: 256Mi }
+    limits: { memory: 1Gi }
+config:
+  # 8 bits: bbload's games all join at once on one box (docs/HOSTED_SERVER.md does the same).
+  HostedSignupWorkBits: 8
+  HostedSignupWorkMaxBits: 8
+backup:
+  enabled: true
+  image: { repository: yharnam-backup, tag: local, pullPolicy: Never }
+  schedule: "0 3 * * *"   # smoke.sh runs its own; an hourly one could race its restore
+  repository: /restic/repo
+  existingSecret: kind-backup     # smoke.sh makes it (RESTIC_PASSWORD)
+  extraVolumes:
+    - name: restic
+      hostPath: { path: /restic, type: Directory }
+  extraVolumeMounts:
+    - { name: restic, mountPath: /restic }
