@@ -20,6 +20,7 @@
 
 #include <array>
 #include <memory>
+#include <vector>
 
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
@@ -63,6 +64,10 @@ public:
             gbuffer[index] = id;
         }
     }
+    /// Frames seen (OnFrameStart), for once-in-a-while logs.
+    [[nodiscard]] u64 FrameNumber() const noexcept {
+        return frames_seen;
+    }
     [[nodiscard]] bool DumpDue() const noexcept {
         return dump_due;
     }
@@ -70,9 +75,52 @@ public:
     void OnAlbedo(VideoCore::ImageId albedo_id) noexcept {
         albedo = albedo_id;
     }
+    /// The lighting pass's two B10G11R11 targets (the lamps' light).
+    void OnLightTargets(VideoCore::ImageId first, VideoCore::ImageId second) noexcept {
+        light_targets = {first, second};
+        light_pass_seen = true;
+    }
+    /// A colour draw into `target` that is not a lighting draw: the first after this frame's
+    /// lighting pass is the game's combine of its two targets, so OnLightingDone goes first
+    /// (2026-10-21: at the first scene-colour draw with the scene depth it came after the
+    /// combine, and the ray-traced shadows and bounce never reached the picture).
+    void OnColorDraw(VideoCore::ImageId target) {
+        if (light_pass_seen && !lamps_done && target != light_targets[0] &&
+            target != light_targets[1]) {
+            OnLightingDone();
+        }
+    }
+    /// A lighting draw's lamp constants (a ring buffer of 144 bytes a lamp; vk_rasterizer): the
+    /// frame's lamps, each once (Kaniel 2026-10-21, "do all steps": ray-traced lamp shadows).
+    void OnLampConstants(const float* data, u32 size);
+    /// The lighting pass is done (the first draw into the scene color): with ray_traced_ao the
+    /// lamps' shadows are traced into its two targets before the game combines them. Once a frame.
+    void OnLightingDone();
+    /// A lighting draw's scene constants: the sun/moon's direction (80-82, view space, toward it)
+    /// and colour (76-78), kept when the direction is a unit vector.
+    void OnSunConstants(const float* data);
+    /// Step 3: whether the rays want this frame's characters (ray_traced_ao on, the map built).
+    [[nodiscard]] bool WantsCharacters() const;
+    /// A skinned draw's triangles (its clip positions at element `store` of the object motion's
+    /// positions, `vertices` from `first_vertex`; its index list as the game has it).
+    /// `pass_depth`: the G-buffer pass's depth; a draw of another pass than the last drops the
+    /// earlier pass's (the frame's camera goes with the last pass, CameraMotion).
+    void OnCharacterDraw(u32 store, u32 first_vertex, u32 vertices, const void* indices,
+                         u32 index_size, u32 count, s32 base_vertex,
+                         VideoCore::ImageId pass_depth);
+    /// The object motion's positions buffer (vk_rasterizer sets it).
+    void SetCharacterPositions(vk::Buffer buffer) noexcept {
+        character_positions = buffer;
+    }
     /// The same pass's first target: the normals.
     void OnNormals(VideoCore::ImageId normals_id) noexcept {
         normals = normals_id;
+    }
+    /// The same pass's second target (red: gloss) and fourth (rgb: specular colour), for the
+    /// ray-traced reflections.
+    void OnGlossTargets(VideoCore::ImageId gloss_id, VideoCore::ImageId f0_id) noexcept {
+        gloss = gloss_id;
+        specular_colour = f0_id;
     }
     /// The scene color target (RGBA16F drawn with the scene depth).
     void OnSceneColor(VideoCore::ImageId color) noexcept {
@@ -82,6 +130,12 @@ public:
     /// shader that starts the post-processing. Once a frame. `temporal`: an upscaler accumulates
     /// frames, so the noise may change every frame.
     void OnOpaqueSceneDone(bool temporal);
+    /// Part 2: the lit opaque scene into the fourth bounce image (General layout) for the next
+    /// frame's reflections.
+    void KeepLastScene(const VideoCore::Image& color, bool reduced, u32 w, u32 h);
+    /// Kaniel 2026-10-21 ("improve the fog"): the moon's and lamps' light in the air, shafts
+    /// cut by the ray scene, into the opaque scene (General layout) before the game's fog.
+    void RecordFogLight(vk::ImageView color_view, vk::ImageView depth_view, u32 w, u32 h);
 
 private:
     struct ViewEntry {
@@ -116,6 +170,54 @@ private:
     VideoCore::ImageId scene_color{};
     VideoCore::ImageId albedo{};
     VideoCore::ImageId normals{};
+    VideoCore::ImageId gloss{}, specular_colour{};
+    std::array<VideoCore::ImageId, 2> light_targets{};
+    std::vector<std::array<float, 16>> lamps; ///< this frame's, as the lighting pass has them
+    bool lamps_done = false;
+    bool light_pass_seen = false; ///< this frame's lighting pass has begun
+    std::array<float, 4> sun_dir{};    ///< view space, toward the sun; w 1 when this frame has it
+    std::array<float, 4> sun_colour{};
+    std::vector<u32> character_source;  ///< step 3: a corner's element in the positions
+    std::vector<u32> character_indices; ///< three corners (of character_source) a triangle
+    std::vector<u32> character_draw_of; ///< a corner's draw (its own depth scale)
+    u32 character_draws = 0;
+    vk::Buffer character_positions{};
+    VideoCore::ImageId character_pass{};
+    bool lamps_logged = false;
+    bool sun_logged = false; ///< whether the last log line had a sun
+    u32 sun_age = 0;          ///< frames since the sun draw was last seen
+    struct LampBuffer {
+        vk::Buffer buffer{};
+        void* allocation{}; ///< VmaAllocation
+        void* mapped = nullptr;
+    };
+    std::array<LampBuffer, 3> lamp_buffers{}; ///< written in turn (frames in flight)
+    u32 lamp_buffer_next = 0;
+    vk::UniqueDescriptorSetLayout lamp_desc_layout;
+    vk::UniquePipelineLayout lamp_layout;
+    vk::UniquePipeline lamp_pipeline;
+    // The fog light: this frame's lamp buffer (the lamp pass's) and its pipeline.
+    vk::Buffer fog_lamps{};
+    u32 fog_lamp_count = 0;
+    u32 fog_frame = ~0u; ///< frames_seen when fog_lamps is this frame's
+    vk::UniqueDescriptorSetLayout fog_desc_layout;
+    vk::UniquePipelineLayout fog_layout;
+    vk::UniquePipeline fog_pipeline, fog_apply_pipeline;
+    /// The march's half-resolution result (light rgb, transmittance), for fog_apply.
+    VideoCore::UniqueImage fog_image;
+    vk::UniqueImageView fog_view;
+    u32 fog_width = 0, fog_height = 0;
+    /// Step 2c: this frame's bounce and two histories (ping-pong), RGBA16F at light0's size;
+    /// fourth, the last frame's opaque scene (the reflections' hits on screen).
+    std::array<VideoCore::UniqueImage, 4> bounce_images;
+    std::array<vk::UniqueImageView, 4> bounce_views;
+    bool last_scene_valid = false;
+    u32 bounce_width = 0, bounce_height = 0;
+    u32 history_next = 0;  ///< which history the resolve writes (1 or 2)
+    bool history_valid = false;
+    vk::UniqueDescriptorSetLayout resolve_desc_layout;
+    vk::UniquePipelineLayout resolve_layout;
+    vk::UniquePipeline resolve_pipeline;
 
     vk::UniqueDescriptorSetLayout trace_desc_layout, apply_desc_layout;
     vk::UniquePipelineLayout trace_layout, apply_layout;

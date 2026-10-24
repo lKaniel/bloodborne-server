@@ -1,0 +1,510 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// bbport: ray-traced lamp shadows (Kaniel 2026-10-21, "do all steps"; vk_screen_lighting.h). Runs
+// on the lighting pass's two targets once the game has drawn its lamps and before it combines the
+// scene (albedo x light0 + light1). For each pixel the lamps of this frame's list (the lighting
+// pass's own: view-space position, 1 / r^2, colour) are weighed by LampWeight; the strongest four get
+// a shadow ray against the map's models, and what the blocked ones gave is taken out of the light.
+#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform texture2D depth_tex;  // D32, depth 0..1 (D3D projection)
+layout(binding = 1) uniform texture2D normal_tex; // the G-buffer's first target: rgb * 2 - 1
+layout(binding = 2, r11f_g11f_b10f) uniform image2D diffuse_img;  // light0: lamps' diffuse light
+layout(binding = 3, r11f_g11f_b10f) uniform image2D specular_img; // light1: their specular light
+layout(binding = 4) uniform accelerationStructureEXT scene;      // the player's map, world space
+// The lamps, 16 floats each as the lighting pass has them: position (view) + 1/r^2, diffuse rgb +
+// 1, specular rgb + ..., 1, 1, 0, 0.
+layout(binding = 5, std430) readonly buffer Lamps { vec4 lamps[]; };
+// The ray models (vk_ray_occlusion.h): corners (world), three indices a triangle, corner colours.
+layout(binding = 6, std430) readonly buffer MapPositions { float map_positions[]; };
+layout(binding = 7, std430) readonly buffer MapIndices { uint map_indices[]; };
+layout(binding = 8, std430) readonly buffer MapColors { uint map_colors[]; };
+// Step 2c: this frame's bounce (rgb, a view z) for lamp_bounce_resolve.comp.
+layout(binding = 9, rgba16f) uniform writeonly image2D bounce_img;
+// Part 2 (reflections): the G-buffer's second target (red: gloss) and fourth (rgb: specular colour).
+layout(binding = 10) uniform texture2D gloss_tex;
+layout(binding = 11) uniform texture2D f0_tex;
+// The last frame's lit opaque scene (a reflection's hit on screen takes its colour from it).
+layout(binding = 12, rgba16f) uniform readonly image2D last_scene;
+// Kaniel 2026-10-22 ("all reflections should work"): each map triangle's colour patch (0 none, else
+// offset << 5 | n) and the patches' colours (0xAABBGGRR, n x n, AreaMesh::tri_patch).
+layout(binding = 13, std430) readonly buffer MapTriPatches { uint map_tri_patch[]; };
+layout(binding = 14, std430) readonly buffer MapPatches { uint map_patches[]; };
+
+layout(push_constant) uniform Constants {
+    vec4 proj;     // x scale, y scale, z scale, z offset
+    vec2 size;     // pixels
+    int count;     // lamps
+    float strength; // the light a lamp of colour 1 and weight 1 gives (the fit: ~0.5)
+    vec4 world[3]; // view (ours) to world, 3x4 rows
+    // Step 2: rays a pixel bringing back the lamps' light from what they hit (low byte); bits 8-9:
+    // which pixel of each 2x2 traces them this frame (the others store none, a = -z).
+    int bounce_rays;
+    float bounce_strength; // how much of it (Bounced light)
+    float noise;           // per frame 0..1
+    float sky;             // the open sky's light, a share of the sun's (sun_colour)
+    vec4 sun_dir;    // step 2b: view space, toward the sun/moon; w 1 when the frame has one
+    vec4 sun_colour; // rgb, a: its strength in light0 units
+};
+
+// Sun shadow rays reach this far (a street's buildings; 200 m cost the most outdoors).
+const float SunReach = 80.0;
+// The sun/moon's light in light0 a unit of N.L and of its colour (the street's fit, rtgi-sunfit.py).
+const float SunInLight0 = 0.028;
+
+vec3 LightingViewPos(vec2 pixel);
+vec3 LightingRadiance(vec2 pixel);
+#include "screen_lighting.glsl"
+
+vec3 LightingViewPos(vec2 pixel) {
+    const ivec2 p = clamp(ivec2(pixel), ivec2(0), ivec2(size) - 1);
+    const float depth = texelFetch(depth_tex, p, 0).r;
+    if (depth >= 1.0) {
+        return vec3(0.0);
+    }
+    const vec2 ndc = (vec2(p) + 0.5) / size * 2.0 - 1.0;
+    return ViewPos(ndc, ViewZ(depth, proj), proj);
+}
+
+vec3 LightingRadiance(vec2 pixel) {
+    return vec3(0.0);
+}
+
+vec3 ToWorld(vec3 v, float w) {
+    const vec4 at = vec4(v, w);
+    return vec3(dot(world[0], at), dot(world[1], at), dot(world[2], at));
+}
+
+// Shadow rays start this far off the surface: the ray models are thinned on a 0.12 m grid.
+const float ShadowBias = 0.12;
+
+// Step 3: the characters' instance (mask 2; the map's is 1) only counts this far from both ends
+// of a shadow ray: their ray model is placed from the depth buffer within ~15% (the 2026-10-21
+// check), so a character would shadow itself, and a lamp it carries (the lantern) sits inside it.
+const float CharacterGap = 0.5;
+// A character's shadow only falls this far from it, fading out on the way, and takes at most this
+// much of a lamp's light: by a lamp, a body shadowed the whole room behind it, and with the game's
+// own shadow maps a character had several (Kaniel 2026-10-21, "half of the room is still dark",
+// "the character has a lot of shadows").
+// Only the strongest lamp's (one clear shadow; Kaniel 2026-10-21, at 0.6 and 1.5 m: "shadow from
+// player is almost not visible anymore").
+// Now the two strongest lamps', out to 5 m and fading to a third (Kaniel 2026-10-22: at 2 m from
+// 0.5 m out there was almost none).
+const float CharacterShadowReach = 5.0;
+const float CharacterShadowStrength = 0.9;
+// A lamp sits in its own fitting (a lantern's glass, a sconce): the map only counts this far short
+// of it (2026-10-21: the lantern's own housing took its light off the floor beside it; 2026-10-22 at
+// 0.4: a sconce's took it off the wall around it).
+const float LampGap = 0.6;
+// The map's own bumps (broken planks, the 0.12 m grid) shadow grazing rays near their start: the
+// map only counts from this far out, or from where the ray is SurfaceRise off the surface if that is
+// further (2026-10-22: at 0.35 m alone the floor near the camera still went dark).
+const float SurfaceGap = 0.35;
+const float SurfaceRise = 0.25;
+
+// How much of the light from `dir` x `dist` is blocked at `from` (on a surface with normal `n`): 1
+// behind the map, with `people` a share near a character (CharacterShadowReach) from `body_gap`
+// out, else 0.
+float Shadow(vec3 from, vec3 n, vec3 dir, float dist, bool people, float body_gap) {
+    if (dist <= LampGap + SurfaceGap) {
+        return 0.0;
+    }
+    const float start = min(max(SurfaceGap, SurfaceRise / max(dot(n, dir), 0.05)), 0.5 * dist);
+    if (start >= dist - LampGap) {
+        return 0.0;
+    }
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, scene, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                          0x01, from + n * ShadowBias, start, dir, dist - LampGap);
+    while (rayQueryProceedEXT(query)) {
+    }
+    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+        return 1.0;
+    }
+    if (!people || dist <= body_gap + CharacterGap) {
+        return 0.0;
+    }
+    rayQueryEXT bodies;
+    rayQueryInitializeEXT(bodies, scene, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                          0x02, from, body_gap, dir,
+                          min(dist - CharacterGap, CharacterShadowReach));
+    while (rayQueryProceedEXT(bodies)) {
+    }
+    if (rayQueryGetIntersectionTypeEXT(bodies, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
+        return 0.0;
+    }
+    const float t = rayQueryGetIntersectionTEXT(bodies, true);
+    return CharacterShadowStrength * mix(1.0, 0.33, clamp(t / CharacterShadowReach, 0.0, 1.0));
+}
+
+bool Blocked(vec3 from, vec3 n, vec3 dir, float dist) {
+    return Shadow(from, n, dir, dist, true, CharacterGap) > 0.5;
+}
+
+vec3 Corner(uint index) {
+    return vec3(map_positions[index * 3u], map_positions[index * 3u + 1u],
+                map_positions[index * 3u + 2u]);
+}
+
+// Bounce rays reach this far (a room).
+const float BounceReach = 10.0;
+// A bounce ray upward that leaves the room is checked this far for the open sky.
+const float SkyReach = 80.0;
+
+// The open sky's light along `dir` from `wp` (zero below the horizon, with no sun, or blocked
+// between `from` metres, where the ray before it ended, and SkyReach).
+vec3 SkyLight(vec3 wp, vec3 wn, vec3 dir, float from) {
+    if (sun_dir.w <= 0.0 || sky <= 0.0 || dir.y <= 0.02) {
+        return vec3(0.0);
+    }
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, scene, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                          0x01, wp + wn * ShadowBias, from, dir, SkyReach);
+    while (rayQueryProceedEXT(query)) {
+    }
+    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+        return vec3(0.0);
+    }
+    // Brighter toward the zenith (an overcast sky's gradient).
+    return sun_colour.rgb * sun_colour.a * sky * (0.5 + 0.5 * dir.y);
+}
+
+// What a ray finds: the nearest surface within `reach` (map or character), its normal facing the
+// ray and its colour; false for none (a character's body nearer than `body_gap` counts as none: a
+// bounce ray may start on one).
+bool TraceSurface(vec3 from, vec3 dir, float reach, float body_gap, out vec3 hit, out vec3 hn,
+                  out vec3 albedo) {
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 0xFF, from, 0.0, dir, reach);
+    while (rayQueryProceedEXT(query)) {
+    }
+    hit = vec3(0.0);
+    hn = vec3(0.0);
+    albedo = vec3(0.0);
+    if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
+        return false;
+    }
+    const float t = rayQueryGetIntersectionTEXT(query, true);
+    if (rayQueryGetIntersectionInstanceCustomIndexEXT(query, true) != 0) {
+        if (t < body_gap) {
+            return false; // a character's own body
+        }
+        // A character (step 3): no map colours; grey cloth, facing the ray.
+        hit = from + dir * t;
+        hn = -dir;
+        albedo = vec3(0.25);
+        return true;
+    }
+    const uint tri = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, true)) * 3u;
+    const vec2 b = rayQueryGetIntersectionBarycentricsEXT(query, true);
+    const uint i0 = map_indices[tri], i1 = map_indices[tri + 1u], i2 = map_indices[tri + 2u];
+    const vec3 c0 = Corner(i0), c1 = Corner(i1), c2 = Corner(i2);
+    hit = c0 * (1.0 - b.x - b.y) + c1 * b.x + c2 * b.y;
+    hn = normalize(cross(c1 - c0, c2 - c0));
+    if (dot(hn, dir) > 0.0) {
+        hn = -hn; // facing the ray
+    }
+    // The surface's colour as albedo (its texture in the baked light): from the triangle's patch
+    // where it has one, else its corners'.
+    const uint patch_meta = map_tri_patch[tri / 3u];
+    uint colour = map_colors[i0];
+    if (patch_meta != 0u) {
+        const uint n = patch_meta & 31u;
+        // A point inside lies in a texel whose centre is inside too (or on the diagonal).
+        const uint pu = min(uint(b.x * float(n)), n - 1u), pv = min(uint(b.y * float(n)), n - 1u);
+        colour = map_patches[(patch_meta >> 5) + pv * n + pu];
+    }
+    albedo = min(MeshRadiance(colour) / MeshRadianceScale * 1.5, vec3(0.9));
+    return true;
+}
+
+// The light falling on a surface found by a ray, in light0's units: the lamps (LampWeight with its
+// own normal, the strongest one's light only if a shadow ray finds it) and the sun/moon. Without
+// `shadows` (reflections): no shadow rays, the sun's light at half.
+vec3 SurfaceLight(vec3 hit, vec3 hn, bool shadows) {
+    vec3 light = vec3(0.0);
+    float strongest = 0.0;
+    int strongest_i = -1;
+    for (int i = 0; i < count; ++i) {
+        const vec4 at = lamps[i * 4];
+        const vec3 lamp_world = ToWorld(at.xyz, 1.0);
+        const float w = LampWeight(hit, hn, lamp_world, at.w, 1.0);
+        const vec3 l = lamps[i * 4 + 1].rgb * w;
+        light += l;
+        const float m = max(max(l.r, l.g), l.b);
+        if (m > strongest) {
+            strongest = m;
+            strongest_i = i;
+        }
+    }
+    if (shadows && strongest_i >= 0) {
+        // The strongest lamp's light only if it reaches the hit (no light through walls).
+        const vec3 to_lamp = ToWorld(lamps[strongest_i * 4].xyz, 1.0) - hit;
+        const float dist = length(to_lamp);
+        if (dist > 2.0 * ShadowBias && Blocked(hit, hn, to_lamp / dist, dist)) {
+            light *= 0.25;
+        }
+    }
+    light *= strength;
+    if (sun_dir.w > 0.0) {
+        // The sun/moon lights the hit too, where nothing stands between them.
+        const vec3 to_sun = normalize(ToWorld(sun_dir.xyz, 0.0));
+        const float ndl = dot(hn, to_sun);
+        if (!shadows) {
+            light += sun_colour.rgb * sun_colour.a * max(ndl, 0.0) * 0.5;
+        } else if (ndl > 0.0 && !Blocked(hit, hn, to_sun, SunReach)) {
+            light += sun_colour.rgb * sun_colour.a * ndl;
+        }
+    }
+    return light;
+}
+
+// The last frame's lit colour at world point `hit` when it is on screen and not hidden there (the
+// game's own light on it, with the bounces before; the reflections' and the bounce's hits).
+bool SeenOnScreen(vec3 hit, out vec3 seen) {
+    seen = vec3(0.0);
+    const vec3 d = hit - vec3(world[0].w, world[1].w, world[2].w);
+    const vec3 v = d.x * world[0].xyz + d.y * world[1].xyz + d.z * world[2].xyz;
+    if (v.z <= 0.1) {
+        return false;
+    }
+    const vec2 uv = vec2(proj.x * v.x, proj.y * v.y) / v.z * 0.5 + 0.5;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThanEqual(uv, vec2(1.0)))) {
+        return false;
+    }
+    const vec2 at = uv * size;
+    const float drawn = LightingViewPos(at).z;
+    // Within the characters' ray model's error (~15% of their distance).
+    if (drawn <= 0.0 || abs(drawn - v.z) >= 0.15 * v.z + 0.2) {
+        return false;
+    }
+    seen = imageLoad(last_scene, ivec2(at)).rgb;
+    return all(greaterThanEqual(seen, vec3(0.0))) && all(lessThan(seen, vec3(1000.0)));
+}
+
+/// Kaniel 2026-10-21 ("do all steps", step 2): the lamps' light a pixel gets from the surfaces
+/// around it. Cosine-weighted rays against the map's models; at a hit, SurfaceLight coloured by the
+/// surface; a ray out to the open sky brings its light (SkyLight); the mean over the rays is the
+/// light arriving, in the units of light0 (scene = albedo x light0).
+vec3 LampBounce(vec3 wp, vec3 wn, float n1, float n2) {
+    const int rays = bounce_rays & 0xFF;
+    vec3 sum = vec3(0.0);
+    for (int r = 0; r < rays; ++r) {
+        const vec3 dir = HemisphereDir(wn, fract(n1 + float(r) * 0.618034),
+                                       fract(n2 + float(r) * 0.7548777));
+        vec3 hit, hn, albedo;
+        if (!TraceSurface(wp + wn * ShadowBias, dir, BounceReach, CharacterGap, hit, hn, albedo)) {
+            sum += SkyLight(wp, wn, dir, BounceReach * 0.9);
+            continue;
+        }
+        // On screen: its lit colour last frame, which held the bounces before (light bouncing
+        // many times; Kaniel 2026-10-22, "path tracing"), not amplified by the slider again.
+        vec3 seen;
+        if (SeenOnScreen(hit, seen)) {
+            sum += seen / max(bounce_strength, 1.0);
+            continue;
+        }
+        sum += albedo * SurfaceLight(hit, hn, true);
+    }
+    return rays > 0 ? sum / float(rays) : vec3(0.0);
+}
+
+// Reflection rays reach this far (across a narrow street; 60 m cost the most outdoors).
+const float ReflectionReach = 30.0;
+// How much of the reflection goes in (1: as the surface's specular colour says), and the most it
+// adds (Kaniel 2026-10-21, at 3 and uncapped: "some reflections are too bright").
+const float ReflectionStrength = 1.5;
+const float ReflectionMax = 0.6;
+
+/// Kaniel 2026-10-21 ("let's do 1 and 2", part 2): what a glossy pixel reflects. One mirror ray
+/// (spread by the roughness) against the map; its hit lit by SurfaceLight, or the sky's light.
+vec3 Reflection(vec3 wp, vec3 wn, vec3 view_dir, float gloss, float n1, float n2) {
+    vec3 dir = reflect(view_dir, wn);
+    const float rough = 1.0 - gloss;
+    dir = normalize(dir + (HemisphereDir(wn, n1, n2) - wn) * rough * rough);
+    if (dot(dir, wn) <= 0.0) {
+        dir = reflect(view_dir, wn);
+    }
+    vec3 hit, hn, albedo;
+    // A character standing on the surface counts from 0.1 m (CharacterGap hid it in puddles).
+    if (!TraceSurface(wp + wn * ShadowBias, dir, ReflectionReach, 0.1, hit, hn, albedo)) {
+        return SkyLight(wp, wn, dir, ReflectionReach * 0.9) * 0.5;
+    }
+    vec3 seen;
+    if (SeenOnScreen(hit, seen)) {
+        return seen;
+    }
+    return albedo * SurfaceLight(hit, hn, false);
+}
+
+// Path-tracing step 1 (Kaniel 2026-10-22, "all shadows... should work"): one lamp besides the four
+// strongest (`best`), picked at random by its light at the pixel (`u` 0..1); the light it gives
+// there, blocked, over the chance of picking it (averaged over pixels and frames by the resolve).
+vec3 OtherLampBlocked(vec3 p, vec3 n, vec3 wp, vec3 wn, int best[4], float u) {
+    float total = 0.0;
+    for (int i = 0; i < count; ++i) {
+        if (i == best[0] || i == best[1] || i == best[2] || i == best[3]) {
+            continue;
+        }
+        const vec4 at = lamps[i * 4];
+        const vec4 colour = lamps[i * 4 + 1];
+        if (colour.r == colour.g && colour.g == colour.b) {
+            continue; // the game's fill lights, never shadowed
+        }
+        total += LampWeight(p, n, at.xyz, at.w, max(max(colour.r, colour.g), colour.b));
+    }
+    if (total <= 1e-6) {
+        return vec3(0.0);
+    }
+    float target = u * total;
+    for (int i = 0; i < count; ++i) {
+        if (i == best[0] || i == best[1] || i == best[2] || i == best[3]) {
+            continue;
+        }
+        const vec4 at = lamps[i * 4];
+        const vec4 colour = lamps[i * 4 + 1];
+        if (colour.r == colour.g && colour.g == colour.b) {
+            continue;
+        }
+        const float w = LampWeight(p, n, at.xyz, at.w, max(max(colour.r, colour.g), colour.b));
+        target -= w;
+        if (target > 0.0 || w <= 0.0) {
+            continue;
+        }
+        const vec3 to_lamp = ToWorld(at.xyz, 1.0) - wp;
+        const float dist = length(to_lamp);
+        if (dist <= 2.0 * ShadowBias) {
+            return vec3(0.0);
+        }
+        const float shadow = Shadow(wp, wn, to_lamp / dist, dist, true,
+                                    wn.y > 0.7 ? 0.05 : CharacterGap);
+        return colour.rgb * LampWeight(p, n, at.xyz, at.w, 1.0) * strength * shadow * (total / w);
+    }
+    return vec3(0.0);
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) {
+        return;
+    }
+    const vec3 p = LightingViewPos(vec2(pixel));
+    if (p.z <= 0.0) {
+        imageStore(bounce_img, pixel, vec4(0.0));
+        return;
+    }
+    vec3 n = texelFetch(normal_tex, pixel, 0).rgb * 2.0 - 1.0;
+    n *= vec3(-sign(proj.x), -sign(proj.y), -1.0);
+    if (abs(length(n) - 1.0) > 0.2) {
+        imageStore(bounce_img, pixel, vec4(0.0, 0.0, 0.0, p.z));
+        return;
+    }
+    n = normalize(n);
+    // The four lamps lighting this pixel most.
+    float best_w[4] = float[4](0.0, 0.0, 0.0, 0.0);
+    int best_i[4] = int[4](-1, -1, -1, -1);
+    for (int i = 0; i < count; ++i) {
+        const vec4 at = lamps[i * 4];
+        const vec4 colour = lamps[i * 4 + 1];
+        // Grey lamps are the game's fill lights (the one following the hunter, 2026-10-21 capture):
+        // an artist's light, never shadowed.
+        if (colour.r == colour.g && colour.g == colour.b) {
+            continue;
+        }
+        const float w = LampWeight(p, n, at.xyz, at.w, max(max(colour.r, colour.g), colour.b));
+        if (w <= best_w[3]) {
+            continue;
+        }
+        int k = 3;
+        while (k > 0 && w > best_w[k - 1]) {
+            best_w[k] = best_w[k - 1];
+            best_i[k] = best_i[k - 1];
+            --k;
+        }
+        best_w[k] = w;
+        best_i[k] = i;
+    }
+    const vec3 wp = ToWorld(p, 1.0);
+    const vec3 wn = normalize(ToWorld(n, 0.0));
+    const float n1 = fract(GradientNoise(vec2(pixel)) + noise);
+    const float n2 = fract(GradientNoise(vec2(pixel) + vec2(47.0, 17.0)) + noise * 1.618034);
+    const int turn = (bounce_rays >> 8) & 3;
+    if ((pixel.x & 1) + 2 * (pixel.y & 1) == turn) {
+        // The other lamps' shadows ride along as negative light (the resolve clamps light0 at 0).
+        const vec3 others = OtherLampBlocked(p, n, wp, wn, best_i, fract(n1 * 7.31 + n2));
+        imageStore(bounce_img, pixel,
+                   vec4(LampBounce(wp, wn, n1, n2) * bounce_strength - others, p.z));
+    } else {
+        imageStore(bounce_img, pixel, vec4(0.0, 0.0, 0.0, -p.z));
+    }
+    vec3 blocked = vec3(0.0);
+    for (int k = 0; k < 4; ++k) {
+        if (best_i[k] < 0) {
+            break;
+        }
+        const vec4 at = lamps[best_i[k] * 4];
+        const vec3 to_lamp = ToWorld(at.xyz, 1.0) - wp;
+        const float dist = length(to_lamp);
+        const float tmax = dist - ShadowBias;
+        if (tmax <= ShadowBias) {
+            continue;
+        }
+        // A floor's pixel is no body: characters count from right by it (their feet's shadow).
+        const float shadow = Shadow(wp, wn, to_lamp / dist, dist, true,
+                                    wn.y > 0.7 ? 0.05 : CharacterGap);
+        if (shadow > 0.0) {
+            // What this lamp gave the pixel, in the game's light (its colour times its weight).
+            blocked += lamps[best_i[k] * 4 + 1].rgb * LampWeight(p, n, at.xyz, at.w, 1.0) * strength *
+                       shadow;
+        }
+    }
+    // Path-tracing step 2: the sun/moon's own shadow on every pixel.
+    if (sun_dir.w > 0.0) {
+        const vec3 to_sun = normalize(ToWorld(sun_dir.xyz, 0.0));
+        const float ndl = dot(wn, to_sun);
+        if (ndl > 0.0) {
+            const float shadow = Shadow(wp, wn, to_sun, SunReach, true,
+                                        wn.y > 0.7 ? 0.05 : CharacterGap);
+            if (shadow > 0.0) {
+                const vec3 sun_light = sun_colour.rgb * SunInLight0 * ndl * shadow;
+                blocked += min(sun_light, imageLoad(diffuse_img, pixel).rgb * 0.8);
+            }
+        }
+    }
+    // Part 2: what a glossy surface reflects, into the specular light.
+    vec3 reflected = vec3(0.0);
+    const float gloss = texelFetch(gloss_tex, pixel, 0).r;
+    if (gloss > 0.35) {
+        const vec3 f0 = texelFetch(f0_tex, pixel, 0).rgb;
+        const vec3 eye = vec3(world[0].w, world[1].w, world[2].w);
+        const vec3 view_dir = normalize(wp - eye);
+        const float n_dot_v = dot(wn, -view_dir);
+        const vec3 weight = vec3(ReflectionWeight(f0.r, n_dot_v, gloss),
+                                 ReflectionWeight(f0.g, n_dot_v, gloss),
+                                 ReflectionWeight(f0.b, n_dot_v, gloss));
+        // The same spread each frame (a new one each frame flickered: nothing averages it).
+        const float s1 = GradientNoise(vec2(pixel) + vec2(13.0, 71.0));
+        const float s2 = GradientNoise(vec2(pixel) + vec2(89.0, 29.0));
+        reflected = weight * Reflection(wp, wn, view_dir, gloss, s1, s2) * ReflectionStrength;
+        const float peak = max(max(reflected.r, reflected.g), reflected.b);
+        if (peak > ReflectionMax) {
+            reflected *= ReflectionMax / peak;
+        }
+    }
+    if (all(equal(blocked, vec3(0.0))) && all(equal(reflected, vec3(0.0)))) {
+        return;
+    }
+    const vec3 diffuse = imageLoad(diffuse_img, pixel).rgb;
+    const vec3 lit = max(diffuse - blocked, vec3(0.0));
+    if (any(notEqual(blocked, vec3(0.0)))) {
+        imageStore(diffuse_img, pixel, vec4(lit, 1.0));
+    }
+    // The specular light of the same lamps goes in the same share.
+    const float kept = dot(lit, vec3(1.0)) / max(dot(diffuse, vec3(1.0)), 1e-6);
+    const vec3 specular = imageLoad(specular_img, pixel).rgb;
+    imageStore(specular_img, pixel, vec4(specular * kept + reflected, 1.0));
+}
