@@ -79,8 +79,8 @@ Settings: `Hosted`, `HostedBuild`, `HostedBanList`, `HostedLinksPerAddress`,
 `HostedPartyWorlds`, `HostedStats`, `HostedReports`, `HostedAdminSocket`, `HostedRetireDays`,
 `HttpLinkedOnly`.
 
-The games need no change for any of this (the emulator already says its id in hex as its names;
-check the port does too).
+The games need no change for any of this but the link's handshake below (the emulator already says
+its id in hex as its names; check the port does too).
 
 A friend the lobby does not list (it lists 32 players), on every server: each team has a 6-letter
 code (no 0/O, 1/I; `coop/team_code.h`), shown to its leader on the team screen, made again with
@@ -91,6 +91,36 @@ several of that name: refused), who is then listed to the inviter. Wrong codes a
 per player: past 5 in a minute every lookup waits (`TeamLobby::LookupTries`). Both are typed in
 the window's text entry (the game's name dialog's) and need this build on both sides
 (`TeamRequest` actions 12-14, `Team.code`).
+
+## The link's handshake (link version 3)
+
+On for everyone, both sides (`coop/link_auth.h`, shared by shadNet, the emulator's `net_link.h`,
+`bbload` and the fuzz target; no new dependency). Server and games ship together: a game of link
+version 2 gets no answer.
+
+| What | Why |
+| --- | --- |
+| A hello without a valid cookie gets only a cookie back (HMAC of its source address and port and a 30 s bucket; smaller than the hello, nothing kept). The hello that echoes it signs in | a spoofed source never sees its cookie: no link, account, password hash or refusal for it, and no reflection |
+| Every datagram after the hello, both ways, ends in a counter and a 16-byte HMAC-SHA256 tag (24 bytes); keys from the secret, the game's nonce, the cookie and the id, one each way | nobody off the path can inject frames, Coop messages or Rpc bytes from a player's address, or replay them |
+| A bad tag or a counter seen already (a window of 1024) is dropped without a word, counted (`server link: ... dropped for a bad tag` with the counters) | |
+| A link's rates (`admission.h`) count a datagram only once its tag is good; hello limits only hellos with a valid cookie | a spoofed flood from a player's address got that address banned, or used up its hellos |
+
+The secret still crosses in the hello (after the cookie): the game's NP sign-in sends the same
+secret through the Rpc stream, so a challenge-response on the link alone would hide nothing.
+Someone on the path still reads it and the game data; that takes encryption (Noise, below).
+Cost at 300 players (three runs each, this box shared with other builds): the link thread 12.5%
+-> 16.5% of a core on average, relay p50 0.33-0.40 -> 0.41-0.74 ms (p99 13-34 -> 13-93 ms, noise
+of the box), 15.2 -> 17.3 Mbit/s out. One tag costs 0.6 us for 40 bytes, 1.7 us for 300, 5.7 us
+for 1200 (a relayed frame: one check, one tag).
+
+Attacks beside 300 players with it (link version 3, hosted):
+
+| Attack | What happened | Players |
+| --- | --- | --- |
+| 3000 first hellos/s from 500 addresses, never echoing the cookie (all a spoofed source can do) | 57,610 cookies sent; no sign-in, no account; server 22% CPU (the link thread) | no change |
+| the same echoing the cookies (a real botnet) | as before the handshake: the sign-in threads busy (server 289% CPU) | no change (link thread 20%) |
+| 30,000 datagrams/s with bad tags from a signed-in game's address | all dropped, its game not banned; link thread 29% | no change |
+| 30,000 datagrams/s with good tags (the game itself) | banned within seconds, as before | no change |
 
 ## Load test
 
@@ -162,7 +192,7 @@ Server only:
   the launcher with a server-signed token.
 
 Game and launcher:
-- A cookie handshake and an HMAC on every datagram (secrets cross the internet in clear today, and
-  after the hello a datagram is trusted by its address), ~3-5 days; or Noise, ~1.5-2 weeks.
+- Encryption (Noise, ~1.5-2 weeks): the link is authenticated now, but the secret and the game
+  data still cross the internet in clear.
 - ~~A fresh id when the server refuses one (virtual address collision).~~ Done: the launcher makes
   one for that server only (coop.json `server_ids`, keyed by the address as typed) and starts again.

@@ -9,6 +9,9 @@
 #include <QThread>
 #ifdef Q_OS_WIN
 // clang-format off
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <mstcpip.h>
 // clang-format on

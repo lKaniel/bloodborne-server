@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "common/types.h"
+#include "coop/link_auth.h"
 
 // The server link (docs/SERVER_COOP_PLAN.md phase 2): every game keeps one UDP link to shadNet
 // and sends everything it would send to a peer through it; nothing goes game to game. The link
@@ -24,12 +25,17 @@
 // are little-endian; addresses and ports as sockaddr_in holds them (network byte order).
 // server/tests/contracts/server_link_frames.txt has one of each; shadNet's server_link.h reads
 // and writes the same.
+//
+// Link version 3 (server/coop/link_auth.h): the first hello gets a cookie back, the hello that
+// echoes it signs in, and every datagram after it, both ways, ends in a counter and a tag (the
+// link's TrailerBytes); one whose tag does not open is dropped.
 namespace Libraries::Net::Link {
 
 // 2 (phase 11): the hello carries the player id's secret and signs the player in.
-constexpr u8 LinkVersion = 2;
+// 3: a cookie first, then every datagram after the hello tagged.
+constexpr u8 LinkVersion = 3;
 enum class Kind : u8 {
-    Hello = 1,   // game -> server: link version, online id, build, secret
+    Hello = 1,   // game -> server: link version, cookie, nonce, online id, build, secret
     Welcome = 2, // server -> game: accepted, or refused with the reason (another build)
     Data = 3,    // a frame for the peer at addr:port (game -> server), from it (server -> game)
     Ping = 4,    // game -> server, once a second
@@ -41,6 +47,7 @@ enum class Kind : u8 {
     // Both ways (phase 11): the game's calls for shadNet's TCP port (the NP sign-in, friends,
     // scores), one frame of a second reliable stream (server/coop/rpc_tunnel.h): one port only.
     Rpc = 8,
+    Cookie = 9, // server -> game: the answer to a hello without a valid cookie (never tagged)
 };
 struct Hello {
     u8 version = LinkVersion;
@@ -49,7 +56,10 @@ struct Hello {
     // carries a raw vtable pointer, so another eboot cannot even read the packets).
     std::string build;
     // Phase 11: the player id's secret (the launcher made it once): the hello is the sign-in.
+    // Link version 3: only in a hello that echoes the server's cookie.
     std::string secret;
+    LinkAuth::Cookie cookie{}; // zeros before the server gave one
+    LinkAuth::Nonce nonce{};
 };
 struct Welcome {
     bool accepted = false;
@@ -171,7 +181,7 @@ inline std::optional<Kind> KindOf(std::span<const u8> datagram) {
         return std::nullopt;
     }
     const u8 kind = datagram[8];
-    if (kind < static_cast<u8>(Kind::Hello) || kind > static_cast<u8>(Kind::Rpc)) {
+    if (kind < static_cast<u8>(Kind::Hello) || kind > static_cast<u8>(Kind::Cookie)) {
         return std::nullopt;
     }
     if (!Detail::Body(datagram, static_cast<Kind>(kind))) {
@@ -183,6 +193,8 @@ inline std::optional<Kind> KindOf(std::span<const u8> datagram) {
 inline std::vector<u8> Encode(const Hello& hello) {
     auto out = Detail::Start(Kind::Hello);
     out.push_back(hello.version);
+    Detail::PutRaw(out, hello.cookie.data(), hello.cookie.size());
+    Detail::PutRaw(out, hello.nonce.data(), hello.nonce.size());
     Detail::PutText(out, hello.online_id);
     Detail::PutText(out, hello.build);
     Detail::PutText(out, hello.secret);
@@ -253,14 +265,28 @@ inline std::optional<std::span<const u8>> DecodeRpc(std::span<const u8> datagram
 inline std::optional<Hello> DecodeHello(std::span<const u8> datagram) {
     auto body = Detail::Body(datagram, Kind::Hello);
     Hello hello;
-    if (!body || !body->Get(hello.version) || !body->GetText(hello.online_id) ||
-        !body->GetText(hello.build)) {
-        return std::nullopt;
-    }
-    if (hello.version >= 2 && !body->GetText(hello.secret)) {
+    if (!body || !body->Get(hello.version) || hello.version != LinkVersion ||
+        !body->GetRaw(hello.cookie.data(), hello.cookie.size()) ||
+        !body->GetRaw(hello.nonce.data(), hello.nonce.size()) || !body->GetText(hello.online_id) ||
+        !body->GetText(hello.build) || !body->GetText(hello.secret)) {
         return std::nullopt;
     }
     return hello;
+}
+
+inline std::vector<u8> EncodeCookie(const LinkAuth::Cookie& cookie) {
+    auto out = Detail::Start(Kind::Cookie);
+    Detail::PutRaw(out, cookie.data(), cookie.size());
+    return out;
+}
+
+inline std::optional<LinkAuth::Cookie> DecodeCookie(std::span<const u8> datagram) {
+    auto body = Detail::Body(datagram, Kind::Cookie);
+    LinkAuth::Cookie cookie;
+    if (!body || !body->GetRaw(cookie.data(), cookie.size())) {
+        return std::nullopt;
+    }
+    return cookie;
 }
 
 inline std::optional<Welcome> DecodeWelcome(std::span<const u8> datagram) {
@@ -306,6 +332,50 @@ inline std::optional<Member> DecodeMember(std::span<const u8> datagram) {
     }
     member.state = static_cast<MemberState>(state);
     return member;
+}
+
+// The game's hello for its link's state: without a cookie it asks for one (no secret in it); with
+// one it signs in, and `auth` holds the session that hello makes.
+inline Hello HelloFor(LinkAuth::Client& auth, std::string online_id, std::string build,
+                      std::string_view secret) {
+    Hello hello;
+    hello.online_id = std::move(online_id);
+    hello.build = std::move(build);
+    hello.nonce = auth.NonceToSend();
+    if (auth.HasCookie()) {
+        auth.ForHello(secret, hello.online_id);
+        hello.cookie = auth.CookieToEcho();
+        hello.secret = std::string{secret};
+    }
+    return hello;
+}
+
+// A datagram to the server with its counter and tag; nothing while the link has no session yet
+// (the server would drop it). The hello goes as it is.
+inline std::optional<std::vector<u8>> Sealed(LinkAuth::Client& auth, std::vector<u8> datagram) {
+    const auto trailer = auth.Seal(datagram);
+    if (!trailer) {
+        return std::nullopt;
+    }
+    datagram.insert(datagram.end(), trailer->begin(), trailer->end());
+    return datagram;
+}
+
+// A datagram from the server, its tag checked and taken off; nothing when it does not open. A
+// welcome under the hello's session makes that session the link's.
+inline std::optional<std::span<const u8>> Opened(LinkAuth::Client& auth,
+                                                 std::span<const u8> datagram) {
+    const auto from = auth.Open(datagram);
+    if (from == LinkAuth::Client::From::Nobody) {
+        return std::nullopt;
+    }
+    const auto plain = datagram.first(datagram.size() - LinkAuth::TrailerBytes);
+    if (from == LinkAuth::Client::From::Pending) {
+        if (const auto welcome = DecodeWelcome(plain); welcome && welcome->accepted) {
+            auth.Welcomed();
+        }
+    }
+    return plain;
 }
 
 // Whether a frame for addr:port goes through the server: everything but what is for the server

@@ -97,9 +97,10 @@ struct Totals {
   quint64 datagrams_sent = 0;
   quint64 datagrams_received = 0;
   quint64 refused = 0;
-  Samples relay_us;   // a game packet's time from its game to its teammate's
-  Samples ping_us;    // ping -> pong
-  Samples welcome_ms; // first hello -> welcomed
+  quint64 untagged = 0; // datagrams from the server whose tag did not open
+  Samples relay_us;     // a game packet's time from its game to its teammate's
+  Samples ping_us;      // ping -> pong
+  Samples welcome_ms;   // first hello -> welcomed
   Samples
       playing_ms; // first hello -> the party's welcome (team made and started)
 };
@@ -121,6 +122,7 @@ private:
   enum class State { Linking, Lobby, Started, Playing };
   void OnReadyRead();
   void Send(const QByteArray &datagram);
+  void SendHello();
   void SendCoop(const bbcoop::Envelope &envelope, s64 now_ms);
   void FlushCoop(s64 now_ms);
   void Take(const bbcoop::Envelope &envelope, s64 now_us);
@@ -160,6 +162,8 @@ private:
   std::map<std::string, u32> heard_seq; // per teammate: the last packet's
   u32 frame_count = 0;
   std::mt19937 random;
+  // Link version 3 (coop/link_auth.h): the cookie round trip and the tags.
+  LinkAuth::Client auth;
 };
 
 class Load {
@@ -265,6 +269,7 @@ private:
         {"bytes_sent", static_cast<double>(totals.bytes_sent)},
         {"bytes_received", static_cast<double>(totals.bytes_received)},
         {"refused", static_cast<double>(totals.refused)},
+        {"untagged", static_cast<double>(totals.untagged)},
         {"relay_ms_p50", totals.relay_us.Percentile(0.5) / 1000.0},
         {"relay_ms_p95", totals.relay_us.Percentile(0.95) / 1000.0},
         {"relay_ms_p99", totals.relay_us.Percentile(0.99) / 1000.0},
@@ -310,6 +315,12 @@ Game::Game(Load &load, int index, int team, int seat)
       run{static_cast<u32>(0x2000 + index)},
       random{static_cast<u32>(index * 7919 + 1)} {
   QObject::connect(&socket, &QUdpSocket::readyRead, [this] { OnReadyRead(); });
+  std::random_device device;
+  LinkAuth::Nonce nonce;
+  for (u8 &byte : nonce) {
+    byte = static_cast<u8>(device());
+  }
+  auth.Restart(nonce);
 }
 
 void Game::Start() {
@@ -330,7 +341,18 @@ void Game::Start() {
   next_hello_us = started_us;
 }
 
-void Game::Send(const QByteArray &datagram) {
+void Game::Send(const QByteArray &plain) {
+  QByteArray datagram = plain;
+  if (ServerLink::KindOf(plain) != ServerLink::Kind::Hello) {
+    const auto trailer =
+        auth.Seal({reinterpret_cast<const u8 *>(plain.constData()),
+                   static_cast<size_t>(plain.size())});
+    if (!trailer) {
+      return; // no session yet: the server would drop it
+    }
+    datagram.append(reinterpret_cast<const char *>(trailer->data()),
+                    static_cast<qsizetype>(trailer->size()));
+  }
   socket.writeDatagram(datagram, load.settings.server, load.settings.port);
   ++load.totals.datagrams_sent;
   load.totals.bytes_sent += static_cast<quint64>(datagram.size());
@@ -357,9 +379,7 @@ void Game::Tick(s64 now_us) {
   if (state == State::Linking) {
     if (now_us >= next_hello_us) {
       next_hello_us = now_us + 1'000'000;
-      Send(ServerLink::Encode(ServerLink::Hello{
-          ServerLink::LinkVersion, QByteArray::fromStdString(name),
-          load.settings.build, "secret-" + QByteArray::fromStdString(name)}));
+      SendHello();
     }
     return;
   }
@@ -558,6 +578,27 @@ void Game::TakeData(const QByteArray &frame, s64 now_us) {
   }
 }
 
+void Game::SendHello() {
+  const QByteArray secret = "secret-" + QByteArray::fromStdString(name);
+  ServerLink::Hello hello{ServerLink::LinkVersion,
+                          QByteArray::fromStdString(name),
+                          load.settings.build,
+                          {},
+                          {},
+                          {}};
+  if (auth.HasCookie()) {
+    auth.ForHello(secret.toStdString(), name);
+    hello.secret = secret;
+    hello.cookie =
+        QByteArray(reinterpret_cast<const char *>(auth.CookieToEcho().data()),
+                   LinkAuth::CookieBytes);
+  }
+  hello.nonce =
+      QByteArray(reinterpret_cast<const char *>(auth.NonceToSend().data()),
+                 LinkAuth::NonceBytes);
+  Send(ServerLink::Encode(hello));
+}
+
 void Game::OnReadyRead() {
   while (socket.hasPendingDatagrams()) {
     QByteArray datagram;
@@ -569,6 +610,29 @@ void Game::OnReadyRead() {
     const auto kind = ServerLink::KindOf(datagram);
     if (!kind) {
       continue;
+    }
+    if (*kind == ServerLink::Kind::Cookie) {
+      if (const auto cookie = ServerLink::DecodeCookie(datagram);
+          cookie && state == State::Linking) {
+        auth.TakeCookie(*cookie);
+        SendHello();
+      }
+      continue;
+    }
+    const auto from =
+        auth.Open({reinterpret_cast<const u8 *>(datagram.constData()),
+                   static_cast<size_t>(datagram.size())});
+    if (from == LinkAuth::Client::From::Nobody) {
+      ++load.totals.untagged;
+      continue;
+    }
+    datagram.chop(LinkAuth::TrailerBytes);
+    if (*kind == ServerLink::Kind::Welcome &&
+        from == LinkAuth::Client::From::Pending) {
+      if (const auto welcome = ServerLink::DecodeWelcome(datagram);
+          welcome && welcome->accepted) {
+        auth.Welcomed();
+      }
     }
     switch (*kind) {
     case ServerLink::Kind::Welcome:
