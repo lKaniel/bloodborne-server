@@ -32,6 +32,9 @@ struct HostedConfig {
     int linksPerAddress = 8;
     double hellosPerSecond = 4.0;
     int newAccountsPerHour = 5;
+    int signupWorkBits = 20;    // a new account's work (coop/link_auth.h): ~0.3 s of one core
+    int signupWorkMaxBits = 20; // 2 bits more per doubling of the accounts a minute over:
+    int signupsPerMinute = 60;  // this many
     double datagramsPerSecond = 1500.0;
     double bytesPerSecond = 400000.0;
     int lobbyPlayers = 32;     // players listed to each player besides its team and invites

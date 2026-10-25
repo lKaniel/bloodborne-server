@@ -8,6 +8,7 @@ Needs a built shadnet: SHADNET_EXE=<path to shadnet>. Skipped without it, or whe
 can't be bound (only Linux routes all of 127/8 to loopback)."""
 
 import contextlib
+import hashlib
 import http.client
 import json
 import os
@@ -20,7 +21,7 @@ import unittest
 
 SHADNET = os.environ.get("SHADNET_EXE", "")
 HEADER = b"\xff\xff\xff\xffSHLK"
-HELLO, WELCOME, COOKIE = 1, 2, 9
+HELLO, WELCOME, COOKIE, WORK = 1, 2, 9, 10
 BUILD = b"gatetest"
 
 
@@ -43,11 +44,22 @@ def text(value):
     return bytes([len(value)]) + value
 
 
-def hello(online_id, secret, cookie=b""):
+def hello(online_id, secret, cookie=b"", work=None, nonce=b"\x01" * 16):
     # Link version 3 (coop/link_auth.h): the cookie the server gave, a nonce, and the secret
-    # once there is a cookie.
-    return (HEADER + bytes([HELLO, 3]) + cookie.ljust(16, b"\0") + b"\x01" * 16 +
-            text(online_id) + text(BUILD) + text(secret if cookie else b""))
+    # once there is a cookie; hosted, a new account's work after it.
+    return (HEADER + bytes([HELLO, 3]) + cookie.ljust(16, b"\0") + nonce +
+            text(online_id) + text(BUILD) + text(secret if cookie else b"") +
+            (b"" if work is None else work.to_bytes(8, "little")))
+
+
+def solve_work(cookie, online_id, bits):
+    nonce = 0
+    while True:
+        digest = int.from_bytes(hashlib.sha256(cookie + online_id + nonce.to_bytes(8, "little"))
+                                .digest(), "big")
+        if digest >> (256 - bits) == 0:
+            return nonce
+        nonce += 1
 
 
 class Response:
@@ -91,6 +103,7 @@ class HostedHttpGate(unittest.TestCase):
             "BackendStore": os.path.join(work, "content.db").replace("\\", "/"),
             "BackendFolder": work.replace("\\", "/"), "BloodborneSeamlessCoop": "true",
             "Hosted": "true", "HostedBuild": BUILD.decode(), "StatsPort": free_port(),
+            "HostedSignupWorkBits": 8,
         }
         with open(os.path.join(work, "shadnet.cfg"), "w") as f:
             f.write("[General]\n" + "".join(f"{k}={v}\n" for k, v in config.items()))
@@ -113,8 +126,10 @@ class HostedHttpGate(unittest.TestCase):
         cls.udp.bind(("127.0.0.1", 0))
         cls.udp.settimeout(0.5)
         cookie = b""
+        work = None
+        nonce = b"\x01" * 16
         for _ in range(40):
-            cls.udp.sendto(hello(b"pgate01", b"secret-of-pgate01", cookie),
+            cls.udp.sendto(hello(b"pgate01", b"secret-of-pgate01", cookie, work, nonce),
                            ("127.0.0.1", cls.link))
             try:
                 answer = cls.udp.recv(2048)
@@ -122,6 +137,10 @@ class HostedHttpGate(unittest.TestCase):
                 continue
             if answer.startswith(HEADER) and answer[8] == COOKIE:
                 cookie = answer[9:25]
+            if answer.startswith(HEADER) and answer[8] == WORK:
+                # A new account: the work, under a new nonce (as the game does).
+                work = solve_work(cookie, b"pgate01", answer[9])
+                nonce = b"\x02" * 16
             if answer.startswith(HEADER) and answer[8] == WELCOME and answer[9] == 1:
                 break
         else:

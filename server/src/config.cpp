@@ -69,6 +69,9 @@ void ConfigManager::Parse(const QString& path) {
     m_hosted.linksPerAddress = str("HostedLinksPerAddress", "8").toInt();
     m_hosted.hellosPerSecond = str("HostedHellosPerSecond", "4").toDouble();
     m_hosted.newAccountsPerHour = str("HostedNewAccountsPerHour", "5").toInt();
+    m_hosted.signupWorkBits = str("HostedSignupWorkBits", "20").toInt();
+    m_hosted.signupWorkMaxBits = str("HostedSignupWorkMaxBits", "20").toInt();
+    m_hosted.signupsPerMinute = str("HostedSignupsPerMinute", "60").toInt();
     m_hosted.datagramsPerSecond = str("HostedDatagramsPerSecond", "1500").toDouble();
     m_hosted.bytesPerSecond = str("HostedBytesPerSecond", "400000").toDouble();
     m_hosted.lobbyPlayers = str("HostedLobbyPlayers", "32").toInt();

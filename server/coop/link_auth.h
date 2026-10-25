@@ -228,6 +228,63 @@ inline bool CookieValid(const HmacKey& server_key, u32 ipv4, u16 port, s64 now_m
            SameBytes(cookie, CookieFor(server_key, ipv4, port, bucket - 1));
 }
 
+// Hosted: a hello that would make a new account carries a work nonce (docs/HOSTED_SERVER.md): one
+// such that SHA-256(cookie, id, nonce as 8 bytes little-endian) starts with the server's number of
+// zero bits. The cookie ties it to the hello's source and the next minute; the server checks it
+// with one hash, before any password hash or account. An account once made never pays again.
+constexpr int MaxWorkBits = 40;
+
+inline Sha256 WorkPrefix(const Cookie& cookie, std::string_view online_id) {
+    Sha256 sha;
+    sha.Update(cookie);
+    sha.Update(Bytes(online_id));
+    return sha;
+}
+
+inline Digest WorkDigest(Sha256 prefix, u64 nonce) {
+    u8 bytes[8];
+    for (int index = 0; index < 8; ++index) {
+        bytes[index] = static_cast<u8>(nonce >> (8 * index));
+    }
+    prefix.Update(bytes);
+    return prefix.Final();
+}
+
+inline int LeadingZeroBits(const Digest& digest) {
+    int bits = 0;
+    for (const u8 byte : digest) {
+        if (byte != 0) {
+            for (u8 mask = 0x80; (byte & mask) == 0; mask >>= 1) {
+                ++bits;
+            }
+            return bits;
+        }
+        bits += 8;
+    }
+    return bits;
+}
+
+inline bool WorkDone(const Cookie& cookie, std::string_view online_id, u64 nonce, int bits) {
+    return bits <= 0 || (bits <= MaxWorkBits &&
+                         LeadingZeroBits(WorkDigest(WorkPrefix(cookie, online_id), nonce)) >= bits);
+}
+
+// The first nonce of [from, from + count) that does the work, if one does (a caller that may have
+// to stop asks in slices).
+inline std::optional<u64> SolveWork(const Cookie& cookie, std::string_view online_id, int bits,
+                                    u64 from, u64 count) {
+    if (bits > MaxWorkBits) {
+        return std::nullopt;
+    }
+    const Sha256 prefix = WorkPrefix(cookie, online_id);
+    for (u64 nonce = from; nonce - from < count; ++nonce) {
+        if (bits <= 0 || LeadingZeroBits(WorkDigest(prefix, nonce)) >= bits) {
+            return nonce;
+        }
+    }
+    return std::nullopt;
+}
+
 // The link's two keys: the game's datagrams (up) and the server's (down).
 struct Keys {
     Digest up;
@@ -364,6 +421,39 @@ public:
         return nonce;
     }
 
+    // Hosted: the server asked this id's hello for work (no account yet). Whether the work is to
+    // be done now: not when it is done or under way for this cookie. A new nonce goes with it: the
+    // hello's session took the server's answer's counter, and the welcome starts at that one too.
+    bool WorkAsked(int bits, const Nonce& fresh) {
+        if (bits == work_bits && (working || WorkToSend())) {
+            return false;
+        }
+        work_bits = bits;
+        work.reset();
+        working = true;
+        Restart(fresh);
+        return true;
+    }
+    bool Working() const {
+        return working;
+    }
+    int WorkBits() const {
+        return work_bits;
+    }
+    // The work done for a cookie (none: given up); kept for the hellos that echo that cookie.
+    void TakeWork(const Cookie& done_for, int bits, std::optional<u64> work_nonce) {
+        working = false;
+        if (work_nonce && bits == work_bits) {
+            work = std::pair{done_for, *work_nonce};
+        }
+    }
+    std::optional<u64> WorkToSend() const {
+        if (work && has_cookie && SameBytes(work->first, cookie)) {
+            return work->second;
+        }
+        return std::nullopt;
+    }
+
     // The session a hello with this cookie and nonce makes (none without a cookie: that hello
     // only asks for one).
     void ForHello(std::string_view secret, std::string_view online_id) {
@@ -413,6 +503,9 @@ private:
     Nonce nonce{};
     Cookie cookie{};
     bool has_cookie = false;
+    int work_bits = 0;
+    bool working = false;
+    std::optional<std::pair<Cookie, u64>> work;
     std::optional<Session> current;
     std::optional<Session> pending;
 };

@@ -138,6 +138,38 @@ void ParseBanList(const QString& text, QSet<quint32>& addresses, QSet<QByteArray
     }
 }
 
+void SignupWork::Advance(qint64 now_ms) {
+    const qint64 now = now_ms / 1000;
+    if (now - second >= Slots) {
+        std::fill(std::begin(counts), std::end(counts), 0);
+        total = 0;
+    } else {
+        for (qint64 at = second + 1; at <= now; ++at) {
+            total -= counts[at % Slots];
+            counts[at % Slots] = 0;
+        }
+    }
+    second = std::max(second, now);
+}
+
+void SignupWork::Made(qint64 now_ms) {
+    Advance(now_ms);
+    ++counts[second % Slots];
+    ++total;
+}
+
+int SignupWork::Bits(qint64 now_ms) {
+    Advance(now_ms);
+    if (base_bits <= 0) {
+        return 0;
+    }
+    int bits = base_bits;
+    for (qint64 over = baseline * 2; total >= over && bits < max_bits; over *= 2) {
+        bits += 2;
+    }
+    return std::min(bits, max_bits);
+}
+
 QList<BanLine> BanLines(const QString& text) {
     QList<BanLine> bans;
     for (const QString& line : text.split('\n')) {

@@ -29,6 +29,10 @@
 // Link version 3 (server/coop/link_auth.h): the first hello gets a cookie back, the hello that
 // echoes it signs in, and every datagram after it, both ways, ends in a counter and a tag (the
 // link's TrailerBytes); one whose tag does not open is dropped.
+//
+// A hosted server asks a first sign-in (an id with no account) for work: the hello's answer is
+// Work with the bits, and the game says hello again with a nonce that does them (LinkAuth::
+// SolveWork, off the link's thread), under a new nonce of its link. An account never pays twice.
 namespace Libraries::Net::Link {
 
 // 2 (phase 11): the hello carries the player id's secret and signs the player in.
@@ -48,6 +52,7 @@ enum class Kind : u8 {
     // scores), one frame of a second reliable stream (server/coop/rpc_tunnel.h): one port only.
     Rpc = 8,
     Cookie = 9, // server -> game: the answer to a hello without a valid cookie (never tagged)
+    Work = 10,  // server -> game (hosted): no account for the id yet: the work its hello needs
 };
 struct Hello {
     u8 version = LinkVersion;
@@ -60,6 +65,7 @@ struct Hello {
     std::string secret;
     LinkAuth::Cookie cookie{}; // zeros before the server gave one
     LinkAuth::Nonce nonce{};
+    std::optional<u64> work; // hosted: a new account's work nonce, after the secret
 };
 struct Welcome {
     bool accepted = false;
@@ -181,7 +187,7 @@ inline std::optional<Kind> KindOf(std::span<const u8> datagram) {
         return std::nullopt;
     }
     const u8 kind = datagram[8];
-    if (kind < static_cast<u8>(Kind::Hello) || kind > static_cast<u8>(Kind::Cookie)) {
+    if (kind < static_cast<u8>(Kind::Hello) || kind > static_cast<u8>(Kind::Work)) {
         return std::nullopt;
     }
     if (!Detail::Body(datagram, static_cast<Kind>(kind))) {
@@ -198,6 +204,9 @@ inline std::vector<u8> Encode(const Hello& hello) {
     Detail::PutText(out, hello.online_id);
     Detail::PutText(out, hello.build);
     Detail::PutText(out, hello.secret);
+    if (hello.work) {
+        Detail::Put(out, *hello.work);
+    }
     return out;
 }
 
@@ -271,22 +280,46 @@ inline std::optional<Hello> DecodeHello(std::span<const u8> datagram) {
         !body->GetText(hello.build) || !body->GetText(hello.secret)) {
         return std::nullopt;
     }
+    if (u64 work = 0; body->Get(work)) {
+        hello.work = work;
+    }
     return hello;
 }
 
-inline std::vector<u8> EncodeCookie(const LinkAuth::Cookie& cookie) {
+// The cookie, then the bits a new account's work needs there (0: none).
+inline std::vector<u8> EncodeCookie(const LinkAuth::Cookie& cookie, int work_bits = 0) {
     auto out = Detail::Start(Kind::Cookie);
     Detail::PutRaw(out, cookie.data(), cookie.size());
+    out.push_back(static_cast<u8>(work_bits));
     return out;
 }
 
-inline std::optional<LinkAuth::Cookie> DecodeCookie(std::span<const u8> datagram) {
+inline std::optional<LinkAuth::Cookie> DecodeCookie(std::span<const u8> datagram,
+                                                    int* work_bits = nullptr) {
     auto body = Detail::Body(datagram, Kind::Cookie);
     LinkAuth::Cookie cookie;
     if (!body || !body->GetRaw(cookie.data(), cookie.size())) {
         return std::nullopt;
     }
+    if (u8 bits = 0; work_bits) {
+        *work_bits = body->Get(bits) ? bits : 0;
+    }
     return cookie;
+}
+
+inline std::vector<u8> EncodeWork(int bits) {
+    auto out = Detail::Start(Kind::Work);
+    out.push_back(static_cast<u8>(bits));
+    return out;
+}
+
+inline std::optional<int> DecodeWork(std::span<const u8> datagram) {
+    auto body = Detail::Body(datagram, Kind::Work);
+    u8 bits = 0;
+    if (!body || !body->Get(bits)) {
+        return std::nullopt;
+    }
+    return bits;
 }
 
 inline std::optional<Welcome> DecodeWelcome(std::span<const u8> datagram) {
@@ -346,6 +379,7 @@ inline Hello HelloFor(LinkAuth::Client& auth, std::string online_id, std::string
         auth.ForHello(secret, hello.online_id);
         hello.cookie = auth.CookieToEcho();
         hello.secret = std::string{secret};
+        hello.work = auth.WorkToSend();
     }
     return hello;
 }

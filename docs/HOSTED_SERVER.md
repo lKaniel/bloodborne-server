@@ -74,7 +74,8 @@ everyone: a TCP packet's blob size past 2 GB passed `StreamExtractor`'s bounds c
 past the packet, from any client before signing in. Four minutes of each target since: clean.
 
 Settings: `Hosted`, `HostedBuild`, `HostedBanList`, `HostedLinksPerAddress`,
-`HostedHellosPerSecond`, `HostedNewAccountsPerHour`, `HostedDatagramsPerSecond`,
+`HostedHellosPerSecond`, `HostedNewAccountsPerHour`, `HostedSignupWorkBits`,
+`HostedSignupWorkMaxBits`, `HostedSignupsPerMinute`, `HostedDatagramsPerSecond`,
 `HostedBytesPerSecond`, `HostedLobbyPlayers`, `HostedLobbyIntervalMs`, `HostedWorldsPerPlayer`,
 `HostedPartyWorlds`, `HostedStats`, `HostedReports`, `HostedAdminSocket`, `HostedRetireDays`,
 `HttpLinkedOnly`.
@@ -104,6 +105,7 @@ version 2 gets no answer.
 | Every datagram after the hello, both ways, ends in a counter and a 16-byte HMAC-SHA256 tag (24 bytes); keys from the secret, the game's nonce, the cookie and the id, one each way | nobody off the path can inject frames, Coop messages or Rpc bytes from a player's address, or replay them |
 | A bad tag or a counter seen already (a window of 1024) is dropped without a word, counted (`server link: ... dropped for a bad tag` with the counters) | |
 | A link's rates (`admission.h`) count a datagram only once its tag is good; hello limits only hellos with a valid cookie | a spoofed flood from a player's address got that address banned, or used up its hellos |
+| Hosted: a hello for an id with no account must carry a proof-of-work: a nonce such that SHA-256(cookie, id, nonce) starts with `HostedSignupWorkBits` zero bits (default 20, ~0.3 s of one core on average). The cookie says the bits; a hello without it gets a tagged `Work` answer and the game does it on a thread of its own, then says hello again. Checked with one hash before any password hash or account; an existing account never pays. 2 bits more per doubling of the accounts made in the last minute over `HostedSignupsPerMinute` (60), up to `HostedSignupWorkMaxBits` (20 by default, so no rise: a launch rush of 300 real joins pushed it to the cap in a test; raise it while under attack) | a botnet stays within each address's accounts an hour but made 1181 accounts in 30 s; now each costs it a CPU's while, more than the server's password hashes |
 
 The secret still crosses in the hello (after the cookie): the game's NP sign-in sends the same
 secret through the Rpc stream, so a challenge-response on the link alone would hide nothing.
@@ -117,6 +119,8 @@ Attacks beside 300 players with it (link version 3, hosted):
 
 | Attack | What happened | Players |
 | --- | --- | --- |
+| 3000 hellos/s with new ids from 500 addresses, echoing the cookie, no work | before the work: 622 accounts in 30 s (box loaded; 1181 earlier); with it: 0 accounts, ~15,600 `Work` answers, no password hashed, link thread <=28% | no change |
+| the same, the bots doing the work (one Python thread, ~0.6 s each) | 50 accounts for 30 s of CPU (in C++ a core makes ~3 a second at 20 bits; past 120 a minute the bits rise, 16x at the cap) | no change |
 | 3000 first hellos/s from 500 addresses, never echoing the cookie (all a spoofed source can do) | 57,610 cookies sent; no sign-in, no account; server 22% CPU (the link thread) | no change |
 | the same echoing the cookies (a real botnet) | as before the handshake: the sign-in threads busy (server 289% CPU) | no change (link thread 20%) |
 | 30,000 datagrams/s with bad tags from a signed-in game's address | all dropped, its game not banned; link thread 29% | no change |
@@ -170,6 +174,12 @@ Attacks beside 300 players (hosted):
 | the same from 500 addresses (a botnet) | 1181 accounts made; the sign-in threads busy (server 268% CPU) | no change (link thread 19%) |
 | one signed-in game sending 30,000 datagrams/s | banned within ~5 s | no change |
 
+New accounts' work at 300 players joining within 6 s: the extra round trip costs nothing (welcome
+p50 2.0 s with 8-bit work and without). At 20 bits one core solves in 316 ms on average (p50 216,
+p90 680 ms; a rare one over 2 s), once per account. On this box the 300 simulated games share its 4
+cores, so their joins wait for each other (welcome p50 31 s); with the default rate rise a join
+rush of hundreds a minute asks up to 24 bits (~5 s each) until it calms.
+
 ## How far one machine goes
 
 The link thread (relay, worlds, lobby) is the limit: ~65% of one core at 1000 players here. A
@@ -187,9 +197,7 @@ world.pb, `sqlite3 .backup`, restic to S3/B2/Storage Box), with a restore drill 
 
 ## Before a public launch
 
-Server only:
-- Make the account limit hold against botnets: a proof-of-work in the hello, or sign-up through
-  the launcher with a server-signed token.
+Server only: nothing left; each item is a row in the tables above.
 
 Game and launcher:
 - Encryption (Noise, ~1.5-2 weeks): the link is authenticated now, but the secret and the game

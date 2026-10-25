@@ -312,6 +312,10 @@ public:
         if (receive_thread.joinable()) {
             receive_thread.join();
         }
+        ++work_generation;
+        if (work_thread.joinable()) {
+            work_thread.join();
+        }
         delay_ready.notify_all();
         if (delay_thread.joinable()) {
             delay_thread.join();
@@ -464,6 +468,7 @@ public:
             link_hello_ms.reset();
             link_auth = {};
             link_auth.Restart(FreshNonce());
+            ++work_generation; // a work under way was for the other id
         }
         LOG_INFO(Lib_Net, "Server link: every frame for a peer goes through the server at {:#x}:{}",
                  ntohl(server_addr_nbo), ntohs(server_port_nbo));
@@ -870,9 +875,57 @@ private:
                              body->data(), body->size());
             }
             return;
+        case Link::Kind::Work:
+            if (const auto bits = Link::DecodeWork(datagram)) {
+                StartWork(*bits);
+            }
+            return;
         default:
             return;
         }
+    }
+
+    // Hosted: this id has no account yet, and the server asks its first hello for work
+    // (net_link.h). Done on a thread of its own, about a second's CPU once per account, so the
+    // receive thread goes on; the hellos wait for it, then one carries it at once.
+    void StartWork(int bits) {
+        LinkAuth::Cookie cookie;
+        std::string online_id;
+        {
+            std::lock_guard lock(link_mutex);
+            if (link_welcomed || !link_auth.WorkAsked(bits, FreshNonce())) {
+                return;
+            }
+            cookie = link_auth.CookieToEcho();
+            online_id = link_online_id;
+        }
+        LOG_INFO(Lib_Net, "Server link: a new account: the server asks for {} bits of work", bits);
+        const u64 generation = ++work_generation;
+        if (work_thread.joinable()) {
+            work_thread.join(); // it gives up within a slice: its generation is over
+        }
+        work_thread = std::thread([this, cookie, online_id, bits, generation] {
+            const auto started = std::chrono::steady_clock::now();
+            constexpr u64 Slice = u64{1} << 16;
+            std::optional<u64> found;
+            for (u64 from = 0; !found && running.load(std::memory_order_acquire) &&
+                               work_generation.load() == generation;
+                 from += Slice) {
+                found = LinkAuth::SolveWork(cookie, online_id, bits, from, Slice);
+            }
+            {
+                std::lock_guard lock(link_mutex);
+                if (work_generation.load() != generation) {
+                    return;
+                }
+                link_auth.TakeWork(cookie, bits, found);
+                link_hello_ms.reset();
+            }
+            LOG_INFO(Lib_Net, "Server link: the new account's work took {} ms",
+                     std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - started)
+                         .count());
+        });
     }
 
     void OnWelcome(const Link::Welcome& welcome) {
@@ -958,7 +1011,8 @@ private:
             if (server.addr_nbo == 0 || server.port_nbo == 0) {
                 return;
             }
-            if (Link::HelloDue(link_welcomed, link_hello_ms, !link_refusal.empty(), now_ms)) {
+            if (!link_auth.Working() &&
+                Link::HelloDue(link_welcomed, link_hello_ms, !link_refusal.empty(), now_ms)) {
                 link_hello_ms = now_ms;
                 datagrams.push_back(Link::Encode(
                     Link::HelloFor(link_auth, link_online_id, link_build, link_secret)));
@@ -1058,6 +1112,8 @@ private:
     std::string link_refusal;
     std::optional<s64> link_hello_ms;
     LinkAuth::Client link_auth; // link version 3: the cookie and the link's session
+    std::thread work_thread;    // hosted: a new account's work (StartWork)
+    std::atomic<u64> work_generation{0};
     u32 link_untagged{0};
     Link::PingMeter ping_meter;
     s64 link_tick_ms{0};

@@ -19,6 +19,7 @@
 // counters per member).
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <optional>
@@ -49,6 +50,9 @@ enum class Kind : quint8 {
     Rpc = 8,
     // Link version 3: the answer to a hello without a valid cookie (coop/link_auth.h).
     Cookie = 9,
+    // Hosted: the answer to a hello for an id with no account and no work nonce (or not enough):
+    // the bits its work needs (coop/link_auth.h), tagged like the hello's answers.
+    Work = 10,
 };
 enum class MemberState : quint8 { Quiet = 0, Back = 1, Gone = 2 };
 
@@ -73,6 +77,7 @@ Endpoint VirtualEndpointOf(const QByteArray& online_id);
 struct SignInVerdict {
     bool accepted = false;
     QByteArray refusal;
+    bool work = false; // hosted: no account for the id and the hello did no work: ask for it
 };
 
 // Link version 3: the version, the cookie (16 bytes, zeros before the server gave one), the game's
@@ -84,6 +89,8 @@ struct Hello {
     QByteArray secret; // phase 11: the player id's secret (the launcher made it)
     QByteArray cookie; // 16 bytes on the wire
     QByteArray nonce;  // 16 bytes on the wire
+    // Hosted: the work nonce for a new account (8 bytes after the secret, only when there is one).
+    std::optional<quint64> work;
 };
 struct Welcome {
     bool accepted = false;
@@ -107,8 +114,11 @@ struct Member {
 // The kind of a link datagram, or nothing for anything else (the STUN ping).
 std::optional<Kind> KindOf(const QByteArray& datagram);
 QByteArray Encode(const Hello& hello);
-QByteArray EncodeCookie(const LinkAuth::Cookie& cookie);
-std::optional<LinkAuth::Cookie> DecodeCookie(const QByteArray& datagram);
+// The cookie, then the bits a new account's work needs (0: none; hosted only).
+QByteArray EncodeCookie(const LinkAuth::Cookie& cookie, int work_bits = 0);
+std::optional<LinkAuth::Cookie> DecodeCookie(const QByteArray& datagram, int* work_bits = nullptr);
+QByteArray EncodeWork(int bits);
+std::optional<int> DecodeWork(const QByteArray& datagram);
 QByteArray Encode(const Welcome& welcome);
 QByteArray Encode(const Data& data);
 QByteArray Encode(Kind kind, const Ping& ping);
@@ -212,10 +222,24 @@ public:
     // Hosted (docs/HOSTED_SERVER.md): nothing yet while the password is checked on another thread;
     // the hello gets no answer and the game's next one (a second later) gets the verdict.
     // A refusal may say why (a new id on another account's address: the launcher makes another).
+    // `paid`: the hello may make an account (it did the work, or none is asked); one that may not
+    // and finds none answers work, and its game says hello again with the work done.
     using SignIn = std::function<std::optional<SignInVerdict>(const QByteArray& online_id,
-                                                              const QByteArray& secret)>;
+                                                              const QByteArray& secret, bool paid)>;
     void SetSignIn(SignIn sign_in) {
         this->sign_in = std::move(sign_in);
+    }
+
+    // Hosted: the zero bits a new account's work needs (coop/link_auth.h; 0: none). The cookies say
+    // it; a hello's work is checked against it with one hash before its sign-in.
+    void SetSignupWork(int bits) {
+        signup_work = std::clamp(bits, 0, LinkAuth::MaxWorkBits);
+    }
+    int SignupWork() const {
+        return signup_work;
+    }
+    quint64 WorkAsked() const {
+        return work_asked;
     }
 
     // Hosted: the build every game must say (empty: the first linked game's, as before).
@@ -299,6 +323,8 @@ private:
     quint64 replays = 0;
     quint64 cookies_sent = 0;
     quint64 old_versions = 0;
+    int signup_work = 0;
+    quint64 work_asked = 0;
     Admit admit;
     PartyOf party_of;
     PacketRoutes packet_routes;

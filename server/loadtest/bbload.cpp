@@ -26,6 +26,7 @@
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QThreadPool>
 #include <QTimer>
 #include <QUdpSocket>
 
@@ -101,6 +102,8 @@ struct Totals {
   Samples relay_us;     // a game packet's time from its game to its teammate's
   Samples ping_us;      // ping -> pong
   Samples welcome_ms;   // first hello -> welcomed
+  Samples work_ms;      // hosted: a new account's work asked -> done
+  Samples solve_ms;     // its solving alone (what one core of a game spends)
   Samples
       playing_ms; // first hello -> the party's welcome (team made and started)
 };
@@ -128,6 +131,7 @@ private:
   void Take(const bbcoop::Envelope &envelope, s64 now_us);
   void SendGamePackets(s64 now_us);
   void TakeData(const QByteArray &frame, s64 now_us);
+  void StartWork(int bits, s64 now_us);
   bool Leader() const { return seat == 0; }
 
   Load &load;
@@ -199,6 +203,7 @@ public:
   Settings settings;
   Totals totals;
   s64 started_us = 0;
+  int max_work_bits = 0;
 
 private:
   void connect_timer() {
@@ -280,6 +285,12 @@ private:
          static_cast<double>(totals.welcome_ms.Percentile(0.5))},
         {"welcome_ms_p99",
          static_cast<double>(totals.welcome_ms.Percentile(0.99))},
+        {"work_ms_p50", static_cast<double>(totals.work_ms.Percentile(0.5))},
+        {"work_ms_p99", static_cast<double>(totals.work_ms.Percentile(0.99))},
+        {"accounts_worked", static_cast<double>(totals.work_ms.values.size())},
+        {"solve_ms_p50", static_cast<double>(totals.solve_ms.Percentile(0.5))},
+        {"solve_ms_p99", static_cast<double>(totals.solve_ms.Percentile(0.99))},
+        {"work_bits_max", max_work_bits},
         {"playing_ms_p50",
          static_cast<double>(totals.playing_ms.Percentile(0.5))},
         {"playing_ms_p99",
@@ -303,6 +314,11 @@ private:
   s64 last_report_us = NowUs();
   quint64 last_sent = 0;
   quint64 last_received = 0;
+
+public:
+  // Hosted: the new accounts' work, off the games' thread (each real game does
+  // its own on its own PC). Destroyed before the games: it waits for its work.
+  QThreadPool work_pool;
 };
 
 Game::Game(Load &load, int index, int team, int seat)
@@ -377,7 +393,7 @@ void Game::Tick(s64 now_us) {
   }
   const s64 now_ms = now_us / 1000;
   if (state == State::Linking) {
-    if (now_us >= next_hello_us) {
+    if (now_us >= next_hello_us && !auth.Working()) {
       next_hello_us = now_us + 1'000'000;
       SendHello();
     }
@@ -592,11 +608,42 @@ void Game::SendHello() {
     hello.cookie =
         QByteArray(reinterpret_cast<const char *>(auth.CookieToEcho().data()),
                    LinkAuth::CookieBytes);
+    hello.work = auth.WorkToSend();
   }
   hello.nonce =
       QByteArray(reinterpret_cast<const char *>(auth.NonceToSend().data()),
                  LinkAuth::NonceBytes);
   Send(ServerLink::Encode(hello));
+}
+
+// Hosted: a new account (net_link.h, as the game does it): the work on the
+// pool, then the hello with it at once, under a new nonce.
+void Game::StartWork(int bits, s64 now_us) {
+  std::random_device device;
+  LinkAuth::Nonce fresh;
+  for (u8 &byte : fresh) {
+    byte = static_cast<u8>(device());
+  }
+  if (!auth.WorkAsked(bits, fresh)) {
+    return;
+  }
+  const LinkAuth::Cookie cookie = auth.CookieToEcho();
+  load.work_pool.start([this, cookie, bits, now_us, id = name] {
+    const s64 began_us = NowUs();
+    const auto found = LinkAuth::SolveWork(cookie, id, bits, 0, ~u64{0});
+    const s64 solve_ms = (NowUs() - began_us) / 1000;
+    QMetaObject::invokeMethod(
+        &socket,
+        [this, cookie, bits, now_us, found, solve_ms] {
+          auth.TakeWork(cookie, bits, found);
+          load.totals.work_ms.Add((NowUs() - now_us) / 1000);
+          load.totals.solve_ms.Add(solve_ms);
+          load.max_work_bits = std::max(load.max_work_bits, bits);
+          next_hello_us = NowUs() + 1'000'000;
+          SendHello();
+        },
+        Qt::QueuedConnection);
+  });
 }
 
 void Game::OnReadyRead() {
@@ -635,6 +682,12 @@ void Game::OnReadyRead() {
       }
     }
     switch (*kind) {
+    case ServerLink::Kind::Work:
+      if (const auto bits = ServerLink::DecodeWork(datagram);
+          bits && state == State::Linking) {
+        StartWork(*bits, now_us);
+      }
+      break;
     case ServerLink::Kind::Welcome:
       if (const auto welcome = ServerLink::DecodeWelcome(datagram)) {
         if (!welcome->accepted) {
@@ -775,6 +828,8 @@ int main(int argc, char **argv) {
       {"one-address",
        "every game from the server's loopback address (no spread)"},
       {"same-address", "games sharing each loopback address", "n", "0"},
+      {"work-threads",
+       "threads for the new accounts' work (hosted; 0: the cores)", "n", "0"},
   });
   parser.process(app);
   Settings settings;
@@ -793,6 +848,9 @@ int main(int argc, char **argv) {
   settings.spread = !parser.isSet("one-address");
   settings.same_address = parser.value("same-address").toInt();
   Load load{settings};
+  if (const int threads = parser.value("work-threads").toInt(); threads > 0) {
+    load.work_pool.setMaxThreadCount(threads);
+  }
   load.Run();
   return app.exec();
 }

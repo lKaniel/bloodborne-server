@@ -44,7 +44,8 @@ QByteArray ToQt(std::span<const std::uint8_t> bytes) {
 // linked id's virtual address.
 void LinkDatagrams(std::span<const std::uint8_t> input) {
   Hub hub;
-  hub.SetSignIn([](const QByteArray &online_id, const QByteArray &secret) {
+  hub.SetSignIn([](const QByteArray &online_id, const QByteArray &secret,
+                   bool) {
     if (secret.startsWith("later")) {
       return std::optional<SignInVerdict>{};
     }

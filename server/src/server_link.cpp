@@ -159,7 +159,7 @@ std::optional<Kind> KindOf(const QByteArray& datagram) {
         return std::nullopt;
     }
     const quint8 kind = static_cast<quint8>(datagram[8]);
-    if (kind < static_cast<quint8>(Kind::Hello) || kind > static_cast<quint8>(Kind::Cookie) ||
+    if (kind < static_cast<quint8>(Kind::Hello) || kind > static_cast<quint8>(Kind::Work) ||
         !Body(datagram, static_cast<Kind>(kind))) {
         return std::nullopt;
     }
@@ -174,22 +174,46 @@ QByteArray Encode(const Hello& hello) {
     PutText(out, hello.online_id);
     PutText(out, hello.build);
     PutText(out, hello.secret);
+    if (hello.work) {
+        Put(out, *hello.work);
+    }
     return out;
 }
 
-QByteArray EncodeCookie(const LinkAuth::Cookie& cookie) {
+QByteArray EncodeCookie(const LinkAuth::Cookie& cookie, int work_bits) {
     QByteArray out = Start(Kind::Cookie);
     out.append(reinterpret_cast<const char*>(cookie.data()), static_cast<qsizetype>(cookie.size()));
+    out.append(static_cast<char>(work_bits));
     return out;
 }
 
-std::optional<LinkAuth::Cookie> DecodeCookie(const QByteArray& datagram) {
+std::optional<LinkAuth::Cookie> DecodeCookie(const QByteArray& datagram, int* work_bits) {
     auto body = Body(datagram, Kind::Cookie);
     QByteArray bytes;
     if (!body || (bytes = body->Rest()).size() < static_cast<int>(LinkAuth::CookieBytes)) {
         return std::nullopt;
     }
+    if (work_bits) {
+        *work_bits = bytes.size() > static_cast<int>(LinkAuth::CookieBytes)
+                         ? static_cast<quint8>(bytes[LinkAuth::CookieBytes])
+                         : 0;
+    }
     return Array<LinkAuth::CookieBytes>(bytes);
+}
+
+QByteArray EncodeWork(int bits) {
+    QByteArray out = Start(Kind::Work);
+    out.append(static_cast<char>(bits));
+    return out;
+}
+
+std::optional<int> DecodeWork(const QByteArray& datagram) {
+    auto body = Body(datagram, Kind::Work);
+    quint8 bits = 0;
+    if (!body || !body->Get(bits)) {
+        return std::nullopt;
+    }
+    return bits;
 }
 
 QByteArray Encode(const Welcome& welcome) {
@@ -251,6 +275,9 @@ std::optional<Hello> DecodeHello(const QByteArray& datagram) {
     if (!rest.GetText(hello.online_id) || !rest.GetText(hello.build) ||
         !rest.GetText(hello.secret)) {
         return std::nullopt;
+    }
+    if (quint64 work = 0; rest.Get(work)) {
+        hello.work = work;
     }
     return hello;
 }
@@ -499,7 +526,8 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
         ++cookies_sent;
         result.sends.append({from,
                              EncodeCookie(LinkAuth::CookieFor(cookie_key, from.ipv4, from.port,
-                                                              now_ms / LinkAuth::CookieBucketMs)),
+                                                              now_ms / LinkAuth::CookieBucketMs),
+                                          signup_work),
                              true});
         return;
     }
@@ -546,9 +574,23 @@ void Hub::OnHello(const Endpoint& from, const QByteArray& datagram, qint64 now_m
         }
     }
     if (refusal.isEmpty() && sign_in) {
-        const std::optional<SignInVerdict> signed_in = sign_in(hello->online_id, hello->secret);
+        // One hash, before the password's: whether this hello may make an account.
+        const bool paid =
+            signup_work == 0 ||
+            (hello->work &&
+             LinkAuth::WorkDone(Array<LinkAuth::CookieBytes>(hello->cookie),
+                                hello->online_id.toStdString(), *hello->work, signup_work));
+        const std::optional<SignInVerdict> signed_in =
+            sign_in(hello->online_id, hello->secret, paid);
         if (!signed_in) {
             return; // still checking: the next hello hears
+        }
+        if (signed_in->work && !paid) {
+            ++work_asked;
+            QByteArray asked = EncodeWork(signup_work);
+            Append(asked, session.Seal(Span(asked)));
+            result.sends.append({from, asked, true});
+            return;
         }
         if (!signed_in->accepted) {
             refusal =

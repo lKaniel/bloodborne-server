@@ -117,6 +117,37 @@ int TheOperatorsBanList() {
 
 } // namespace
 
+// A new account's work: the base, 2 bits more for each doubling of the
+// accounts made in the last minute over the baseline, never past the cap.
+int SignupWorkRisesWithTheRate() {
+  Admission::SignupWork work{20, 26, 30};
+  qint64 now = 5000;
+  CHECK(work.Bits(now) == 20);
+  for (int index = 0; index < 59; ++index) {
+    work.Made(now);
+  }
+  CHECK(work.Bits(now) == 20); // under twice the baseline
+  work.Made(now);
+  CHECK(work.Bits(now) == 22); // 60 a minute
+  for (int index = 0; index < 60; ++index) {
+    work.Made(now + 30'000);
+  }
+  CHECK(work.Bits(now + 30'000) == 24); // 120
+  // The first 60 leave the minute.
+  CHECK(work.Bits(now + 60'000) == 22);
+  for (int index = 0; index < 10'000; ++index) {
+    work.Made(now + 60'000);
+  }
+  CHECK(work.Bits(now + 60'000) == 26); // the cap
+  CHECK(work.Bits(now + 119'000) == 26);
+  CHECK(work.Bits(now + 120'000) == 20); // a quiet minute: the base
+  CHECK(work.Bits(now + 1'000'000) == 20);
+  Admission::SignupWork none{0, 26, 30};
+  none.Made(now);
+  CHECK(none.Bits(now) == 0);
+  return 0;
+}
+
 int main() {
   int failed = 0;
   failed |= HellosFromOneAddressAreLimited();
@@ -124,6 +155,7 @@ int main() {
   failed |= AFloodingLinkIsDroppedThenBanned();
   failed |= ABigLinkWithinItsRateIsFine();
   failed |= TheOperatorsBanList();
+  failed |= SignupWorkRisesWithTheRate();
   if (failed == 0) {
     std::cout << "admission: all checks passed\n";
   }
