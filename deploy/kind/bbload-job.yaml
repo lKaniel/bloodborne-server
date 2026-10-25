@@ -1,0 +1,18 @@
+# bbload (server/loadtest) on the shard's node network: each simulated game from its own
+# loopback address (127.x.y.z), as players from their homes. smoke.sh fills TEAMS and SECONDS.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bbload
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      hostNetwork: true
+      containers:
+        - name: bbload
+          image: yharnam-bbload:local
+          imagePullPolicy: Never
+          args: [--server, 127.0.0.1, --port, "31314", --teams, "TEAMS", --team-size, "3",
+                 --seconds, "SECONDS", --ramp-ms, "100", --tag, kind, --json]

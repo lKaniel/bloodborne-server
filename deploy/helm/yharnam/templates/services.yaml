@@ -1,0 +1,67 @@
+{{- $shard := include "yharnam.shard" . -}}
+{{- $p := .Values.shards.ports -}}
+# Headless: the StatefulSet's own (stable DNS names inside the cluster).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $shard }}
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "yharnam.shardSelector" . | nindent 4 }}
+  ports:
+    - { name: link, port: {{ $p.link }}, protocol: UDP }
+    - { name: backend, port: {{ $p.backend }}, protocol: TCP }
+    - { name: webapi, port: {{ $p.webapi }}, protocol: TCP }
+{{- range $i, $_ := until (int .Values.shards.count) }}
+{{- $per := dict }}
+{{- if lt $i (len $.Values.shards.loadBalancer.perShard) }}{{ $per = index $.Values.shards.loadBalancer.perShard $i }}{{ end }}
+---
+# Shard {{ $i }}: its own endpoint (a player's link stays with one shard for its whole session).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $shard }}-{{ $i }}
+  labels:
+    {{- include "yharnam.labels" $ | nindent 4 }}
+    yharnam.dev/shard: {{ $i | quote }}
+  {{- $ann := merge (deepCopy ($per.annotations | default dict)) $.Values.shards.loadBalancer.annotations }}
+  {{- if and (eq $.Values.shards.expose "loadBalancer") $ann }}
+  annotations:
+    {{- toYaml $ann | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if eq $.Values.shards.expose "loadBalancer" }}
+  type: LoadBalancer
+  # Local: the node that takes a datagram hands it to the pod as it came, the player's address
+  # and port kept (Cluster would SNAT it to a node's address: every player one address, and the
+  # per-address limits and cookie would refuse all but a few). Nodes without the pod fail the
+  # load balancer's health check and get no traffic.
+  externalTrafficPolicy: Local
+  {{- with $per.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with $.Values.shards.loadBalancer.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- else }}
+  # Host modes: players reach the node directly; this Service is for the TLS ingress and probes.
+  type: ClusterIP
+  {{- end }}
+  selector:
+    {{- include "yharnam.shardSelector" $ | nindent 4 }}
+    statefulset.kubernetes.io/pod-name: {{ $shard }}-{{ $i }}
+  ports:
+    - { name: link, port: {{ $p.link }}, targetPort: link, protocol: UDP }
+    - { name: backend, port: {{ $p.backend }}, targetPort: backend, protocol: TCP }
+    - { name: webapi, port: {{ $p.webapi }}, targetPort: webapi, protocol: TCP }
+    {{- if and (eq $.Values.tls.mode "caddy") (eq $.Values.shards.expose "loadBalancer") }}
+    {{- range $.Values.tls.caddy.sites }}
+    - { name: tls-{{ .port }}, port: {{ .port }}, targetPort: {{ .port }}, protocol: TCP }
+    {{- end }}
+    {{- end }}
+{{- end }}

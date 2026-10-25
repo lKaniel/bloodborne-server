@@ -62,12 +62,28 @@ ASIDE=$DATA_DIR/restore-aside/full-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$ASIDE"
 shopt -s dotglob
 for entry in "$DATA_DIR"/*; do
-    [[ $(basename "$entry") == restore-aside ]] && continue
+    # lost+found: a volume's root (cloud block storage) is not ours to move.
+    case $(basename "$entry") in restore-aside | lost+found) continue ;; esac
     mv "$entry" "$ASIDE/"
 done
 shopt -u dotglob
 log "old data kept at $ASIDE"
-cp -a "$STAGE"/. "$DATA_DIR"/
+# The link key is the server's identity, not its state: a backup without one (taken after it
+# was lost) must not cost the key the server still has.
+keep_key=""
+if [[ ! -f $STAGE/link_key.bin ]]; then
+    if [[ -f $ASIDE/link_key.bin ]]; then
+        keep_key=$ASIDE/link_key.bin
+        log "WARNING: the backup has no link_key.bin; keeping the current one"
+    else
+        log "WARNING: neither the backup nor the data folder has link_key.bin: shadNet will make a" \
+            "new key and every game's pinned key will be refused. Restore an older snapshot that has it."
+    fi
+fi
+# tar, not cp -a: DATA_DIR itself may be a mount point the restoring user cannot touch (a
+# Kubernetes volume, restored as the server's user); --no-overwrite-dir leaves its metadata.
+tar -C "$STAGE" -cf - . | tar -C "$DATA_DIR" --no-overwrite-dir -xpf -
+if [[ -n $keep_key ]]; then (umask 077 && cp "$keep_key" "$DATA_DIR/link_key.bin"); fi
 rm -f "$DATA_DIR/MANIFEST.sha256" "$DATA_DIR/BACKUP_TIME" "$DATA_DIR/postgres.dump"
 # The sqlite copies are self-contained; drop any WAL leftovers from the old folder.
 rm -f "$DATA_DIR"/db/*.db-wal "$DATA_DIR"/db/*.db-shm

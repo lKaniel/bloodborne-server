@@ -1,0 +1,10 @@
+# Any managed Kubernetes with UDP load balancers (GKE shown; EKS/AKS in docs/DEPLOY.md).
+region: us-central
+shards:
+  count: 2
+  expose: loadBalancer
+  loadBalancer:
+    annotations:
+      # GKE: a passthrough Network LB (keeps the client's address; UDP and TCP on one IP).
+      cloud.google.com/l4-rbs: "enabled"
+  persistence: { storageClass: premium-rwo, size: 20Gi }

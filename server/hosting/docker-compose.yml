@@ -1,4 +1,4 @@
-# shadNet hosted layout. UNTESTED end to end (config validated with `docker compose config`).
+# shadNet hosted layout. The image is tested (docs/DEPLOY.md); this file only with `docker compose config`.
 #   cp env.example .env && edit
 #   docker compose up -d                       # shadnet + backup
 #   docker compose --profile postgres up -d    # + Postgres (nothing in shadNet uses it yet)
@@ -8,8 +8,8 @@ name: shadnet
 services:
   shadnet:
     build:
-      context: ..                 # server/
-      dockerfile: hosting/Dockerfile
+      context: ../..              # the repository root (Dockerfile.dockerignore)
+      dockerfile: server/hosting/Dockerfile
     image: shadnet:local
     # Host networking: UDP 31314 sees the players' real addresses/ports (STUN, relay) and the
     # relay skips Docker's NAT. Open only 31313/tcp, 31314/udp, 31315/tcp, 20443/tcp in the firewall.
@@ -26,7 +26,7 @@ services:
       driver: json-file
       options: { max-size: "50m", max-file: "5" }
     healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/31315' || exit 1"]
+      test: ["CMD", "/opt/shadnet/healthcheck.sh"]   # the admin socket's stats (the image's own)
       interval: 30s
       timeout: 5s
       retries: 3

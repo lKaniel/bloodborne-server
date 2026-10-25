@@ -1,0 +1,225 @@
+{{- if .Values.directory.enabled }}
+{{- $name := printf "%s-directory" (include "yharnam.fullname" .) -}}
+{{- $redis := printf "%s-redis" (include "yharnam.fullname" .) -}}
+{{- if not .Values.directory.existingSecret }}
+{{- $old := lookup "v1" "Secret" .Release.Namespace $name }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  # The shards' token to the directory, and Redis' password; made once, kept on upgrades.
+  token: {{ if $old }}{{ index $old.data "token" }}{{ else }}{{ randAlphaNum 40 | b64enc }}{{ end }}
+  redis-password: {{ if $old }}{{ index $old.data "redis-password" }}{{ else }}{{ randAlphaNum 40 | b64enc }}{{ end }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+    app.kubernetes.io/name: directory
+spec:
+  replicas: {{ .Values.directory.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: directory
+  template:
+    metadata:
+      labels:
+        {{- include "yharnam.labels" . | nindent 8 }}
+        app.kubernetes.io/name: directory
+    spec:
+      serviceAccountName: {{ include "yharnam.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: {{ .Release.Name }}
+                    app.kubernetes.io/name: directory
+      containers:
+        - name: directory
+          image: {{ include "yharnam.image" (dict "image" .Values.directory.image "default" "latest") }}
+          imagePullPolicy: {{ .Values.directory.image.pullPolicy }}
+          {{- with .Values.directory.command }}
+          command: {{ toJson . }}
+          {{- end }}
+          {{- with .Values.directory.args }}
+          args: {{ toJson . }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - { name: PORT, value: {{ .Values.directory.port | quote }} }
+            - { name: REGION, value: {{ .Values.region | quote }} }
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yharnam.directorySecret" . }}, key: redis-password } }
+            - name: REDIS_URL
+              value: redis://:$(REDIS_PASSWORD)@{{ $redis }}:6379/0
+            - name: DIRECTORY_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ include "yharnam.directorySecret" . }}, key: token } }
+            {{- with .Values.directory.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - { name: http, containerPort: {{ .Values.directory.port }}, protocol: TCP }
+          readinessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.directory.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.directory.service.type }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: directory
+  ports:
+    - { name: http, port: {{ .Values.directory.port }}, targetPort: http, protocol: TCP }
+---
+{{- if .Values.directory.replicas | int | lt 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: directory
+---
+{{- end }}
+{{- with .Values.directory.ingress }}
+{{- if .enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "yharnam.labels" $ | nindent 4 }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .tlsSecretName }}
+  tls:
+    - hosts: [{{ .host | quote }}]
+      secretName: {{ .tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: {{ $name }}, port: { name: http } } }
+---
+{{- end }}
+{{- end }}
+# Redis for the directory: presence and load, ephemeral by design (no persistence).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $redis }}
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+    app.kubernetes.io/name: redis
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        {{- include "yharnam.labels" . | nindent 8 }}
+        app.kubernetes.io/name: redis
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: redis
+          image: {{ .Values.directory.redis.image }}
+          args:
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            - --maxmemory
+            - {{ .Values.directory.redis.maxmemory | quote }}
+            - --maxmemory-policy
+            - volatile-lru
+            - --requirepass
+            - $(REDIS_PASSWORD)
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yharnam.directorySecret" . }}, key: redis-password } }
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - { name: redis, containerPort: 6379, protocol: TCP }
+          readinessProbe:
+            tcpSocket: { port: redis }
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.directory.redis.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $redis }}
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: redis
+  ports:
+    - { name: redis, port: 6379, targetPort: redis, protocol: TCP }
+{{- end }}

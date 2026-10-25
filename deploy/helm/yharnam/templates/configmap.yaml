@@ -1,0 +1,38 @@
+{{- include "yharnam.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yharnam.fullname" . }}-config
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+data:
+  # Copied over /data/shadnet.cfg at every start (entrypoint.sh). Same for every shard.
+  shadnet.cfg: |
+    [General]
+    Host=0.0.0.0
+    TcpLocalOnly=true
+    UnsecuredPort=31313
+    MatchingUdpPort={{ .Values.shards.ports.link }}
+    WebApiPort={{ .Values.shards.ports.webapi }}
+    BackendPort={{ .Values.shards.ports.backend }}
+    BackendStore=db/backend.db
+    BackendFolder=backend
+    BloodborneWorldPath=bloodborne_worlds
+    LinkKeyFile=link_key.bin
+    {{- $owned := list "Host" "TcpLocalOnly" "UnsecuredPort" "MatchingUdpPort" "WebApiPort" "BackendPort" "BackendStore" "BackendFolder" "BloodborneWorldPath" "LinkKeyFile" }}
+    {{- range $k, $v := merge (deepCopy .Values.extraConfig) .Values.config }}
+    {{- if not (has $k $owned) }}
+    {{ $k }}={{ $v }}
+    {{- end }}
+    {{- end }}
+{{- with .Values.backendFiles }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yharnam.fullname" $ }}-backend-files
+  labels:
+    {{- include "yharnam.labels" $ | nindent 4 }}
+data:
+  {{- toYaml . | nindent 2 }}
+{{- end }}

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: yharnam
+description: >-
+  shadNet (Yharnam Together's hosted co-op server) for one region: N shard pods, each with its
+  own public UDP endpoint, link key and volume; optional TLS front, restic backups, and the
+  shard directory with Redis.
+type: application
+version: 0.1.0
+appVersion: "main"   # the image tag when image.tag is empty; pin a sha-<commit> tag in production
+kubeVersion: ">=1.26.0-0"
+home: https://github.com/lkaniel/bloodborne-server
+keywords: [shadnet, game-server, udp]

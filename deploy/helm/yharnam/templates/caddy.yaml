@@ -1,0 +1,26 @@
+{{- if eq .Values.tls.mode "caddy" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yharnam.fullname" . }}-caddy
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+data:
+  # SITE_ADDRESS: this shard's public DNS name (the sidecar's command picks it by ordinal).
+  # Certificates by ACME TLS-ALPN on the first site's port, kept on the shard's volume (caddy/).
+  Caddyfile: |
+    {
+      admin off
+      {{- if .Values.tls.caddy.email }}
+      email {$ACME_EMAIL}
+      {{- end }}
+    }
+    {{- range .Values.tls.caddy.sites }}
+    {$SITE_ADDRESS}:{{ .port }} {
+      {{- if $.Values.tls.caddy.internalCA }}
+      tls internal
+      {{- end }}
+      reverse_proxy 127.0.0.1:{{ .to }}
+    }
+    {{- end }}
+{{- end }}

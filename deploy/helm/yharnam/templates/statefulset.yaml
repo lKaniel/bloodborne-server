@@ -1,0 +1,297 @@
+{{- $shard := include "yharnam.shard" . -}}
+{{- $host := include "yharnam.hostMode" . -}}
+{{- $p := .Values.shards.ports -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $shard }}
+  labels:
+    {{- include "yharnam.shardLabels" . | nindent 4 }}
+spec:
+  serviceName: {{ $shard }}
+  replicas: {{ .Values.shards.count }}
+  podManagementPolicy: {{ .Values.shards.podManagementPolicy }}
+  updateStrategy:
+    type: {{ .Values.shards.updateStrategy }}
+  {{- if .Values.shards.persistence.retain }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "yharnam.shardSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "yharnam.shardLabels" . | nindent 8 }}
+        {{- with .Values.shards.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.shards.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "yharnam.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if eq .Values.shards.expose "hostNetwork" }}
+      # The node's own network: the players' addresses and ports reach shadNet untouched.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- with .Values.shards.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.shards.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.shards.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.shards.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- if .Values.shards.affinity }}
+        {{- toYaml .Values.shards.affinity | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          {{- if $host }}
+          # Host ports: two shards on one node would fight over 31314.
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  {{- include "yharnam.shardSelector" . | nindent 18 }}
+          {{- else }}
+          # One link thread a shard wants a core of its own: spread them.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "yharnam.shardSelector" . | nindent 20 }}
+          {{- end }}
+        {{- end }}
+      {{- if and (not (kindIs "invalid" .Values.restore.shard)) .Values.restore.id }}
+      initContainers:
+        - name: restore
+          image: {{ include "yharnam.image" (dict "image" .Values.backup.image "default" .Chart.AppVersion) }}
+          imagePullPolicy: {{ .Values.backup.image.pullPolicy }}
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              i=${POD_NAME##*-}
+              [ "$i" = "$RESTORE_SHARD" ] || exit 0
+              mark=/data/restore-aside/.restored-$RESTORE_ID
+              if [ -f "$mark" ]; then echo "restore $RESTORE_ID: done before"; exit 0; fi
+              export RESTIC_REPOSITORY=$RESTIC_BASE/$REGION-$i
+              restore.sh restic "$RESTORE_SNAPSHOT"
+              mkdir -p /data/restore-aside && touch "$mark"
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: RESTORE_SHARD, value: {{ .Values.restore.shard | quote }} }
+            - { name: RESTORE_ID, value: {{ .Values.restore.id | quote }} }
+            - { name: RESTORE_SNAPSHOT, value: {{ .Values.restore.snapshot | quote }} }
+            {{- with .Values.restore.only }}
+            - { name: RESTORE_ONLY, value: {{ . | quote }} }
+            {{- end }}
+            - { name: RESTIC_BASE, value: {{ trimSuffix "/" .Values.backup.repository | quote }} }
+            - { name: REGION, value: {{ .Values.region | quote }} }
+            - { name: DATA_DIR, value: /data }
+            - { name: HOME, value: /tmp }
+            - { name: RESTIC_CACHE_DIR, value: /tmp/restic-cache }
+            {{- with .Values.backup.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ required "restore needs backup.existingSecret" .Values.backup.existingSecret }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+            {{- with .Values.backup.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      {{- end }}
+      containers:
+        - name: shadnet
+          image: {{ include "yharnam.image" (dict "image" .Values.image "default" .Chart.AppVersion) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: SHADNET_HOME
+              value: /data
+            - name: HOME
+              value: /data
+            - name: SHADNET_CONFIG
+              value: /etc/shadnet/shadnet.cfg
+            {{- if .Values.backendFiles }}
+            - name: SHADNET_BACKEND_FILES
+              value: /etc/shadnet/backend
+            {{- end }}
+            {{- if .Values.shards.linkKey.existingSecret }}
+            - name: SHADNET_LINK_KEYS
+              value: /etc/shadnet/keys
+            {{- end }}
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            {{- if $host }}
+            - name: HOST_IP
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            {{- end }}
+            - name: SHARD_NAME_PREFIX
+              value: {{ .Values.region | quote }}
+            - name: SHARD_PUBLIC_ADDRESSES
+              value: {{ join "," .Values.shards.publicAddresses | quote }}
+            {{- if .Values.directory.enabled }}
+            - name: DIRECTORY_URL
+              value: {{ printf "http://%s-directory:%v" (include "yharnam.fullname" .) .Values.directory.port | quote }}
+            - name: DIRECTORY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "yharnam.directorySecret" . }}
+                  key: token
+            {{- end }}
+            {{- with .Values.shards.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: link
+              containerPort: {{ $p.link }}
+              protocol: UDP
+              {{- if eq .Values.shards.expose "hostPort" }}
+              hostPort: {{ $p.link }}
+              {{- end }}
+            - name: backend
+              containerPort: {{ $p.backend }}
+              protocol: TCP
+              {{- if eq .Values.shards.expose "hostPort" }}
+              hostPort: {{ $p.backend }}
+              {{- end }}
+            - name: webapi
+              containerPort: {{ $p.webapi }}
+              protocol: TCP
+              {{- if eq .Values.shards.expose "hostPort" }}
+              hostPort: {{ $p.webapi }}
+              {{- end }}
+          startupProbe:
+            exec: { command: [/opt/shadnet/healthcheck.sh] }
+            {{- toYaml .Values.shards.probes.startup | nindent 12 }}
+          livenessProbe:
+            exec: { command: [/opt/shadnet/healthcheck.sh] }
+            {{- toYaml .Values.shards.probes.liveness | nindent 12 }}
+          readinessProbe:
+            exec: { command: [/opt/shadnet/healthcheck.sh] }
+            {{- toYaml .Values.shards.probes.readiness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.shards.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+            - { name: config, mountPath: /etc/shadnet/shadnet.cfg, subPath: shadnet.cfg, readOnly: true }
+            {{- if .Values.backendFiles }}
+            - { name: backend-files, mountPath: /etc/shadnet/backend, readOnly: true }
+            {{- end }}
+            {{- if .Values.shards.linkKey.existingSecret }}
+            - { name: link-keys, mountPath: /etc/shadnet/keys, readOnly: true }
+            {{- end }}
+        {{- if eq .Values.tls.mode "caddy" }}
+        - name: caddy
+          image: {{ .Values.tls.caddy.image }}
+          # The site is this shard's public name (SHARD_PUBLIC_ADDRESSES by ordinal).
+          command:
+            - sh
+            - -c
+            - >-
+              i=${POD_NAME##*-};
+              export SITE_ADDRESS=$(printf '%s' "$SHARD_PUBLIC_ADDRESSES" | cut -d, -f$((i + 1)));
+              exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: SHARD_PUBLIC_ADDRESSES
+              value: {{ join "," .Values.shards.publicAddresses | quote }}
+            - name: ACME_EMAIL
+              value: {{ .Values.tls.caddy.email | quote }}
+            - name: XDG_DATA_HOME
+              value: /caddy/data
+            - name: XDG_CONFIG_HOME
+              value: /caddy/config
+          securityContext:
+            # Ports below 1024 need the image's file capability, which no_new_privs would block.
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL], add: [NET_BIND_SERVICE] }
+          ports:
+            {{- range .Values.tls.caddy.sites }}
+            - name: tls-{{ .port }}
+              containerPort: {{ .port }}
+              protocol: TCP
+              {{- if eq $.Values.shards.expose "hostPort" }}
+              hostPort: {{ .port }}
+              {{- end }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.tls.caddy.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /caddy, subPath: caddy }
+            - { name: caddyfile, mountPath: /etc/caddy, readOnly: true }
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+        {{- if and (not (kindIs "invalid" .Values.restore.shard)) .Values.restore.id }}
+        {{- with .Values.backup.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- end }}
+        - name: config
+          configMap:
+            name: {{ include "yharnam.fullname" . }}-config
+        {{- if .Values.backendFiles }}
+        - name: backend-files
+          configMap:
+            name: {{ include "yharnam.fullname" . }}-backend-files
+        {{- end }}
+        {{- if .Values.shards.linkKey.existingSecret }}
+        - name: link-keys
+          secret:
+            secretName: {{ .Values.shards.linkKey.existingSecret }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if eq .Values.tls.mode "caddy" }}
+        - name: caddyfile
+          configMap:
+            name: {{ include "yharnam.fullname" . }}-caddy
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "yharnam.shardSelector" . | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.shards.persistence.accessModes | nindent 10 }}
+        {{- with .Values.shards.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.shards.persistence.size }}

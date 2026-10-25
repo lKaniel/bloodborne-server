@@ -1,0 +1,14 @@
+# US East (Hetzner Ashburn).
+region: us-east
+shards:
+  count: 1
+  expose: hostNetwork
+  nodeSelector: { yharnam.dev/role: shard }
+  # Terraform sets publicAddresses, the image tag and persistence (yharnam-local: a static
+  # volume a shard on its Hetzner volume, deploy/terraform/modules/region/helm.tf).
+backup:
+  enabled: true
+  repository: s3:https://s3.us-east-005.backblazeb2.com/yharnam-backups
+  existingSecret: yharnam-backup
+backendFiles:
+  login_message.txt: "Yharnam Together - US East"

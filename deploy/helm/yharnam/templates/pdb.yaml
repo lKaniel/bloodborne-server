@@ -1,0 +1,15 @@
+{{- if .Values.shards.pdb.enabled }}
+# A shard's restart drops every game on it: no voluntary eviction unless allowed here
+# (docs/DEPLOY.md, "Upgrades").
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "yharnam.shard" . }}
+  labels:
+    {{- include "yharnam.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.shards.pdb.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "yharnam.shardSelector" . | nindent 6 }}
+{{- end }}

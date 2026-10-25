@@ -1,0 +1,128 @@
+# The hosted server's images and deployment files (docs/DEPLOY.md). Optional: nothing deploys
+# from here. On a push it builds server/hosting/Dockerfile (shadNet) and Dockerfile.backup and
+# pushes them to GHCR as sha-<commit> and the branch's name; on a pull request it only builds.
+# Every run lints the Helm chart (each region's values) and checks the Terraform.
+name: Deploy files
+
+on:
+  push:
+    branches: [main, hosted-server]
+    paths:
+      - server/**
+      - backend/ss_info_template.xml
+      - deploy/**
+      - .github/workflows/deploy.yml
+  pull_request:
+    paths:
+      - server/**
+      - backend/ss_info_template.xml
+      - deploy/**
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - name: helm lint and template, every values file
+        run: |
+          set -euo pipefail
+          chart=deploy/helm/yharnam
+          helm lint "$chart"
+          helm template t "$chart" > /dev/null
+          for v in "$chart"/values/*.yaml; do
+            helm lint "$chart" -f "$v"
+            helm template t "$chart" -f "$v" --set shards.publicAddresses='{a.example,b.example}' > /dev/null
+          done
+          # Every optional part on at once.
+          helm template t "$chart" -f "$chart/values/eu.yaml" --set tls.mode=caddy \
+            --set directory.enabled=true --set shards.linkKey.existingSecret=keys > /dev/null
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: fmt and validate
+        working-directory: deploy/terraform
+        run: |
+          set -euo pipefail
+          terraform fmt -recursive -check -diff .
+          terraform -chdir=root init -backend=false -input=false
+          terraform -chdir=root validate
+
+  image:
+    runs-on: ubuntu-latest
+    needs: [chart, terraform]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: protobuf submodule only
+        run: git submodule update --init --depth 1 server/externals/protobuf
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: names
+        run: |
+          owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          echo "shadnet=ghcr.io/$owner/yharnam-shadnet" >> "$GITHUB_OUTPUT"
+          echo "backup=ghcr.io/$owner/yharnam-backup" >> "$GITHUB_OUTPUT"
+          echo "sha=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "branch=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+      - name: shadNet image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/hosting/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: |
+            ${{ steps.names.outputs.shadnet }}:${{ steps.names.outputs.sha }}
+            ${{ steps.names.outputs.shadnet }}:${{ steps.names.outputs.branch }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=shadnet
+          cache-to: type=gha,mode=max,scope=shadnet
+      - name: backup image
+        uses: docker/build-push-action@v6
+        with:
+          context: server/hosting
+          file: server/hosting/Dockerfile.backup
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ steps.names.outputs.backup }}:${{ steps.names.outputs.sha }}
+            ${{ steps.names.outputs.backup }}:${{ steps.names.outputs.branch }}
+          cache-from: type=gha,scope=backup
+          cache-to: type=gha,mode=max,scope=backup
+      - name: smoke test (starts, makes its link key, answers the admin socket)
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke ${{ steps.names.outputs.shadnet }}:${{ steps.names.outputs.sha }}
+          for i in $(seq 1 30); do
+            docker exec smoke shadnet --admin stats >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec smoke ls -l /data/link_key.bin
+          docker exec smoke shadnet --admin key
+          docker logs smoke 2>&1 | tail -20
+          docker rm -f smoke
