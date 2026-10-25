@@ -47,6 +47,8 @@ DETACHED = getattr(subprocess, 'DETACHED_PROCESS', 0) | getattr(subprocess, 'CRE
 # settings: the team is made in the game's team screen (phase 6). `role` 'host' runs the co-op server.
 DEFAULTS = {'game': '', 'update': '', 'role': 'guest', 'host_ip': '', 'account': '', 'password': '',
             'p2p_port': 'auto', 'harder': 'off', 'prepared': '',
+            # '1': teammates are drawn without the blue phantom glow, on this player's screen only.
+            'hide_glow': '',
             # '1' once the player pressed Done in the launcher's co-op settings (they open by themselves until then).
             'confirmed': '',
             # The PC the player id was made on (this_machine()): a copied install makes its own id.
@@ -60,6 +62,8 @@ HARDER_ON = '3,1.5,3'  # the kit's harder enemies: HP, damage and poise multipli
 HARDER_BIT, HARDER_MUCH = '1.5,1.25,1.5', '5,2,5'
 # What the game takes for each multiplier (ParseHarderEnemies in the emulator); all 1 is the normal game.
 HARDER_LOWEST, HARDER_HIGHEST = 1.0, 10.0
+# The switch for 'hide_glow' (Kaniel 2026-10-25), in every launcher language.
+NO_GLOW_TEXT = 'Show teammates without the blue phantom glow (on your screen only)'
 
 
 # --- answers ----------------------------------------------------------------------------------
@@ -1140,10 +1144,13 @@ def game_environment(env, settings, install, root):
     else:
         env.pop('BB_FPS_LIMIT', None)
     for key in ('SHADPS4_P2P_PORT', 'SHADPS4_BLOODBORNE_HARDER_ENEMIES', 'SHADPS4_BLOODBORNE_PARTY_DEATH',
-                'BB_COMMUNITY_SERVER', 'SHADPS4_BLOODBORNE_HOST_RULES'):
+                'BB_COMMUNITY_SERVER', 'SHADPS4_BLOODBORNE_HOST_RULES',
+                'SHADPS4_BLOODBORNE_NO_PHANTOM_GLOW'):
         env.pop(key, None)
     if (rules := host_rules_value(settings)) != 'off':
         env['SHADPS4_BLOODBORNE_HOST_RULES'] = rules
+    if settings.get('hide_glow') == '1':
+        env['SHADPS4_BLOODBORNE_NO_PHANTOM_GLOW'] = '1'
     port = str(settings.get('p2p_port', 'auto'))
     if port not in ('auto', '', '51610', '51611'):
         env['SHADPS4_P2P_PORT'] = port

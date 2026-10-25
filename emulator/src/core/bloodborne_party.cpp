@@ -3159,6 +3159,25 @@ bool IsParamOfType(std::span<const u8> param, std::string_view type) {
            param[0x0C + type.size()] == 0;
 }
 
+std::optional<s32> RemovePhantomGlow(std::span<u8> sp_effect_vfx_param) {
+    if (!IsParamOfType(sp_effect_vfx_param, "SP_EFFECT_VFX_PARAM_ST")) {
+        return std::nullopt;
+    }
+    const auto row = FindParamRow(sp_effect_vfx_param, PhantomGlowVfxRow);
+    if (!row || *row > sp_effect_vfx_param.size() ||
+        sp_effect_vfx_param.size() - *row < SpEffectVfxMidstSfxOffset + sizeof(s32)) {
+        return std::nullopt;
+    }
+    u8* const field = sp_effect_vfx_param.data() + *row + SpEffectVfxMidstSfxOffset;
+    s32 before = 0;
+    std::memcpy(&before, field, sizeof(before));
+    if (before == NoSfx) {
+        return std::nullopt;
+    }
+    std::memcpy(field, &NoSfx, sizeof(NoSfx));
+    return before;
+}
+
 std::optional<u64> FindParamRow(std::span<const u8> param, s32 id) {
     if (param.size() < 0x40) {
         return std::nullopt;
@@ -5144,6 +5163,26 @@ std::string DescribeEffectChanges(std::vector<s32> before, std::vector<s32> afte
         text += fmt::format("{}{}{}", text.empty() ? "" : " ", sign, effect);
     }
     return text;
+}
+
+std::optional<std::vector<u32>> ParseAutoplayPath(std::string_view text) {
+    std::vector<u32> path;
+    while (true) {
+        const size_t end = std::min(text.find('>'), text.size());
+        const std::string_view part = text.substr(0, end);
+        u32 offset = 0;
+        const auto [at, error] =
+            std::from_chars(part.data(), part.data() + part.size(), offset, 16);
+        if (part.empty() || error != std::errc{} || at != part.data() + part.size() ||
+            offset > 0x2000) {
+            return std::nullopt;
+        }
+        path.push_back(offset);
+        if (end == text.size()) {
+            return path;
+        }
+        text.remove_prefix(end + 1);
+    }
 }
 
 std::optional<bool> CompareAutoplay(s64 value, std::string_view op, s64 limit) {
