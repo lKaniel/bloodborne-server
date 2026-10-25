@@ -18,6 +18,7 @@
 #include "client_session.h"
 #include "coop/rpc_tunnel.h"
 #include "database.h"
+#include "lobby_friends_db.h"
 #include "server_link.h"
 
 // shadNet's UDP port: the games' link (server_link.h), which relays their frames and carries
@@ -90,6 +91,8 @@ private:
     QTimer* m_worldTimer;
     QElapsedTimer m_clock;
     Database m_db;
+    // Amanises 2026-10-25: the team lobby's friends, in m_db (shadNet's friend table).
+    BloodborneWorld::DatabaseFriendBook m_friends{m_db, m_shared};
     quint16 m_tcpPort;
     QHash<QByteArray, QByteArray> m_signedIn; // player id -> its secret's hash, once signed in
     // Hosted: who may come in (admission.h), the sign-in thread and its checks under way, the

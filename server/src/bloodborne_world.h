@@ -33,6 +33,7 @@
 #include "coop/team_lobby.h"
 #include "coop/trade.h"
 #include "coop/world_log.h"
+#include "lobby_friends.h"
 #include "server_link.h"
 
 namespace BloodborneWorld {
@@ -174,6 +175,17 @@ public:
     explicit Service(QString folder, qint64 heartbeat_ms = 1000, int compact_records = 200,
                      qint64 compact_ms = 30'000);
 
+    // A public server must not trust the member field carried by a client after login. Private
+    // unit tests and old embedded uses keep their historical synthetic ids unless this is enabled.
+    void RequireAuthenticatedIdentity() {
+        require_authenticated_identity = true;
+    }
+    // Amanises 2026-10-25: where the lobby's friends are kept (shadNet's database); none: the
+    // lobby refuses friend requests and searches. Not owned; it outlives the service.
+    void SetFriendBook(FriendBook* book) {
+        friend_book = book;
+    }
+
     struct Send {
         ServerLink::Endpoint to;
         QByteArray body; // a Coop datagram's body
@@ -208,6 +220,9 @@ public:
     QString VisitingOf(const ServerLink::Endpoint& link) const;
     // The party a link's game said in its hello, empty before one (phase 7: the hub's teams).
     QString PartyOf(const ServerLink::Endpoint& link) const;
+    // Amanises 2026-10-25: how long a member cut from its team still says goodbye to it (only the
+    // game's own packets, see Member::cut_ms).
+    static constexpr qint64 CutGraceMs = 30'000;
     // Phase 9: whether a game packet on `channel` goes from one link's game to another's, by the
     // channel table, their maps and their parts in their maps' enemies (coop/packet_routes.h). A
     // link without a member here gets only the game's own channels.
@@ -347,6 +362,13 @@ private:
         // Kaniel 2026-10-16: the team world it was taken out of (removed from the team, or left
         // it): no game packet goes between it and that party until its next hello.
         QString cut_from;
+        // Amanises 2026-10-25: when it was cut. For CutGraceMs the game's own packets still go
+        // between it and that party: its game says goodbye to the session's host (the leave the
+        // game waits for; dropped, the removed guest saw the host ~20 s more before it gave up).
+        qint64 cut_ms = 0;
+        // Amanises 2026-10-25: its last player search (the text and what it found).
+        std::string search_query;
+        std::vector<FriendEntry> search;
         // Invasions: the party it visits as an invader (hostile): it shares that party's routing
         // by the hostile table, and is no member of its world.
         QString visiting;
@@ -448,6 +470,15 @@ private:
     // What goes when a guest leaves its party's world (its game said so, or its team let it go).
     void ForgetMember(PartyWorld& world, const std::string& name, qint64 now_ms, Result& result);
     void SendLobby(qint64 now_ms);
+    // Amanises 2026-10-25: what a signed-in member sees (the lobby's state, its friends added),
+    // the friend requests and searches (TeamRequest FRIEND_* and SEARCH), and one player's state
+    // again (every game it has signed in).
+    bool InCutGrace(const Member& member) const;
+    bbcoop::LobbyState LobbyStateFor(const Member& member) const;
+    void OnFriendRequest(Member& member, const bbcoop::TeamRequest& request, qint64 now_ms,
+                         Result& result);
+    void SendLobbyTo(const std::string& lobby_member, qint64 now_ms);
+    std::vector<FriendEntry> SearchPlayers(const std::string& searcher, const std::string& query) const;
     // Phase 5b: the team's world, read from its folder once; a host's report taken.
     const std::optional<bbcoop::TeamWorld>& TeamWorldOf(PartyWorld& world);
     void TakeTeamWorld(Member& member, PartyWorld& world, const bbcoop::TeamWorld& report,
@@ -510,6 +541,11 @@ private:
     bool lobby_changed = false; // a player's game went: states to send at the next tick
     // The listed worlds' folders by world id, for those not in PartyFolderName("world:<id>").
     std::map<std::string, QString> world_folders;
+    bool require_authenticated_identity = false;
+    FriendBook* friend_book = nullptr;
+    // Amanises 2026-10-25: each lobby member's last name (its character's, as the lobby shows it)
+    // since the server started: offline friends and searches go by it, the account name is an id.
+    std::map<std::string, std::string> lobby_names;
 
     InvasionRules invasion_rules;
     std::map<QString, Invasion> invasions; // by the invaded world

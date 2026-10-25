@@ -23,6 +23,7 @@
 #include "coop/coop_messages.h"
 #include "coop/invasions.h"
 #include "coop/trade.h"
+#include "coop/packet_routes.h"
 
 using namespace BloodborneCoop;
 using BloodborneWorld::Service;
@@ -47,9 +48,12 @@ const QByteArray Party = "kaniel:secret";
 // A game as the emulator runs it against the server: its stream, its copy of
 // the log.
 struct Game {
-  Game(quint32 port, std::string name, quint32 instance)
+  Game(quint32 port, std::string name, quint32 instance,
+       QByteArray authenticated = {})
       : endpoint{0x7F000001, static_cast<quint16>(port)}, name{std::move(name)},
-        stream{this->name, instance} {}
+        stream{this->name, instance}, authenticated{authenticated.isEmpty()
+                                                       ? QByteArray::fromStdString(this->name)
+                                                       : std::move(authenticated)} {}
 
   void Send(const bbcoop::Envelope &envelope, qint64 now_ms) {
     stream.Send(EncodeEnvelope(envelope), now_ms);
@@ -248,6 +252,7 @@ struct Game {
   ServerLink::Endpoint endpoint;
   std::string name;
   CoopStream stream;
+  QByteArray authenticated;
   WorldLogMember member;
   std::optional<bbcoop::Welcome> welcome;
   std::vector<WorldLogEntry> applied;
@@ -301,8 +306,7 @@ void Pump(Service &service, const std::vector<Game *> &games, qint64 now_ms) {
         moved = true;
         const auto result = service.Receive(
             game->endpoint,
-            game->online_id.isEmpty() ? QByteArray::fromStdString(game->name)
-                                      : game->online_id,
+            game->online_id.isEmpty() ? game->authenticated : game->online_id,
             QByteArray(reinterpret_cast<const char *>(body.data()),
                        static_cast<qsizetype>(body.size())),
             now_ms);
@@ -2255,6 +2259,53 @@ int GamePacketsGoByMapAndOwner() {
 // nothing more of it, the others' boards forget it, and no game packet goes
 // between it and the team (its game leaves the session; the server's word
 // stands even if it did not). Invited again, its hello brings it back in.
+// Amanises 2026-10-25: a removed member's goodbye goes through for CutGraceMs only; then nothing
+// goes between it and the team's games.
+int ARemovedMembersGoodbyeEndsAfterTheGrace() {
+  Service service{{}};
+  Game a{1000, "aa", 11};
+  Game b{1001, "bb", 12};
+  const std::vector<Game *> games{&a, &b};
+  qint64 now = 1'000'000;
+  a.LobbyHello(false, now);
+  b.LobbyHello(false, now);
+  Pump(service, games, now);
+  a.Team(bbcoop::TeamRequest::CREATE, now);
+  Pump(service, games, now);
+  const std::string team = a.lobby.team().id();
+  a.Team(bbcoop::TeamRequest::INVITE, now, "bb");
+  Pump(service, games, now);
+  b.Team(bbcoop::TeamRequest::ACCEPT, now, {}, team);
+  Pump(service, games, now);
+  a.Team(bbcoop::TeamRequest::READY, now, {}, {}, 1);
+  b.Team(bbcoop::TeamRequest::READY, now, {}, {}, 2);
+  Pump(service, games, now);
+  a.Team(bbcoop::TeamRequest::START, now);
+  Pump(service, games, now);
+  a.LobbyHello(true, now);
+  b.LobbyHello(true, now);
+  const QByteArray party = QByteArray::fromStdString(a.starts.at(0).party());
+  a.Hello(now, party);
+  b.claims_host = false;
+  b.Hello(now, party);
+  a.Map(0x18010000, now);
+  b.Map(0x18010000, now);
+  Pump(service, games, now);
+  a.Team(bbcoop::TeamRequest::REMOVE, now + 10, "bb");
+  Pump(service, games, now + 10);
+  CHECK(!service.PartyOf(b.endpoint).isEmpty());
+  // Half way through: still saying goodbye; past the grace: gone.
+  Pump(service, games, now + 10 + Service::CutGraceMs / 2);
+  CHECK(!service.PartyOf(b.endpoint).isEmpty());
+  Pump(service, games, now + 10 + Service::CutGraceMs);
+  CHECK(service.PartyOf(b.endpoint).isEmpty());
+  for (const u32 channel : {0x06u, 0x10u, 0x07u}) {
+    CHECK(!service.RoutesPacket(a.endpoint, b.endpoint, channel) &&
+          !service.RoutesPacket(b.endpoint, a.endpoint, channel));
+  }
+  return 0;
+}
+
 int ARemovedMemberIsOutOfTheTeamsWorld() {
   Service service{{}};
   Game a{1000, "aa", 11};
@@ -2295,12 +2346,19 @@ int ARemovedMemberIsOutOfTheTeamsWorld() {
   a.Team(bbcoop::TeamRequest::REMOVE, now + 10, "bb");
   Pump(service, games, now + 10);
   CHECK(!b.lobby.has_team());
-  CHECK(service.PartyOf(b.endpoint).isEmpty());
   CHECK(a.map_board.members_size() == 1 &&
         a.map_board.members(0).member() == "aa");
+  // Amanises 2026-10-25: for a moment its game's own packets still go both ways (its game says
+  // goodbye to the session's host), none of the team's world.
+  CHECK(service.PartyOf(b.endpoint) == service.PartyOf(a.endpoint));
   for (const u32 channel : {0x06u, 0x10u, 0x07u}) {
-    CHECK(!routes(a, b, channel) && !routes(b, a, channel));
+    const bool native =
+        BloodborneCoop::NativeChannelPolicy(channel) == BloodborneCoop::ChannelPolicy::Pass &&
+        channel < BloodborneCoop::NativeChannelCount;
+    CHECK(routes(a, b, channel) == native && routes(b, a, channel) == native);
   }
+  CHECK(!routes(a, b, 0x10u) || BloodborneCoop::NativeChannelPolicy(0x10u) ==
+                                     BloodborneCoop::ChannelPolicy::Pass);
   // What its game still sends of the team's world counts for nothing.
   b.Map(0x18000000, now + 20);
   Pump(service, games, now + 20);
@@ -2319,11 +2377,194 @@ int ARemovedMemberIsOutOfTheTeamsWorld() {
   CHECK(routes(a, b, 0x06) && routes(b, a, 0x06));
   CHECK(a.map_board.members_size() == 2);
 
-  // A member that leaves by itself is out the same way.
+  // A member that leaves by itself is out the same way (its goodbye first, as above).
   b.Team(bbcoop::TeamRequest::LEAVE, now + 50);
   Pump(service, games, now + 50);
-  CHECK(service.PartyOf(b.endpoint).isEmpty());
-  CHECK(!routes(a, b, 0x06) && !routes(b, a, 0x06));
+  CHECK(service.PartyOf(b.endpoint) == service.PartyOf(a.endpoint));
+  const bool native06 =
+      BloodborneCoop::NativeChannelPolicy(0x06u) == BloodborneCoop::ChannelPolicy::Pass &&
+      0x06u < BloodborneCoop::NativeChannelCount;
+  CHECK(routes(a, b, 0x06) == native06 && routes(b, a, 0x06) == native06);
+  return 0;
+}
+
+// Seamless Hunt is public: a client that authenticated as one account cannot claim another
+// account's board/member id in either the team lobby or a party world.
+int PublicLobbyIdentityComesFromTheAuthenticatedAccount() {
+  Service service{{}};
+  service.RequireAuthenticatedIdentity();
+  const QByteArray alice = "alice";
+  Game impostor{1000, "626f62", 11, alice}; // hex("bob"), while signed in as alice
+  impostor.LobbyHello(false, 1'000'000);
+  Pump(service, {&impostor}, 1'000'000);
+  CHECK(impostor.lobby.notice() ==
+        "member identity does not match the signed-in account");
+  CHECK(service.Lobby().SignedIn().empty());
+
+  Game genuine{1001, "616c696365", 12, alice}; // hex("alice")
+  genuine.LobbyHello(false, 1'000'010);
+  genuine.Hello(1'000'010);
+  Pump(service, {&genuine}, 1'000'010);
+  CHECK(genuine.lobby.notice().empty());
+  CHECK(service.Lobby().SignedIn() == std::vector<std::string>{"616c696365"});
+  CHECK(genuine.welcome && genuine.welcome->accepted());
+  return 0;
+}
+
+// Amanises 2026-10-25: the lobby's friends as shadNet's friend table keeps them
+// (lobby_friends_db.cpp's rules), in memory: a request is the asker's bit, a
+// friendship both.
+struct MemoryFriendBook : BloodborneWorld::FriendBook {
+  std::map<std::string, std::string> accounts; // member -> name
+  std::set<std::pair<std::string, std::string>> asked; // (from, to)
+
+  bool Asked(const std::string &a, const std::string &b) const {
+    return asked.count({a, b}) != 0;
+  }
+  BloodborneWorld::FriendEntry Entry(const std::string &m) const {
+    return {m, accounts.at(m)};
+  }
+  BloodborneWorld::FriendRelations Of(const std::string &member) override {
+    BloodborneWorld::FriendRelations out;
+    for (const auto &[other, name] : accounts) {
+      const bool mine = Asked(member, other), theirs = Asked(other, member);
+      if (mine && theirs) {
+        out.friends.push_back(Entry(other));
+      } else if (mine) {
+        out.sent.push_back(Entry(other));
+      } else if (theirs) {
+        out.received.push_back(Entry(other));
+      }
+    }
+    return out;
+  }
+  std::string Add(const std::string &member, const std::string &other) override {
+    if (!accounts.count(other)) {
+      return "no such player";
+    }
+    if (Asked(member, other)) {
+      return Asked(other, member) ? "already friends" : "request already sent";
+    }
+    asked.insert({member, other});
+    return {};
+  }
+  std::string Remove(const std::string &member, const std::string &other) override {
+    if (!Asked(member, other)) {
+      return "not a friend";
+    }
+    asked.erase({member, other});
+    asked.erase({other, member});
+    return {};
+  }
+  std::string Decline(const std::string &member, const std::string &other) override {
+    if (!Asked(other, member) || Asked(member, other)) {
+      return "no request from this player";
+    }
+    asked.erase({other, member});
+    return {};
+  }
+  std::vector<BloodborneWorld::FriendEntry> Search(const std::string &,
+                                                   const std::string &query,
+                                                   size_t limit) override {
+    std::vector<BloodborneWorld::FriendEntry> out;
+    for (const auto &[member, name] : accounts) {
+      if (out.size() < limit && name.find(query) != std::string::npos) {
+        out.push_back({member, name});
+      }
+    }
+    return out;
+  }
+};
+
+// Find a player by name, send a request, the other accepts it: both see a friend,
+// online, with its team; removing it clears both; a declined request is gone for
+// both; a server without the book refuses.
+int FriendsAreFoundAskedAndAnsweredInTheLobby() {
+  using bbcoop::LobbyPlayer;
+  using bbcoop::TeamRequest;
+  MemoryFriendBook book;
+  book.accounts = {{"aa", "Player aa"}, {"bb", "Player bb"}, {"cc", "Player cc"},
+                   {"dd", "Offline dd"}};
+  Service service{{}};
+  service.SetFriendBook(&book);
+  qint64 now = 1'000'000;
+  Game a{1000, "aa", 11};
+  Game b{1001, "bb", 12};
+  Game c{1002, "cc", 13};
+  a.LobbyHello(false, now);
+  b.LobbyHello(true, now);
+  c.LobbyHello(false, now);
+  Pump(service, {&a, &b, &c}, now);
+  const auto search = [&](Game &game, const std::string &text) {
+    bbcoop::Envelope envelope;
+    envelope.mutable_team_request()->set_action(TeamRequest::SEARCH);
+    envelope.mutable_team_request()->set_query(text);
+    game.Send(envelope, now);
+    Pump(service, {&a, &b, &c}, now);
+  };
+
+  // Search: an offline account is found too; the searcher sees itself as SELF.
+  search(a, "a");
+  CHECK(a.lobby.notice() == "type at least 2 letters" && a.lobby.search_size() == 0);
+  search(a, "dd");
+  CHECK(a.lobby.search_query() == "dd" && a.lobby.search_size() == 1);
+  CHECK(a.lobby.search(0).member() == "dd" && a.lobby.search(0).state() == LobbyPlayer::OFFLINE);
+  search(a, "Player");
+  CHECK(a.lobby.search_size() == 3);
+  CHECK(a.lobby.search(0).relation() == LobbyPlayer::SELF);
+  CHECK(b.lobby.search_size() == 0); // only the searcher's
+
+  // A request: the asker sees it sent, the other received (with its online state).
+  a.Team(TeamRequest::FRIEND_ADD, now, "bb");
+  Pump(service, {&a, &b, &c}, now);
+  CHECK(a.lobby.notice().empty());
+  CHECK(a.lobby.friend_requests_sent_size() == 1 && a.lobby.friend_requests_sent(0).member() == "bb");
+  CHECK(b.lobby.friend_requests_size() == 1 && b.lobby.friend_requests(0).member() == "aa");
+  CHECK(b.lobby.friend_requests(0).state() == LobbyPlayer::TITLE);
+  CHECK(a.lobby.search(1).relation() == LobbyPlayer::REQUEST_SENT);
+  a.Team(TeamRequest::FRIEND_ADD, now, "bb");
+  Pump(service, {&a, &b, &c}, now);
+  CHECK(a.lobby.notice() == "request already sent");
+
+  // Accepted: friends both ways, listed first among the players online.
+  a.Team(TeamRequest::CREATE, now);
+  b.Team(TeamRequest::FRIEND_ADD, now, "aa");
+  Pump(service, {&a, &b, &c}, now);
+  CHECK(a.lobby.friends_size() == 1 && b.lobby.friends_size() == 1);
+  CHECK(a.lobby.friend_requests_sent_size() == 0 && b.lobby.friend_requests_size() == 0);
+  CHECK(a.lobby.friends(0).member() == "bb" && a.lobby.friends(0).state() == LobbyPlayer::PLAYING);
+  CHECK(b.lobby.friends(0).team() == a.lobby.team().id());
+  CHECK(b.lobby.players(0).member() == "aa" &&
+        b.lobby.players(0).relation() == LobbyPlayer::FRIEND);
+
+  // Removed: gone for both.
+  b.Team(TeamRequest::FRIEND_REMOVE, now, "aa");
+  Pump(service, {&a, &b, &c}, now);
+  CHECK(a.lobby.friends_size() == 0 && b.lobby.friends_size() == 0);
+
+  // Declined: gone for both; a decline with no request is refused.
+  c.Team(TeamRequest::FRIEND_ADD, now, "aa");
+  Pump(service, {&a, &b, &c}, now);
+  CHECK(a.lobby.friend_requests_size() == 1);
+  a.Team(TeamRequest::FRIEND_DECLINE, now, "cc");
+  Pump(service, {&a, &b, &c}, now);
+  CHECK(a.lobby.friend_requests_size() == 0 && c.lobby.friend_requests_sent_size() == 0);
+  a.Team(TeamRequest::FRIEND_DECLINE, now, "cc");
+  Pump(service, {&a, &b, &c}, now);
+  CHECK(a.lobby.notice() == "no request from this player");
+  a.Team(TeamRequest::FRIEND_ADD, now, "aa");
+  Pump(service, {&a, &b, &c}, now);
+  CHECK(a.lobby.notice() == "no such player");
+
+  // No book: refused, and the team lobby works as before.
+  Service bare{{}};
+  Game e{1003, "ee", 14};
+  e.LobbyHello(false, now);
+  Pump(bare, {&e}, now);
+  e.Team(TeamRequest::FRIEND_ADD, now, "aa");
+  Pump(bare, {&e}, now);
+  CHECK(e.lobby.notice() == "friends are not kept on this server");
+  CHECK(e.lobby.friends_size() == 0);
   return 0;
 }
 
@@ -3282,6 +3523,8 @@ int WhatCollectedWorldsKeepIsBounded() {
 
 int main() {
   const std::vector<std::pair<const char *, std::function<int()>>> tests{
+      {"FriendsAreFoundAskedAndAnsweredInTheLobby",
+       FriendsAreFoundAskedAndAnsweredInTheLobby},
       {"MembersFollowTheServersLog", MembersFollowTheServersLog},
       {"HostedPartiesAreTheirTeamsOnly", HostedPartiesAreTheirTeamsOnly},
       {"APlayersPlaceIsKnownByItsLink", APlayersPlaceIsKnownByItsLink},
@@ -3351,6 +3594,10 @@ int main() {
       {"GamePacketsGoByMapAndOwner", GamePacketsGoByMapAndOwner},
       {"ARemovedMemberIsOutOfTheTeamsWorld",
        ARemovedMemberIsOutOfTheTeamsWorld},
+      {"ARemovedMembersGoodbyeEndsAfterTheGrace",
+       ARemovedMembersGoodbyeEndsAfterTheGrace},
+      {"PublicLobbyIdentityComesFromTheAuthenticatedAccount",
+       PublicLobbyIdentityComesFromTheAuthenticatedAccount},
       {"OnlyTheOwnersKillsAndHpCount", OnlyTheOwnersKillsAndHpCount},
       {"ATeamFormsAndStartsThroughTheService",
        ATeamFormsAndStartsThroughTheService},
