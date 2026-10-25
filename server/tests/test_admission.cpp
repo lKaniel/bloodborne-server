@@ -148,6 +148,20 @@ int SignupWorkRisesWithTheRate() {
   return 0;
 }
 
+// Every server, hosted or not: a hello that opens costs Diffie-Hellmans, so one
+// address gets a few a second; nothing is banned for it.
+int HomeHellosAreBudgeted() {
+  Admission::HelloBudget budget{20};
+  int allowed = 0;
+  for (int i = 0; i < 100; ++i) {
+    allowed += budget.Allow(0x0A000001, 5000 + i) ? 1 : 0; // 100 in 0.1 s
+  }
+  CHECK(allowed == 20);
+  CHECK(budget.Allow(0x0A000002, 5100)); // another address has its own
+  CHECK(budget.Allow(0x0A000001, 6000)); // the next second
+  return 0;
+}
+
 int main() {
   int failed = 0;
   failed |= HellosFromOneAddressAreLimited();
@@ -156,6 +170,7 @@ int main() {
   failed |= ABigLinkWithinItsRateIsFine();
   failed |= TheOperatorsBanList();
   failed |= SignupWorkRisesWithTheRate();
+  failed |= HomeHellosAreBudgeted();
   if (failed == 0) {
     std::cout << "admission: all checks passed\n";
   }

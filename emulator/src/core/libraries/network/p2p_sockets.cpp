@@ -458,7 +458,8 @@ public:
     }
 
     void ConfigureLink(u32 server_addr_nbo, u16 server_port_nbo, std::string online_id,
-                       std::string secret) {
+                       std::string secret, std::string_view server_key) {
+        const auto key = LinkAuth::KeyFromHex(server_key);
         {
             std::lock_guard lock(link_mutex);
             link_server = {server_addr_nbo, server_port_nbo};
@@ -467,11 +468,23 @@ public:
             link_welcomed = false;
             link_hello_ms.reset();
             link_auth = {};
-            link_auth.Restart(FreshNonce());
+            if (key) {
+                link_auth.Pin(*key);
+            }
+            link_other_keys = 0;
             ++work_generation; // a work under way was for the other id
         }
         LOG_INFO(Lib_Net, "Server link: every frame for a peer goes through the server at {:#x}:{}",
                  ntohl(server_addr_nbo), ntohs(server_port_nbo));
+        if (key) {
+            LOG_INFO(Lib_Net, "Server link: the server's key, from the launcher: {}", server_key);
+        } else {
+            if (!server_key.empty()) {
+                LOG_WARNING(Lib_Net, "Server link: '{}' is not a server key (64 hex digits)",
+                            server_key);
+            }
+            LOG_INFO(Lib_Net, "Server link: no key for this server: its first cookie's is taken");
+        }
     }
 
     void SetLinkBuild(std::string build) {
@@ -511,20 +524,21 @@ public:
         return sealed && Transmit(dest, std::move(*sealed));
     }
 
-    // Link version 3 (net_link.h): a datagram for the server with its link's counter and tag;
-    // nothing before the server's cookie came (the server would drop it).
+    // Link version 4 (net_link.h): a datagram for the server encrypted, with its link's counter
+    // and tag; nothing before the server's welcome (the server would drop it).
     std::optional<std::vector<u8>> SealLink(std::vector<u8> datagram) {
         std::lock_guard lock(link_mutex);
         return Link::Sealed(link_auth, std::move(datagram));
     }
 
-    static LinkAuth::Nonce FreshNonce() {
+    // A new ephemeral key for a hello's handshake (the system's random source).
+    static LinkAuth::Key FreshKey() {
         std::random_device device;
-        LinkAuth::Nonce nonce;
-        for (u8& byte : nonce) {
+        LinkAuth::Key key;
+        for (u8& byte : key) {
             byte = static_cast<u8>(device());
         }
-        return nonce;
+        return key;
     }
 
     bool LinkWelcomed() {
@@ -804,33 +818,54 @@ private:
 
     // A datagram from the server's link: a relayed frame, the hello's answer, a pong, news of
     // another member's link.
-    void OnLinkDatagram(Link::Kind kind, std::span<const u8> tagged) {
+    void OnLinkDatagram(Link::Kind kind, std::span<const u8> sealed) {
         const s64 now_ms = P2PNowMs();
-        std::span<const u8> datagram;
+        std::vector<u8> opened;
+        std::optional<LinkAuth::Key> learned;
+        bool other_key = false;
         {
             std::lock_guard lock(link_mutex);
             if (kind == Link::Kind::Cookie) {
                 // The hello's answer without a cookie of ours: echoed in the next hello at once.
-                // Never tagged, so taken only while there is a hello to answer.
-                if (const auto cookie = Link::DecodeCookie(tagged); cookie && !link_welcomed) {
-                    link_auth.TakeCookie(*cookie);
-                    link_hello_ms.reset();
+                // Never encrypted, so taken only while there is a hello to answer, and only with
+                // the key pinned for this server (when one is).
+                LinkAuth::Key key{};
+                if (const auto cookie = Link::DecodeCookie(sealed, nullptr, &key);
+                    cookie && !link_welcomed) {
+                    if (link_auth.TakeCookie(*cookie, key)) {
+                        link_hello_ms.reset();
+                    } else if (link_other_keys++ == 0) {
+                        // Someone else answering for the server, or the server made a new key
+                        // (then its operator says the new one, and the launcher's pin goes).
+                        LOG_ERROR(Lib_Net,
+                                  "Server link: the server says another key than the one pinned "
+                                  "for it ({}, pinned {}): no link",
+                                  LinkAuth::HexOf(key), LinkAuth::HexOf(*link_auth.ServerKey()));
+                        other_key = true;
+                    }
                 }
-                return;
+            } else if (auto plain = Link::Opened(link_auth, sealed);
+                       plain && Link::KindOf(*plain) == kind) {
+                opened = std::move(*plain);
+                learned = link_auth.TakeLearned();
+            } else if (link_untagged++ < 20) {
+                // Not from the server (a spoofed source, another server's key), or a replay.
+                LOG_INFO(Lib_Net, "Server link: a datagram of kind {} that does not open: dropped",
+                         static_cast<int>(kind));
             }
-            const auto opened = Link::Opened(link_auth, tagged);
-            if (!opened) {
-                // Not from the server (a spoofed source), or a replay: dropped.
-                if (link_untagged++ < 20) {
-                    LOG_INFO(Lib_Net,
-                             "Server link: a datagram of kind {} whose tag does not open: "
-                             "dropped",
-                             static_cast<int>(kind));
-                }
-                return;
-            }
-            datagram = *opened;
         }
+        if (other_key) {
+            TellLinkObserver("refused", "the server's key is not the one pinned for it");
+        }
+        if (opened.empty()) {
+            return;
+        }
+        if (learned) {
+            // The launcher keeps it for this server (bbport_coop.py LEARNED_KEY_LINE).
+            LOG_INFO(Lib_Net, "Server link: the server's key, trusted on first use: {}",
+                     LinkAuth::HexOf(*learned));
+        }
+        const std::span<const u8> datagram{opened};
         switch (kind) {
         case Link::Kind::Data:
             if (const auto data = Link::DecodeData(datagram)) {
@@ -893,7 +928,7 @@ private:
         std::string online_id;
         {
             std::lock_guard lock(link_mutex);
-            if (link_welcomed || !link_auth.WorkAsked(bits, FreshNonce())) {
+            if (link_welcomed || !link_auth.WorkAsked(bits)) {
                 return;
             }
             cookie = link_auth.CookieToEcho();
@@ -1014,8 +1049,8 @@ private:
             if (!link_auth.Working() &&
                 Link::HelloDue(link_welcomed, link_hello_ms, !link_refusal.empty(), now_ms)) {
                 link_hello_ms = now_ms;
-                datagrams.push_back(Link::Encode(
-                    Link::HelloFor(link_auth, link_online_id, link_build, link_secret)));
+                datagrams.push_back(Link::HelloDatagram(link_auth, link_online_id, link_build,
+                                                        link_secret, FreshKey()));
             }
             if (const auto ping = ping_meter.Due(now_ms)) {
                 if (auto sealed = Link::Sealed(link_auth, Link::Encode(Link::Kind::Ping, *ping))) {
@@ -1027,7 +1062,7 @@ private:
                 // The server may have restarted and forgotten this game: say hello again, on a
                 // new session (the old one stays in use until the server welcomes it).
                 link_welcomed = false;
-                link_auth.Restart(FreshNonce());
+                link_auth.Restart();
             }
             summary = ping_meter.TakeSummary(now_ms);
         }
@@ -1111,7 +1146,8 @@ private:
     bool link_welcomed{false};
     std::string link_refusal;
     std::optional<s64> link_hello_ms;
-    LinkAuth::Client link_auth; // link version 3: the cookie and the link's session
+    LinkAuth::Client link_auth; // link version 4: the key, the cookie, the handshake, the session
+    u32 link_other_keys{0};     // cookies that said another key than the pinned one
     std::thread work_thread;    // hosted: a new account's work (StartWork)
     std::atomic<u64> work_generation{0};
     u32 link_untagged{0};
@@ -1633,13 +1669,13 @@ bool ServerLinkSwitchOn() {
 }
 
 void ConfigureServerLink(u32 server_addr_nbo, u16 server_port_nbo, std::string online_id,
-                         std::string secret) {
+                         std::string secret, std::string_view server_key) {
     // Every build (phase 9): a game reaches its peers through the server only.
     if (server_addr_nbo == 0 || server_port_nbo == 0) {
         return;
     }
     P2PTransport::Instance().ConfigureLink(server_addr_nbo, server_port_nbo, std::move(online_id),
-                                           std::move(secret));
+                                           std::move(secret), server_key);
 }
 
 void SetServerLinkBuild(std::string build) {

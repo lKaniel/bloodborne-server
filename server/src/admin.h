@@ -14,6 +14,7 @@
 //   restore <folder>                 a world put aside back on the list
 //   retire                           worlds idle past HostedRetireDays put aside now
 //   stats                            players, worlds, the link thread's load, refusals
+//   key                              the link's public key (what the launcher pins)
 #pragma once
 
 #include <functional>

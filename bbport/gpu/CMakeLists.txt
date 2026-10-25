@@ -249,6 +249,7 @@ set(BBCOOP_SOURCES ${BBCOOP_SOURCES}
     ${BB_EMULATOR_SRC}/core/bloodborne_trade.cpp
     ${BB_SERVER_SRC}/coop/world_log.cpp ${BB_SERVER_SRC}/coop/coop_messages.cpp
     ${BB_SERVER_SRC}/coop/trade.cpp
+    ${BB_SERVER_SRC}/coop/link_crypto.cpp
     ${BB_EMULATOR_SRC}/core/bloodborne_autoplay.cpp
     ${BB_EMULATOR_SRC}/core/bloodborne_trace_diag.cpp
     ${BB_EMULATOR_SRC}/core/bloodborne_re_tracer.cpp

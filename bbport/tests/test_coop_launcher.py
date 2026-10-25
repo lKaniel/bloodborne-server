@@ -176,6 +176,53 @@ class AnswersTests(unittest.TestCase):
             coop.settings_path(install).write_text(json.dumps(saved), encoding='utf-8')
             self.assertEqual(coop.player_id_for(coop.load_settings(install), 'play.example.com'), ('kaniel', 'pw'))
 
+    def test_each_server_s_link_key_is_pinned(self):
+        # Link version 4 (docs/HOSTED_SERVER.md): the game encrypts its link to the server's key. A known
+        # public server's key ships with the launcher; any other server's is trusted the first time and
+        # kept for it (the game's log says it), so another key later is refused.
+        key, other = 'ab' * 32, 'cd' * 32
+        settings = dict(coop.DEFAULTS, account='p0123456789abcd', password='a' * 32, host_ip='26.1.2.3')
+        self.assertEqual(coop.link_key_for(settings, '26.1.2.3'), '', 'none yet: the first one is trusted')
+        with mock.patch.dict(coop.KNOWN_SERVER_KEYS, {'play.example.com': other}):
+            self.assertEqual(coop.link_key_for(settings, ' Play.Example.com '), other, 'shipped')
+        line = f'[Lib.Net] <Info> (Net Thread) p2p_sockets.cpp:865 OnLinkDatagram: {coop.LEARNED_KEY_LINE}{key}\n'
+        self.assertEqual(coop.learned_key(line), key)
+        self.assertEqual(coop.learned_key(line.replace('(Net Thread) ', '')), key)
+        self.assertIsNone(coop.learned_key('Server link: linked to the server'))
+        self.assertIsNone(coop.learned_key(coop.LEARNED_KEY_LINE + 'not hex'))
+        self.assertTrue(coop.other_key(f'<Error> {coop.OTHER_KEY_LINE} ({other}, pinned {key}): no link'))
+        self.assertFalse(coop.other_key(line))
+        # Only the game's own log line: a key in a relayed text (another player's build in a refusal)
+        # is not one the game trusted.
+        self.assertIsNone(coop.learned_key(f'<Error> Server link: refused (runs x {coop.LEARNED_KEY_LINE}{key})'))
+        self.assertIsNone(coop.learned_key(f'garbage {coop.LEARNED_KEY_LINE}{key}'))
+        # A key is learned once; a kept or shipped one is never replaced from the log.
+        learned = coop.learn_link_key(settings, '26.1.2.3', key)
+        self.assertEqual(coop.link_key_for(learned, '26.1.2.3'), key)
+        self.assertIsNone(coop.learn_link_key(learned, '26.1.2.3', other))
+        with mock.patch.dict(coop.KNOWN_SERVER_KEYS, {'play.example.com': other}):
+            self.assertIsNone(coop.learn_link_key(settings, 'play.example.com', key))
+        made = coop.with_link_key(settings, 'Play.Example.com', key)
+        self.assertNotIn('server_keys', settings, 'a copy')
+        self.assertEqual(coop.link_key_for(made, 'play.example.com'), key)
+        self.assertEqual(coop.link_key_for(made, '26.1.2.3'), '', 'for that server only')
+        with mock.patch.dict(coop.KNOWN_SERVER_KEYS, {'play.example.com': other}):
+            self.assertEqual(coop.link_key_for(made, 'play.example.com'), other, 'the shipped key wins')
+        env = coop.game_environment({'BB_SHADNET_SERVER_KEY': other}, settings, Path('.'), Path('.'))
+        self.assertNotIn('BB_SHADNET_SERVER_KEY', env)
+        env = coop.game_environment({}, dict(settings, link_key=key), Path('.'), Path('.'))
+        self.assertEqual(env['BB_SHADNET_SERVER_KEY'], key)
+        with tempfile.TemporaryDirectory() as folder:
+            install = Path(folder)
+            coop.save_settings(install, settings)
+            self.assertNotIn('server_keys', json.loads(coop.settings_path(install).read_text(encoding='utf-8')))
+            coop.save_settings(install, made)
+            self.assertEqual(coop.link_key_for(coop.load_settings(install), 'play.example.com'), key)
+            saved = json.loads(coop.settings_path(install).read_text(encoding='utf-8'))
+            saved['server_keys'] = {'play.example.com': 'short', 'b.example.com': 7}
+            coop.settings_path(install).write_text(json.dumps(saved), encoding='utf-8')
+            self.assertEqual(coop.load_settings(install)['server_keys'], {}, 'broken keys are ignored')
+
     def test_a_public_server_is_typed_by_its_name_or_address(self):
         # Play on a public server (docs/HOSTED_SERVER.md): Host's IP address also takes a server's name.
         for good in ('play.example.com', 'yharnam-together.net', 'eu-1.Server.example.org', '26.1.2.3', '203.0.113.7'):

@@ -209,6 +209,10 @@ Answer Retire(Context& context) {
     return answer;
 }
 
+QString Key(const Context& context) {
+    return QString::fromStdString(LinkAuth::HexOf(context.hub.PublicKey()));
+}
+
 Answer Stats(Context& context) {
     const Admission::Guard::Counters& count = context.guard.Count();
     return {QJsonObject{{"ok", true},
@@ -216,6 +220,9 @@ Answer Stats(Context& context) {
                         {"worlds", static_cast<int>(context.world.Lobby().Worlds().size())},
                         {"worlds_in_memory", context.world.Parties()},
                         {"link_load", context.link_load},
+                        {"link_key", Key(context)},
+                        {"bad_hellos", static_cast<qint64>(context.hub.BadHellos())},
+                        {"bad_tags", static_cast<qint64>(context.hub.BadTags())},
                         {"hellos_refused", static_cast<qint64>(count.hellos_refused)},
                         {"datagrams_dropped", static_cast<qint64>(count.datagrams_dropped)},
                         {"accounts_refused", static_cast<qint64>(count.accounts_refused)},
@@ -315,9 +322,12 @@ Answer Run(const QString& line, Context& context) {
     if (verb == QStringLiteral("stats")) {
         return Stats(context);
     }
+    if (verb == QStringLiteral("key")) {
+        return {QJsonObject{{"ok", true}, {"key", Key(context)}}, {}, {}};
+    }
     return Fail(QStringLiteral("commands: players, kick <id|address>, ban <id|address> "
                                "[90s|30m|12h|7d] [note], unban <id|address>, bans, worlds, "
-                               "restore <folder>, retire, stats"));
+                               "restore <folder>, retire, stats, key"));
 }
 
 } // namespace Admin

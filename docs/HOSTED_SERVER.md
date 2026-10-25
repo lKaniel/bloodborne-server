@@ -93,29 +93,50 @@ per player: past 5 in a minute every lookup waits (`TeamLobby::LookupTries`). Bo
 the window's text entry (the game's name dialog's) and need this build on both sides
 (`TeamRequest` actions 12-14, `Team.code`).
 
-## The link's handshake (link version 3)
+## The link's handshake and encryption (link version 4)
 
-On for everyone, both sides (`coop/link_auth.h`, shared by shadNet, the emulator's `net_link.h`,
-`bbload` and the fuzz target; no new dependency). Server and games ship together: a game of link
-version 2 gets no answer.
+On for everyone, both sides (`coop/link_auth.h` and `coop/link_crypto.cpp`, shared by shadNet, the
+emulator's `net_link.h`, `bbload` and the fuzz target; Monocypher vendored in `coop/monocypher/`,
+CC0/BSD-2). Server and games ship together: a game of an older link version gets no answer.
 
 | What | Why |
 | --- | --- |
-| A hello without a valid cookie gets only a cookie back (HMAC of its source address and port and a 30 s bucket; smaller than the hello, nothing kept). The hello that echoes it signs in | a spoofed source never sees its cookie: no link, account, password hash or refusal for it, and no reflection |
-| Every datagram after the hello, both ways, ends in a counter and a 16-byte HMAC-SHA256 tag (24 bytes); keys from the secret, the game's nonce, the cookie and the id, one each way | nobody off the path can inject frames, Coop messages or Rpc bytes from a player's address, or replay them |
-| A bad tag or a counter seen already (a window of 1024) is dropped without a word, counted (`server link: ... dropped for a bad tag` with the counters) | |
-| A link's rates (`admission.h`) count a datagram only once its tag is good; hello limits only hellos with a valid cookie | a spoofed flood from a player's address got that address banned, or used up its hellos |
-| Hosted: a hello for an id with no account must carry a proof-of-work: a nonce such that SHA-256(cookie, id, nonce) starts with `HostedSignupWorkBits` zero bits (default 20, ~0.3 s of one core on average). The cookie says the bits; a hello without it gets a tagged `Work` answer and the game does it on a thread of its own, then says hello again. Checked with one hash before any password hash or account; an existing account never pays. 2 bits more per doubling of the accounts made in the last minute over `HostedSignupsPerMinute` (60), up to `HostedSignupWorkMaxBits` (20 by default, so no rise: a launch rush of 300 real joins pushed it to the cap in a test; raise it while under attack) | a botnet stays within each address's accounts an hour but made 1181 accounts in 30 s; now each costs it a CPU's while, more than the server's password hashes |
+| A hello without a valid cookie gets only a cookie back (keyed hash of its source address and port and a 30 s bucket; nothing kept). The cookie carries the server's public key and the work bits | a spoofed source never sees its cookie: no link, account, password hash, Diffie-Hellman or refusal for it, and no reflection |
+| The hello that echoes it is a Noise_NK_25519_ChaChaPoly_BLAKE2b first message: the game's ephemeral key in clear, then the id, build, secret and work nonce encrypted to the server's static key. The welcome (or a `Work` answer) is the second message | the secret and everything after it cross the internet encrypted; only the holder of the server's private key can read the hello or answer it |
+| Every datagram after the welcome, both ways, is ChaCha20-Poly1305 sealed (its 9-byte header as associated data), with a 64-bit counter and the 16-byte tag last (24 bytes); one key each way from the handshake | nobody on the path reads frames, Coop messages or Rpc bytes, injects them from a player's address, or replays them |
+| A datagram that does not open or a counter seen already (a window of 1024) is dropped without a word and counted | |
+| A link's rates (`admission.h`) count a datagram only once it opens; hello limits only hellos with a valid cookie | a spoofed flood from a player's address cannot get that address banned |
+| The server's key pair is made on first start in the data folder (`LinkKeyFile`, default `link_key.bin`, owner-only); its public key is in the log at start and from the admin `key` command | moving the file moves the server's identity; deleting it makes every game warn |
+| The game pins the key the launcher gives it for that server (`KNOWN_SERVER_KEYS` in `bbport_coop.py` for a public server, else the one kept in coop.json `server_keys`). With no key kept (a friend's home host the first time) it takes the first cookie's key and the launcher keeps it from the game's log; another key later is refused and the launcher says so. The launcher learns a key only from the game's own log line and only when it keeps none for that server; a hello whose id or build has control characters is dropped, so no relayed text can forge that line | a public server's key ships with the launcher, so nobody can stand in for it; a home host is trusted on first use, as SSH does: someone on the path at that first link could stand in for it |
+| Every server, hosted or not: at most 20 hellos a second from one address get past the cookie (`Admission::HelloBudget`); hosted, the guard's tighter limit | a hello that opens costs the link thread Diffie-Hellmans |
+| Hosted: a hello for an id with no account must carry a proof-of-work: a nonce such that SHA-256(cookie, id, nonce) starts with `HostedSignupWorkBits` zero bits (default 20, ~0.3 s of one core on average). A hello without it gets an encrypted `Work` answer and the game does it on a thread of its own, then says hello again. Checked with one hash before any password hash or account; an existing account never pays. 2 bits more per doubling of the accounts made in the last minute over `HostedSignupsPerMinute` (60), up to `HostedSignupWorkMaxBits` (20 by default, so no rise: a launch rush of 300 real joins pushed it to the cap in a test; raise it while under attack) | a botnet stays within each address's accounts an hour but made 1181 accounts in 30 s; now each costs it a CPU's while, more than the server's password hashes |
 
-The secret still crosses in the hello (after the cookie): the game's NP sign-in sends the same
-secret through the Rpc stream, so a challenge-response on the link alone would hide nothing.
-Someone on the path still reads it and the game data; that takes encryption (Noise, below).
-Cost at 300 players (three runs each, this box shared with other builds): the link thread 12.5%
--> 16.5% of a core on average, relay p50 0.33-0.40 -> 0.41-0.74 ms (p99 13-34 -> 13-93 ms, noise
-of the box), 15.2 -> 17.3 Mbit/s out. One tag costs 0.6 us for 40 bytes, 1.7 us for 300, 5.7 us
-for 1200 (a relayed frame: one check, one tag).
+`server/loadtest/noise_link.py` is a second implementation on Python's `cryptography` package; the
+test vectors in `tests/contracts/server_link_frames.txt` come from it, and both test suites check
+that `link_auth.h` makes the same bytes.
 
-Attacks beside 300 players with it (link version 3, hosted):
+Not encrypted: the HTTP ports (20443, 31315). Hosted, they serve only linked addresses as their
+own player (`HttpLinkedOnly`), but their bodies cross in clear; put a TLS reverse proxy (Caddy)
+in front of them on a public server.
+
+Cost at 300 players, the same run twice on this box (work 8 bits so the joins do not crowd it):
+encrypted relay p50 / p99 0.45 / 6.0 ms, 0.17% lost, server 20% CPU; link version 3 (HMAC) 0.49 /
+4.8 ms, 0.17% lost, 21% CPU. Encryption costs nothing measurable here.
+
+Attacks beside 300 players with link version 4, hosted, work 20 bits:
+
+| Attack | What happened | Players |
+| --- | --- | --- |
+| 3000 hellos/s with new ids from 500 addresses, echoing the cookie, no work | ~32,000 cookies and `Work` answers, no account, no password hashed | 300/300, relay p99 ~35 ms (the box ran the bots, 300 games' work and the server) |
+| the same, the bots doing the work (one Python thread) | 48 accounts for 32 s of CPU; past 5 an address an hour, refused | 300/300 |
+| 30,000 datagrams/s sealed right (the game itself) | banned within seconds | 300/300 |
+| 30,000 datagrams/s that do not open, from a linked game's address | all dropped, its game not banned (its pings answered throughout) | 300/300 |
+
+One run of the first attack (of four) left 99 of 300 games outside and the bots got no cookie; it
+did not happen again in two reruns (a server of an earlier test may still have held the port).
+
+Earlier, with link version 3 (HMAC tags, the same cookie and work):
+
 
 | Attack | What happened | Players |
 | --- | --- | --- |
@@ -200,7 +221,10 @@ world.pb, `sqlite3 .backup`, restic to S3/B2/Storage Box), with a restore drill 
 Server only: nothing left; each item is a row in the tables above.
 
 Game and launcher:
-- Encryption (Noise, ~1.5-2 weeks): the link is authenticated now, but the secret and the game
-  data still cross the internet in clear.
+- Put the public server's key in `KNOWN_SERVER_KEYS` (`bbport_coop.py`) before release: without it
+  the first link to it is trusted on first use.
+- ~~Encryption.~~ Done for the link (version 4, Noise NK); the HTTP ports want a TLS proxy. Not
+  yet run in a real game: the emulator side compiles only on the PC (this cloud box can't fetch
+  its dependencies).
 - ~~A fresh id when the server refuses one (virtual address collision).~~ Done: the launcher makes
   one for that server only (coop.json `server_ids`, keyed by the address as typed) and starts again.

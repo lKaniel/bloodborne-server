@@ -70,6 +70,8 @@ set(COOP_SOURCES
     coop/team_lobby.cpp
     coop/trade.h
     coop/trade.cpp
+    coop/link_auth.h
+    coop/link_crypto.cpp
     "${PROTO_OUT}/coop.pb.cc"
 )
 
@@ -256,6 +258,7 @@ if(BUILD_TESTING)
     add_executable(test_server_link EXCLUDE_FROM_ALL
         tests/test_server_link.cpp
         src/server_link.cpp
+        coop/link_crypto.cpp
     )
     target_include_directories(test_server_link PRIVATE src "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(test_server_link PRIVATE Qt6::Core)

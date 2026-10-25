@@ -32,7 +32,12 @@ std::span<const u8> Span(const QByteArray &bytes) {
           static_cast<size_t>(bytes.size())};
 }
 
-QByteArray ToQt(std::span<const std::uint8_t> bytes) {
+std::span<u8> MutableSpan(QByteArray &bytes) {
+  return {reinterpret_cast<u8 *>(bytes.data()),
+          static_cast<size_t>(bytes.size())};
+}
+
+template <typename T> QByteArray ToQt(const T &bytes) {
   return QByteArray(reinterpret_cast<const char *>(bytes.data()),
                     static_cast<qsizetype>(bytes.size()));
 }
@@ -59,10 +64,12 @@ void LinkDatagrams(std::span<const std::uint8_t> input) {
     return channel % 3 != 0;
   });
   std::map<QByteArray, std::unique_ptr<BloodborneCoop::RpcTunnel>> tunnels;
-  // Link version 3: the games' side (coop/link_auth.h), so the inputs reach
-  // past the cookie and the tags: a hello gets its source's cookie, and a
-  // game's datagram its tag (but one in seven, which goes as it is).
+  // Link version 4: the games' side (coop/link_auth.h), so the inputs reach
+  // past the cookie and the handshake: a hello gets its source's cookie and
+  // is sealed to the hub's key, and a game's datagram is sealed (but one in
+  // seven, which goes as it is).
   std::map<quint64, LinkAuth::Client> games;
+  u8 ephemerals = 0;
   qint64 now = 1000;
   Chunks chunks{input};
   std::uint8_t selector = 0;
@@ -100,49 +107,41 @@ void LinkDatagrams(std::span<const std::uint8_t> input) {
 
     now += 1 + (selector & 0x30);
     const Endpoint from = EndpointOf(selector);
-    auto [game, made] = games.try_emplace(from.Key());
-    if (made) {
-      LinkAuth::Nonce nonce{};
-      nonce[0] = selector;
-      game->second.Restart(nonce);
-    }
+    LinkAuth::Client &game = games[from.Key()];
+    const auto seal_hello = [&](Hello hello) {
+      if (game.HasCookie()) {
+        hello.cookie = QByteArray(
+            reinterpret_cast<const char *>(game.CookieToEcho().data()),
+            LinkAuth::CookieBytes);
+      }
+      LinkAuth::Key ephemeral{};
+      ephemeral[1] = ++ephemerals; // past the bits X25519 clears
+      ephemeral[2] = selector;
+      return ToQt(game.SealHello(Span(Encode(hello)), ephemeral));
+    };
     if (auto hello = KindOf(datagram) == Kind::Hello ? DecodeHello(datagram)
                                                      : std::nullopt;
         hello && hello->version == LinkVersion && (bytes.size() % 7) != 0) {
-      if (!game->second.HasCookie()) {
-        Hello first = *hello;
-        first.cookie.clear();
-        const Hub::Result asked = hub.Receive(from, Encode(first), now);
+      if (!game.HasCookie()) {
+        const Hub::Result asked = hub.Receive(from, seal_hello(*hello), now);
         for (const auto &send : asked.sends) {
-          if (const auto cookie = DecodeCookie(send.datagram)) {
-            game->second.TakeCookie(*cookie);
+          LinkAuth::Key key{};
+          if (const auto cookie = DecodeCookie(send.datagram, nullptr, &key)) {
+            game.TakeCookie(*cookie, key);
           }
         }
       }
-      game->second.ForHello(hello->secret.toStdString(),
-                            hello->online_id.toStdString());
-      const auto &cookie = game->second.CookieToEcho();
-      hello->cookie = QByteArray(reinterpret_cast<const char *>(cookie.data()),
-                                 LinkAuth::CookieBytes);
-      const auto &nonce = game->second.NonceToSend();
-      hello->nonce = QByteArray(reinterpret_cast<const char *>(nonce.data()),
-                                LinkAuth::NonceBytes);
-      datagram = Encode(*hello);
+      datagram = seal_hello(*hello);
     } else if (KindOf(datagram) != Kind::Hello && (bytes.size() % 7) != 0) {
-      if (const auto trailer = game->second.Seal(Span(datagram))) {
+      if (const auto trailer = game.Seal(MutableSpan(datagram))) {
         datagram.append(reinterpret_cast<const char *>(trailer->data()),
                         static_cast<qsizetype>(trailer->size()));
       }
     }
     const Hub::Result result = hub.Receive(from, datagram, now);
     for (const auto &send : result.sends) {
-      if (send.to == from && game->second.Open(Span(send.datagram)) ==
-                                 LinkAuth::Client::From::Pending) {
-        const auto welcome = DecodeWelcome(
-            send.datagram.left(send.datagram.size() - LinkAuth::TrailerBytes));
-        if (welcome && welcome->accepted) {
-          game->second.Welcomed();
-        }
+      if (send.to == from) {
+        game.Open(Span(send.datagram));
       }
     }
     for (const Hub::Coop &rpc : result.rpc) {

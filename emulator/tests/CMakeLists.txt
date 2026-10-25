@@ -252,6 +252,7 @@ set(HTTP_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/core/libraries/network/http.cpp
     ${CMAKE_SOURCE_DIR}/src/core/bloodborne_party.cpp
     ${CMAKE_SOURCE_DIR}/../server/coop/world_log.cpp
+    ${CMAKE_SOURCE_DIR}/../server/coop/link_crypto.cpp
     # Required to link RegisterLib's LIB_FUNCTION calls and the logger's
     # access to EmulatorSettings.
     ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp

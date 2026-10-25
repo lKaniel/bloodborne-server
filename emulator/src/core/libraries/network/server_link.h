@@ -17,9 +17,10 @@ namespace Libraries::Net {
 // its own co-op, but its peers too are reached through the server only (phase 9).
 bool ServerLinkSwitchOn();
 // shadNet's link UDP port, this game's online id and (phase 11) its secret: the link's hello
-// signs the player in.
+// signs the player in. Link version 4: the server's public key (64 hex digits, the launcher's
+// BB_SHADNET_SERVER_KEY); none, or not a key: the first cookie's, kept once a welcome proves it.
 void ConfigureServerLink(u32 server_addr_nbo, u16 server_port_nbo, std::string online_id,
-                         std::string secret = {});
+                         std::string secret = {}, std::string_view server_key = {});
 // Which game this is, for the hello: shadNet refuses a game on another build.
 void SetServerLinkBuild(std::string build);
 // The link's events ("welcome", "refused", "quiet", "back", "member-quiet", "member-back",

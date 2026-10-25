@@ -78,6 +78,11 @@ public:
         QReadLocker lk(&m_lock);
         return m_statsPort;
     }
+    // The link's static key (link version 4, coop/link_auth.h), made at the first start.
+    QString GetLinkKeyFile() const {
+        QReadLocker lk(&m_lock);
+        return m_linkKeyFile;
+    }
     // Where the parties' worlds are kept (bloodborne_world.h): one folder per party.
     QString GetBloodborneWorldPath() const {
         QReadLocker lk(&m_lock);
@@ -195,6 +200,7 @@ private:
     QString m_statsPort = "31320";
     QString m_statsPath = "stats";
     QString m_bloodborneWorldPath = "bloodborne_worlds";
+    QString m_linkKeyFile = "link_key.bin";
     int m_statsCacheLife = 30; // seconds the stats JSON is cached before recompute
     bool m_emailValidated = false;
     bool m_makeAccountsAtSignIn = true;

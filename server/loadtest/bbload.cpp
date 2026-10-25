@@ -45,6 +45,16 @@ s64 NowUs() {
       .count();
 }
 
+// A new ephemeral key for a hello's handshake.
+LinkAuth::Key FreshKey() {
+  thread_local std::random_device device;
+  LinkAuth::Key key;
+  for (u8 &byte : key) {
+    byte = static_cast<u8>(device());
+  }
+  return key;
+}
+
 struct Settings {
   QHostAddress server{QHostAddress::LocalHost};
   quint16 port = 31314;
@@ -98,7 +108,7 @@ struct Totals {
   quint64 datagrams_sent = 0;
   quint64 datagrams_received = 0;
   quint64 refused = 0;
-  quint64 untagged = 0; // datagrams from the server whose tag did not open
+  quint64 untagged = 0; // datagrams from the server that did not open
   Samples relay_us;     // a game packet's time from its game to its teammate's
   Samples ping_us;      // ping -> pong
   Samples welcome_ms;   // first hello -> welcomed
@@ -166,7 +176,8 @@ private:
   std::map<std::string, u32> heard_seq; // per teammate: the last packet's
   u32 frame_count = 0;
   std::mt19937 random;
-  // Link version 3 (coop/link_auth.h): the cookie round trip and the tags.
+  // Link version 4 (coop/link_auth.h): the cookie round trip, the handshake
+  // and the encryption (the server's key taken on first use).
   LinkAuth::Client auth;
 };
 
@@ -331,12 +342,6 @@ Game::Game(Load &load, int index, int team, int seat)
       run{static_cast<u32>(0x2000 + index)},
       random{static_cast<u32>(index * 7919 + 1)} {
   QObject::connect(&socket, &QUdpSocket::readyRead, [this] { OnReadyRead(); });
-  std::random_device device;
-  LinkAuth::Nonce nonce;
-  for (u8 &byte : nonce) {
-    byte = static_cast<u8>(device());
-  }
-  auth.Restart(nonce);
 }
 
 void Game::Start() {
@@ -360,9 +365,8 @@ void Game::Start() {
 void Game::Send(const QByteArray &plain) {
   QByteArray datagram = plain;
   if (ServerLink::KindOf(plain) != ServerLink::Kind::Hello) {
-    const auto trailer =
-        auth.Seal({reinterpret_cast<const u8 *>(plain.constData()),
-                   static_cast<size_t>(plain.size())});
+    const auto trailer = auth.Seal({reinterpret_cast<u8 *>(datagram.data()),
+                                    static_cast<size_t>(datagram.size())});
     if (!trailer) {
       return; // no session yet: the server would drop it
     }
@@ -599,32 +603,27 @@ void Game::SendHello() {
   ServerLink::Hello hello{ServerLink::LinkVersion,
                           QByteArray::fromStdString(name),
                           load.settings.build,
-                          {},
-                          {},
+                          secret,
                           {}};
   if (auth.HasCookie()) {
-    auth.ForHello(secret.toStdString(), name);
-    hello.secret = secret;
     hello.cookie =
         QByteArray(reinterpret_cast<const char *>(auth.CookieToEcho().data()),
                    LinkAuth::CookieBytes);
     hello.work = auth.WorkToSend();
   }
-  hello.nonce =
-      QByteArray(reinterpret_cast<const char *>(auth.NonceToSend().data()),
-                 LinkAuth::NonceBytes);
-  Send(ServerLink::Encode(hello));
+  const QByteArray plain = ServerLink::Encode(hello);
+  const auto sealed =
+      auth.SealHello({reinterpret_cast<const u8 *>(plain.constData()),
+                      static_cast<size_t>(plain.size())},
+                     FreshKey());
+  Send(QByteArray(reinterpret_cast<const char *>(sealed.data()),
+                  static_cast<qsizetype>(sealed.size())));
 }
 
 // Hosted: a new account (net_link.h, as the game does it): the work on the
 // pool, then the hello with it at once, under a new nonce.
 void Game::StartWork(int bits, s64 now_us) {
-  std::random_device device;
-  LinkAuth::Nonce fresh;
-  for (u8 &byte : fresh) {
-    byte = static_cast<u8>(device());
-  }
-  if (!auth.WorkAsked(bits, fresh)) {
+  if (!auth.WorkAsked(bits)) {
     return;
   }
   const LinkAuth::Cookie cookie = auth.CookieToEcho();
@@ -659,28 +658,22 @@ void Game::OnReadyRead() {
       continue;
     }
     if (*kind == ServerLink::Kind::Cookie) {
-      if (const auto cookie = ServerLink::DecodeCookie(datagram);
-          cookie && state == State::Linking) {
-        auth.TakeCookie(*cookie);
+      LinkAuth::Key key{};
+      if (const auto cookie = ServerLink::DecodeCookie(datagram, nullptr, &key);
+          cookie && state == State::Linking && auth.TakeCookie(*cookie, key)) {
         SendHello();
       }
       continue;
     }
-    const auto from =
+    const auto opened =
         auth.Open({reinterpret_cast<const u8 *>(datagram.constData()),
                    static_cast<size_t>(datagram.size())});
-    if (from == LinkAuth::Client::From::Nobody) {
+    if (!opened) {
       ++load.totals.untagged;
       continue;
     }
-    datagram.chop(LinkAuth::TrailerBytes);
-    if (*kind == ServerLink::Kind::Welcome &&
-        from == LinkAuth::Client::From::Pending) {
-      if (const auto welcome = ServerLink::DecodeWelcome(datagram);
-          welcome && welcome->accepted) {
-        auth.Welcomed();
-      }
-    }
+    datagram = QByteArray(reinterpret_cast<const char *>(opened->data()),
+                          static_cast<qsizetype>(opened->size()));
     switch (*kind) {
     case ServerLink::Kind::Work:
       if (const auto bits = ServerLink::DecodeWork(datagram);

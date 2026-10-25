@@ -58,6 +58,24 @@ LinkServer::LinkServer(SharedState* shared, const QString& db_path, quint16 tcp_
       m_worldTimer(new QTimer(this)), m_db(QStringLiteral("link_sign_in")), m_tcpPort(tcp_port) {
     if (!m_db.Open(db_path))
         qCritical() << "Link: the accounts did not open:" << m_db.lastError();
+    // Link version 4: hellos are encrypted to the server's static key, made at the first start and
+    // kept (the launcher pins its public half): one that does not read stops the link from
+    // starting.
+    if (const QString path =
+            shared && shared->config ? shared->config->GetLinkKeyFile() : QString{};
+        !path.isEmpty()) {
+        bool made = false;
+        if (const auto key = ServerLink::KeyFromFile(path, &made, &m_keyError)) {
+            m_link.SetStaticKey(*key);
+            if (made)
+                qInfo().noquote() << "Link: a new key made in" << path
+                                  << "(only this user reads it)";
+        } else {
+            m_keyError = path + ": " + m_keyError;
+        }
+    }
+    qInfo().noquote() << "Link: the server's public key (the launcher's server key):"
+                      << QString::fromStdString(LinkAuth::HexOf(m_link.PublicKey()));
     // Phase 11: the hello signs the player in (its id's account is made the first time).
     m_link.SetSignIn([this](const QByteArray& online_id, const QByteArray& secret, bool paid) {
         return SignIn(online_id, secret, paid);
@@ -258,6 +276,10 @@ void LinkServer::Busy(const QElapsedTimer& since) {
 }
 
 bool LinkServer::Start(const QHostAddress& addr, uint16_t port) {
+    if (!m_keyError.isEmpty()) {
+        qCritical().noquote() << "Link: no key, so no link:" << m_keyError;
+        return false;
+    }
     if (!m_socket->bind(addr, port)) {
         qCritical() << "Link UDP bind failed on" << addr.toString() << ":" << port
                     << m_socket->errorString();
@@ -303,6 +325,10 @@ void LinkServer::HandleLink(const QByteArray& datagram, const QHostAddress& send
         const auto kind = ServerLink::KindOf(datagram);
         if (!kind || !Admit(datagram, *kind, address, from))
             return;
+    } else if (ServerLink::KindOf(datagram) == ServerLink::Kind::Hello &&
+               m_link.CookieValid(from, datagram, m_clock.elapsed()) &&
+               !m_helloBudget.Allow(address, m_clock.elapsed())) {
+        return; // the hosted guard limits hellos tighter
     }
     m_helloAddress = address;
     Apply(m_link.Receive(from, datagram, m_clock.elapsed()));
@@ -329,11 +355,7 @@ bool LinkServer::Admit(const QByteArray& datagram, ServerLink::Kind kind, quint3
                 m_socket->writeDatagram(*refusal, QHostAddress(from.ipv4), from.port);
             return false;
         }
-        if (const auto hello = ServerLink::DecodeHello(datagram);
-            hello && m_guard.BannedId(hello->online_id)) {
-            return false;
-        }
-        return true;
+        return true; // a banned id is known once its hello opens (SignIn)
     }
     // A link's datagrams: their rates once their tag is checked (the hub's admit).
     return true;
@@ -362,6 +384,9 @@ std::optional<ServerLink::SignInVerdict> LinkServer::SignIn(const QByteArray& on
                                                             const QByteArray& secret, bool paid) {
     // A hello comes again every second until it is welcomed, and after every outage: the
     // password's hash (100k rounds) only the first time.
+    // Hosted: a banned id hears nothing (its id is read only once its hello opened).
+    if (m_hosted.enabled && m_guard.BannedId(online_id))
+        return std::nullopt;
     const QByteArray hash = QCryptographicHash::hash(secret, QCryptographicHash::Sha256);
     const auto known = m_signedIn.constFind(online_id);
     if (known != m_signedIn.constEnd())
