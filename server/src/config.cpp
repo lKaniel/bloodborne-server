@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2019-2026 rpcsn Project
 // SPDX-FileCopyrightText: Copyright 2026 shadNet Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <algorithm>
 #include <QDebug>
 #include <QFile>
 #include <QSettings>
@@ -82,6 +83,22 @@ void ConfigManager::Parse(const QString& path) {
     m_hosted.reports = boolean("HostedReports", false);
     m_hosted.adminSocket = str("HostedAdminSocket", "admin.sock").trimmed();
     m_hosted.retireDays = str("HostedRetireDays", "0").toInt();
+    // The environment's (the deploy's) wins over the file's.
+    const auto shardSetting = [&](const QString& key, const char* env, const QString& def) {
+        const QString value = str(key, def).trimmed();
+        return qEnvironmentVariableIsSet(env) ? qEnvironmentVariable(env).trimmed() : value;
+    };
+    m_shard.directoryUrl = shardSetting("DirectoryUrl", "DIRECTORY_URL", "");
+    while (m_shard.directoryUrl.endsWith('/'))
+        m_shard.directoryUrl.chop(1);
+    m_shard.name = shardSetting("ShardName", "SHARD_NAME", "");
+    m_shard.publicAddress = shardSetting("ShardPublicAddress", "SHARD_PUBLIC_ADDRESS", "");
+    m_shard.token = shardSetting("DirectoryToken", "DIRECTORY_TOKEN", "").toUtf8();
+    m_shard.regionSecret = shardSetting("RegionSecret", "REGION_SECRET", "").toUtf8();
+    m_shard.capacity = shardSetting("ShardCapacity", "SHARD_CAPACITY", "800").toInt();
+    const QString draining = shardSetting("ShardDraining", "SHARD_DRAINING", "false").toLower();
+    m_shard.draining = draining == "true" || draining == "1";
+    m_shard.heartbeatMs = std::max(500, str("ShardHeartbeatMs", "2000").toInt());
     m_httpLinkedOnly = boolean("HttpLinkedOnly", false);
     m_statsPort = str("StatsPort", "31320");
     m_statsPath = str("StatsPath", "stats");

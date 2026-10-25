@@ -56,6 +56,9 @@ enum class Kind : quint8 {
     // Hosted: the answer to a hello for an id with no account and no work nonce (or not enough):
     // the bits its work needs (coop/link_auth.h), sealed like the hello's other answers.
     Work = 10,
+    // A region of shards (docs/SCALING.md): continue on another shard, its address, key and the
+    // ticket its hellos carry; the answer to a hello (in place of a welcome) or on the session.
+    Redirect = 11,
 };
 enum class MemberState : quint8 { Quiet = 0, Back = 1, Gone = 2 };
 
@@ -76,11 +79,20 @@ struct Endpoint {
 constexpr quint16 VirtualPort = 3658;
 Endpoint VirtualEndpointOf(const QByteArray& online_id);
 
+struct Redirect {
+    Endpoint to;
+    LinkAuth::Key key{}; // the shard's link key (the game pins it)
+    QByteArray ticket;   // opaque to the game (a region ticket, region.h); at most 4 KiB
+    QByteArray text;     // why, for the game's log
+};
+
 // Phase 11: whether a hello signed in, and when not, the text its game hears (empty: the usual).
 struct SignInVerdict {
     bool accepted = false;
     QByteArray refusal;
     bool work = false; // hosted: no account for the id and the hello did no work: ask for it
+    // A region (docs/SCALING.md): the hello is answered with this instead of a welcome.
+    std::optional<Redirect> redirect;
 };
 
 // The version, the cookie (16 bytes, zeros before the server gave one), the id, the build and the
@@ -94,6 +106,9 @@ struct Hello {
     QByteArray cookie; // 16 bytes on the wire
     // Hosted: the work nonce for a new account (8 bytes after the secret, only when there is one).
     std::optional<quint64> work;
+    // A region: the ticket of the shard that sent the game here (after the work's 8 bytes, 0 for
+    // none done, as a u16 size and its bytes).
+    QByteArray ticket;
 };
 struct Welcome {
     bool accepted = false;
@@ -136,6 +151,8 @@ std::optional<Ping> DecodePing(Kind kind, const QByteArray& datagram);
 std::optional<Member> DecodeMember(const QByteArray& datagram);
 std::optional<QByteArray> DecodeCoop(const QByteArray& datagram);
 std::optional<QByteArray> DecodeRpc(const QByteArray& datagram);
+QByteArray Encode(const Redirect& redirect);
+std::optional<Redirect> DecodeRedirect(const QByteArray& datagram);
 // A hello of another link version decodes to its version only.
 
 // The server's static key (link version 4) from `path`, made there the first time (32 random bytes,
@@ -249,6 +266,10 @@ public:
     void SetSignIn(SignIn sign_in) {
         this->sign_in = std::move(sign_in);
     }
+    // A region: the ticket of the hello the sign-in reads (empty outside its call, or none).
+    const QByteArray& HelloTicket() const {
+        return hello_ticket;
+    }
 
     // Hosted: the zero bits a new account's work needs (coop/link_auth.h; 0: none). The cookies say
     // it; a hello's work is checked against it with one hash before its sign-in.
@@ -279,6 +300,8 @@ public:
     }
     // The build every game here runs, empty while none is linked.
     QByteArray Build() const;
+    // Whether a game of `online_id` is linked.
+    bool HasLink(const QByteArray& online_id) const;
     // The virtual address of the game linked from `real`, nothing when none is.
     std::optional<Endpoint> VirtualOf(const Endpoint& real) const;
 
@@ -355,6 +378,7 @@ private:
     PartyOf party_of;
     PacketRoutes packet_routes;
     SignIn sign_in;
+    QByteArray hello_ticket;
     QByteArray required_build;
     QByteArray server_build;
 };

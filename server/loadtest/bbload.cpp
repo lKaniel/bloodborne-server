@@ -12,6 +12,11 @@
 // Every game packet carries the time it was sent and a sequence number, so the
 // receiving game measures the relay's delay and the packets lost. A summary
 // line every few seconds, a JSON line at the end (--json).
+//
+// A region of shards (docs/SCALING.md, --shards): each team's games start on
+// different shards; the members join their leader by its team's code or its
+// invite by name, and follow the Redirect to the leader's shard as the game
+// does (a new link there, the ticket in its hellos).
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -19,6 +24,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <QCommandLineParser>
@@ -73,6 +79,11 @@ struct Settings {
                       // from its home
   int same_address =
       0; // >0: this many games share each address (an attacker's flood)
+  // A region: the shards' link addresses; each team's games start spread over
+  // them. `cross`: how a member on another shard joins its leader (code,
+  // invite: by name, mixed: every other team each).
+  std::vector<std::pair<QHostAddress, quint16>> shards;
+  std::string cross = "mixed";
 };
 
 constexpr u32 MapA = 0x18010000; // Central Yharnam
@@ -116,6 +127,8 @@ struct Totals {
   Samples solve_ms;     // its solving alone (what one core of a game spends)
   Samples
       playing_ms; // first hello -> the party's welcome (team made and started)
+  quint64 redirects = 0;
+  Samples redirect_ms; // a Redirect -> the welcome of the shard it named
 };
 
 class Load;
@@ -142,7 +155,11 @@ private:
   void SendGamePackets(s64 now_us);
   void TakeData(const QByteArray &frame, s64 now_us);
   void StartWork(int bits, s64 now_us);
+  void Redirected(const ServerLink::Redirect &redirect, s64 now_us);
   bool Leader() const { return seat == 0; }
+  // A region: whether this member joins its leader on another shard, and how.
+  bool Elsewhere() const;
+  bool ByCode() const;
 
   Load &load;
   int index;
@@ -179,6 +196,14 @@ private:
   // Link version 4 (coop/link_auth.h): the cookie round trip, the handshake
   // and the encryption (the server's key taken on first use).
   LinkAuth::Client auth;
+  // The shard its link is on, the ticket of the Redirect that sent it there.
+  QHostAddress server;
+  quint16 port = 0;
+  int first_shard = 0;
+  QByteArray ticket;
+  int redirects = 0;
+  s64 redirected_us = 0;
+  s64 next_join_us = 0;
 };
 
 class Load {
@@ -210,6 +235,14 @@ public:
   ServerLink::Endpoint VirtualOf(const std::string &name) const {
     return ServerLink::VirtualEndpointOf(QByteArray::fromStdString(name));
   }
+  // A region: the shard a team's seat starts on (the leader's spread over the
+  // shards, its members on the others).
+  int ShardOf(int team, int seat) const {
+    const int count = static_cast<int>(settings.shards.size());
+    return count == 0 ? 0 : (team + seat) % count;
+  }
+  // The leaders' team codes, as their lobby said them, and since when.
+  std::map<int, std::pair<std::string, s64>> codes;
 
   Settings settings;
   Totals totals;
@@ -306,6 +339,11 @@ private:
          static_cast<double>(totals.playing_ms.Percentile(0.5))},
         {"playing_ms_p99",
          static_cast<double>(totals.playing_ms.Percentile(0.99))},
+        {"redirects", static_cast<double>(totals.redirects)},
+        {"redirect_ms_p50",
+         static_cast<double>(totals.redirect_ms.Percentile(0.5))},
+        {"redirect_ms_p99",
+         static_cast<double>(totals.redirect_ms.Percentile(0.99))},
     };
     if (settings.json) {
       std::printf(
@@ -342,6 +380,22 @@ Game::Game(Load &load, int index, int team, int seat)
       run{static_cast<u32>(0x2000 + index)},
       random{static_cast<u32>(index * 7919 + 1)} {
   QObject::connect(&socket, &QUdpSocket::readyRead, [this] { OnReadyRead(); });
+  server = load.settings.server;
+  port = load.settings.port;
+  if (!load.settings.shards.empty()) {
+    first_shard = load.ShardOf(team, seat);
+    std::tie(server, port) = load.settings.shards[first_shard];
+  }
+}
+
+bool Game::Elsewhere() const {
+  return !Leader() && load.settings.shards.size() > 1 && redirects == 0 &&
+         first_shard != load.ShardOf(team, 0);
+}
+
+bool Game::ByCode() const {
+  return load.settings.cross == "code" ||
+         (load.settings.cross == "mixed" && team % 2 == 0);
 }
 
 void Game::Start() {
@@ -373,7 +427,7 @@ void Game::Send(const QByteArray &plain) {
     datagram.append(reinterpret_cast<const char *>(trailer->data()),
                     static_cast<qsizetype>(trailer->size()));
   }
-  socket.writeDatagram(datagram, load.settings.server, load.settings.port);
+  socket.writeDatagram(datagram, server, port);
   ++load.totals.datagrams_sent;
   load.totals.bytes_sent += static_cast<quint64>(datagram.size());
 }
@@ -419,14 +473,38 @@ void Game::Tick(s64 now_us) {
     if (Leader() && team_id.empty()) {
       request.set_action(bbcoop::TeamRequest::CREATE);
       SendCoop(envelope, now_ms);
+    } else if (!Leader() && team_id.empty() && Elsewhere() && ByCode()) {
+      // A region: the leader's code once the directory knows it (a heartbeat
+      // or two after the leader's lobby said it).
+      const auto code = load.codes.find(team);
+      if (code != load.codes.end() &&
+          now_us - code->second.second > 5'000'000 && now_us >= next_join_us) {
+        next_join_us = now_us + 4'000'000;
+        request.set_action(bbcoop::TeamRequest::JOIN_CODE);
+        request.set_code(code->second.first);
+        SendCoop(envelope, now_ms);
+      }
     } else if (Leader() && !invited) {
       for (int other = 1; other < load.settings.team_size; ++other) {
+        const bool far = load.settings.shards.size() > 1 &&
+                         load.ShardOf(team, other) != load.ShardOf(team, 0);
+        if (far && ByCode()) {
+          continue; // it joins by the code
+        }
         bbcoop::Envelope invite;
-        invite.mutable_team_request()->set_action(bbcoop::TeamRequest::INVITE);
-        invite.mutable_team_request()->set_member(
-            QByteArray::fromStdString(load.NameOf(team, other))
-                .toHex()
-                .toStdString());
+        if (far) {
+          // Another shard's: by its name, as the lobby shows it.
+          invite.mutable_team_request()->set_action(
+              bbcoop::TeamRequest::INVITE_NAME);
+          invite.mutable_team_request()->set_name(load.NameOf(team, other));
+        } else {
+          invite.mutable_team_request()->set_action(
+              bbcoop::TeamRequest::INVITE);
+          invite.mutable_team_request()->set_member(
+              QByteArray::fromStdString(load.NameOf(team, other))
+                  .toHex()
+                  .toStdString());
+        }
         SendCoop(invite, now_ms);
       }
       invited = true;
@@ -439,7 +517,9 @@ void Game::Tick(s64 now_us) {
       readied = true;
       next_lobby_us = now_us + 500'000;
     } else if (Leader() && invited && team_members < load.settings.team_size &&
-               now_us - started_us > 5'000'000 && random() % 3 == 0) {
+               now_us - started_us >
+                   (load.settings.shards.size() > 1 ? 8'000'000 : 5'000'000) &&
+               random() % 3 == 0) {
       invited = false; // an invite sent before its player signed in: again
     } else if (Leader() && readied && started) {
       request.set_action(bbcoop::TeamRequest::START);
@@ -610,6 +690,7 @@ void Game::SendHello() {
         QByteArray(reinterpret_cast<const char *>(auth.CookieToEcho().data()),
                    LinkAuth::CookieBytes);
     hello.work = auth.WorkToSend();
+    hello.ticket = ticket;
   }
   const QByteArray plain = ServerLink::Encode(hello);
   const auto sealed =
@@ -649,7 +730,12 @@ void Game::OnReadyRead() {
   while (socket.hasPendingDatagrams()) {
     QByteArray datagram;
     datagram.resize(static_cast<qsizetype>(socket.pendingDatagramSize()));
-    socket.readDatagram(datagram.data(), datagram.size());
+    QHostAddress from;
+    quint16 from_port = 0;
+    socket.readDatagram(datagram.data(), datagram.size(), &from, &from_port);
+    if (from_port != port || from != server) {
+      continue; // the shard it left, saying its Redirect again
+    }
     ++load.totals.datagrams_received;
     load.totals.bytes_received += static_cast<quint64>(datagram.size());
     const s64 now_us = NowUs();
@@ -690,7 +776,11 @@ void Game::OnReadyRead() {
           next_hello_us = now_us + 5'000'000;
         } else if (state == State::Linking) {
           state = State::Lobby;
-          load.totals.welcome_ms.Add((now_us - started_us) / 1000);
+          if (redirects == 0) {
+            load.totals.welcome_ms.Add((now_us - started_us) / 1000);
+          } else {
+            load.totals.redirect_ms.Add((now_us - redirected_us) / 1000);
+          }
           bbcoop::Envelope envelope;
           envelope.mutable_lobby_hello()->set_protocol(CoopProtocol);
           envelope.mutable_lobby_hello()->set_member(member);
@@ -699,6 +789,11 @@ void Game::OnReadyRead() {
           SendCoop(envelope, now_us / 1000);
           next_lobby_us = now_us + 300'000;
         }
+      }
+      break;
+    case ServerLink::Kind::Redirect:
+      if (const auto redirect = ServerLink::DecodeRedirect(datagram)) {
+        Redirected(*redirect, now_us); // the rest is the old shard's: dropped
       }
       break;
     case ServerLink::Kind::Pong:
@@ -733,6 +828,29 @@ void Game::OnReadyRead() {
   }
 }
 
+// A region: the link moves to the shard the Redirect names, as the game's does
+// (net_link.h): its key pinned, a new cookie and handshake, the ticket in its
+// hellos, a new stream; its lobby hello again once welcomed.
+void Game::Redirected(const ServerLink::Redirect &redirect, s64 now_us) {
+  server = QHostAddress(redirect.to.ipv4);
+  port = redirect.to.port;
+  ticket = redirect.ticket;
+  auth = LinkAuth::Client{};
+  auth.Pin(redirect.key);
+  ++redirects;
+  ++load.totals.redirects;
+  stream = CoopStream{
+      "bbload", static_cast<u32>(0x10000 + index + 0x1000000 * redirects) | 1u};
+  state = State::Linking;
+  team_id.clear();
+  team_members = 0;
+  readied = false;
+  started = false;
+  invited = false;
+  redirected_us = now_us;
+  next_hello_us = now_us;
+}
+
 void Game::Take(const bbcoop::Envelope &envelope, s64 now_us) {
   const s64 now_ms = now_us / 1000;
   if (envelope.has_lobby_state()) {
@@ -740,6 +858,10 @@ void Game::Take(const bbcoop::Envelope &envelope, s64 now_us) {
     if (lobby.has_team()) {
       team_id = lobby.team().id();
       team_members = lobby.team().members_size();
+      if (Leader() && !lobby.team().code().empty() &&
+          load.codes[team].first != lobby.team().code()) {
+        load.codes[team] = {lobby.team().code(), now_us};
+      }
       if (Leader()) {
         int ready = 0;
         for (const auto &member : lobby.team().members()) {
@@ -823,6 +945,13 @@ int main(int argc, char **argv) {
       {"same-address", "games sharing each loopback address", "n", "0"},
       {"work-threads",
        "threads for the new accounts' work (hosted; 0: the cores)", "n", "0"},
+      {"shards",
+       "a region: the shards' link addresses (a.b.c.d:port,...); each team's "
+       "games start spread over them",
+       "list", ""},
+      {"cross",
+       "how a member on another shard joins its leader: code, invite, mixed",
+       "how", "mixed"},
   });
   parser.process(app);
   Settings settings;
@@ -840,6 +969,14 @@ int main(int argc, char **argv) {
   settings.json = parser.isSet("json");
   settings.spread = !parser.isSet("one-address");
   settings.same_address = parser.value("same-address").toInt();
+  for (const QString &shard :
+       parser.value("shards").split(',', Qt::SkipEmptyParts)) {
+    const qsizetype colon = shard.lastIndexOf(':');
+    settings.shards.emplace_back(
+        QHostAddress(shard.left(colon)),
+        static_cast<quint16>(shard.mid(colon + 1).toUInt()));
+  }
+  settings.cross = parser.value("cross").toStdString();
   Load load{settings};
   if (const int threads = parser.value("work-threads").toInt(); threads > 0) {
     load.work_pool.setMaxThreadCount(threads);

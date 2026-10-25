@@ -37,6 +37,8 @@ path = [
     "externals/CMakeLists.txt",
     "hosting/**",
     "coop/monocypher/.clang-format",
+    "directory/Dockerfile",
+    "directory/requirements.txt",
     "tests/fuzz/regressions/**",
 ]
 

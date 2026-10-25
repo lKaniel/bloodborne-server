@@ -23,6 +23,8 @@ import struct
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -71,7 +73,7 @@ def valid_ip(value):
 def valid_host(value):
     """What Host's IP address takes: a host's IPv4 address (valid_ip) or a public server's name
     (docs/HOSTED_SERVER.md: play.example.com; no scheme, no port: the game picks the ports)."""
-    if valid_ip(value):
+    if valid_ip(value) or region_url(value):
         return True
     value = value or ''
     labels = value.split('.')
@@ -100,6 +102,89 @@ def resolve_host(value, lookup=socket.gethostbyname):
     except (OSError, UnicodeError):
         return ''
     return address if valid_ip(address) else ''
+
+
+# --- a region of shards (docs/SCALING.md) ---------------------------------------------------------
+# Host's IP address may be a region's directory (https://eu.example.com): the launcher asks it where the
+# player is (or last played a world) and which shards are up, and starts the game on one; the game's link
+# moves between the region's shards by itself (the server's Redirect).
+
+def region_url(value):
+    """A region's directory as typed in Host's IP address (https only, a name, an optional port and path),
+    lower case without the slash at its end; '' when it is not one."""
+    found = re.fullmatch(r'https://([^/:?#\s]+)(?::(\d{1,5}))?(/[^?#\s]*)?', (value or '').strip(), re.IGNORECASE)
+    if not found or (found.group(2) and not 0 < int(found.group(2)) < 65536):
+        return ''
+    host = found.group(1).lower()
+    if not (valid_ip(host) or valid_host(host)):
+        return ''
+    return ('https://' + host + (':' + found.group(2) if found.group(2) else '') +
+            (found.group(3) or '')).rstrip('/')
+
+
+def shard_address(shard):
+    """(address, port) of a directory's shard row, or None."""
+    host, _, port = str(shard.get('address', '')).rpartition(':')
+    if not re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', host) or not port.isdigit() or not 0 < int(port) < 65536:
+        return None
+    return host, int(port)
+
+
+def pick_shard(shards, own=None):
+    """The shard the game starts on: `own` (where the player is, or last played a world) when it is up,
+    not draining and has room; else the least loaded by its share of its capacity. None when none is."""
+    def usable(shard):
+        return (shard and shard_address(shard) and valid_link_key(shard.get('key', '')) and not shard.get('draining')
+                and shard.get('players', 0) < max(1, shard.get('capacity', 0)))
+    if own and usable(own):
+        return own
+    candidates = [shard for shard in shards if usable(shard)]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda shard: (shard.get('players', 0) / max(1, shard.get('capacity', 0)),
+                                              shard.get('name', '')))
+
+
+def fetch_json(url, timeout=10):
+    """The JSON a directory answers, None for a 404."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as answer:
+            return json.loads(answer.read())
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+
+
+REGION_DOWN_TEXT = "The region's directory {} does not answer: try again in a minute."
+REGION_FULL_TEXT = 'No shard of the region {} has room right now: try again in a minute.'
+
+
+def resolve_region(url, player, fetch=fetch_json):
+    """(address, port, key, name) of the shard the game starts on (pick_shard); RuntimeError when the
+    directory does not answer or no shard has room."""
+    try:
+        where = fetch(f'{url}/v1/where?player={urllib.parse.quote(player)}')
+        listed = fetch(f'{url}/v1/shards') or {}
+    except (OSError, ValueError) as error:
+        raise RuntimeError(REGION_DOWN_TEXT.format(url)) from error
+    shards = listed.get('shards') or []
+    shard = pick_shard(shards, (where or {}).get('shard'))
+    if shard is None:
+        raise RuntimeError(REGION_FULL_TEXT.format(url))
+    address, port = shard_address(shard)
+    return address, port, shard['key'], shard.get('name', '')
+
+
+def region_settings(settings, fetch=fetch_json):
+    """The settings the game starts with for a region (settings['host_ip'] its directory): the shard's
+    address and port, and the region's key (shipped in KNOWN_SERVER_KEYS; the directory's only when none
+    ships: then its HTTPS is all that vouches for it)."""
+    url = region_url(settings['host_ip'])
+    account, secret = player_id_for(settings, url)
+    address, port, key, _name = resolve_region(url, account, fetch=fetch)
+    return dict(settings, host_ip=address, link_port=str(port), server=url, account=account, password=secret,
+                link_key=KNOWN_SERVER_KEYS.get(server_key(url)) or key)
 
 
 def is_this_pc(value):
@@ -867,7 +952,9 @@ def game_environment(env, settings, install, root):
         'BB_GAME_DIR': str(root / 'CUSA03173'), 'BB_FPS': '60',
         'BB_LOG_FILE': str(install / 'user' / 'log' / 'shad_log.txt'), 'BB_LOG_LEVEL': 'info',
         'BB_ONLINE': '1',
-        'BB_SHADNET_SERVER': f'{host}:{MATCHING_PORT}', 'BB_SHADNET_WEBAPI': f'http://{host}:{WEBAPI_PORT}',
+        # A region's shard links at its own port (region_settings); the HTTP ports are the usual ones.
+        'BB_SHADNET_SERVER': f'{host}:{settings.get("link_port") or MATCHING_PORT}',
+        'BB_SHADNET_WEBAPI': f'http://{host}:{WEBAPI_PORT}',
         'BB_SHADNET_NPID': settings['account'], 'BB_SHADNET_PASSWORD': settings['password'],
         'SHADPS4_BLOODBORNE_SEAMLESS_COOP': '1',
         'SHADPS4_BLOODBORNE_RE_TRACE': '0',

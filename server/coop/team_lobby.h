@@ -75,6 +75,18 @@ public:
         std::string party; // the party of the world the team plays (Team.party), if any
         bool operator==(const Departure&) const = default;
     };
+    // A region of shards (docs/SCALING.md): a player this shard sends to another one, with the
+    // requests it runs there (in a region ticket), and an invite for another shard's player.
+    struct Move {
+        std::string member;
+        std::string shard;
+        std::vector<bbcoop::TeamRequest> requests;
+    };
+    struct RemoteInvite {
+        std::string shard;
+        std::string member;
+        bbcoop::TeamInvite invite; // its team "@<this shard>/<code>"
+    };
     struct Outcome {
         bool changed = false;            // send everyone their state again
         std::string notice;              // why the request was refused (to the requester)
@@ -85,7 +97,37 @@ public:
         std::vector<bbcoop::TeamWorldInfo> forgotten_lines; // their lines, as they were
         // Kaniel 2026-10-17: a world's line changed (a character played in it): the list to disk.
         bool worlds_changed = false;
+        std::vector<Move> moves;
+        std::vector<RemoteInvite> remote_invites;
     };
+
+    // A region: where what this shard does not have is (the directory's view, a few seconds old).
+    // A code or name not here is looked up there; the joiner moves to the leader's shard and joins
+    // there (JOIN_CODE), an invited player hears its invite from its own shard. A Start of a world
+    // another shard holds moves the team there.
+    struct Elsewhere {
+        std::string shard;
+        std::string member;
+    };
+    struct Region {
+        std::function<std::string(const std::string& code)> shard_of_code; // "": none
+        std::function<std::vector<Elsewhere>(const std::string& folded_name)> named;
+        std::function<std::string(const std::string& world)> world_holder; // "": this one
+    };
+    void SetRegion(Region region) {
+        this->region = std::move(region);
+    }
+    void SetShardName(std::string name) {
+        shard_name = std::move(name);
+    }
+    // An invite from another shard's team (its team "@<shard>/<code>"), listed as any other;
+    // whether `member` is here to see it.
+    Outcome InviteFromElsewhere(const std::string& member, const bbcoop::TeamInvite& invite);
+    // Who is signed in (member, name) and the teams' codes: what the shard tells the directory.
+    std::vector<std::pair<std::string, std::string>> Players() const;
+    std::vector<std::string> Codes() const;
+    // Names as a lookup compares them.
+    static std::string Fold(std::string_view name);
 
     // A player signed in (or said it now plays / is back at the title).
     Outcome Arrive(const std::string& member, const std::string& name, bool playing);
@@ -166,6 +208,8 @@ private:
     }
 
     bool hosted = false;
+    Region region;
+    std::string shard_name;
     size_t lobby_players = 0;
     size_t worlds_per_player = 0;
     mutable bool indexed = false;

@@ -53,6 +53,7 @@ constexpr size_t KindAt = 8;
 constexpr u8 KindHello = 1;
 constexpr u8 KindWelcome = 2;
 constexpr u8 KindWork = 10;
+constexpr u8 KindRedirect = 11; // a region's (docs/SCALING.md): a hello's answer, or on the session
 constexpr size_t KeyBytes = 32;
 constexpr size_t CookieBytes = 16;
 constexpr size_t CounterBytes = 8;
@@ -750,14 +751,20 @@ public:
 
     // A datagram from the server opened: the plain datagram, or nothing. A welcome or a work ask
     // answers the hello under way and opens with its handshake (the same hello may be answered
-    // more than once); an accepted welcome makes its keys the link's. Everything else opens with
-    // the link's keys. A cookie is never encrypted: TakeCookie.
+    // more than once); an accepted welcome makes its keys the link's. A redirect does either: a
+    // hello's answer, or on the link. Everything else opens with the link's keys. A cookie is
+    // never encrypted: TakeCookie.
     std::optional<std::vector<u8>> Open(std::span<const u8> datagram) {
         if (datagram.size() < HeaderBytes) {
             return std::nullopt;
         }
         if (datagram[KindAt] == KindWelcome || datagram[KindAt] == KindWork) {
             return OpenAnswer(datagram);
+        }
+        if (datagram[KindAt] == KindRedirect) {
+            if (auto answer = OpenAnswer(datagram)) {
+                return answer;
+            }
         }
         if (!current) {
             return std::nullopt;

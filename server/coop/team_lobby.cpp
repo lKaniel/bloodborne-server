@@ -485,7 +485,14 @@ TeamLobby::Outcome TeamLobby::Request(const std::string& member, const bbcoop::T
         bbcoop::Team& team = teams.emplace_back();
         team.set_id(id);
         team.set_leader(member);
-        team.set_code(NewCode());
+        // A region: a team made again on the shard it moved to keeps its code (its members join it
+        // with that one); only a ticket's request carries one.
+        const std::string kept = NormalizeTeamCode(request.code());
+        team.set_code(!kept.empty() &&
+                              std::ranges::none_of(
+                                  teams, [&](const bbcoop::Team& t) { return t.code() == kept; })
+                          ? kept
+                          : NewCode());
         bbcoop::TeamMember& m = *team.add_members();
         m.set_member(member);
         m.set_name(names[member]);
@@ -534,6 +541,16 @@ TeamLobby::Outcome TeamLobby::Request(const std::string& member, const bbcoop::T
         if (mine) {
             return refuse("you are in a team already: leave it first");
         }
+        if (const std::string& id = invite->team(); id.starts_with('@')) {
+            // Another shard's team ("@<shard>/<code>"): the player goes there and joins it.
+            const size_t slash = id.find('/');
+            Move move{member, id.substr(1, slash - 1), {}};
+            bbcoop::TeamRequest& join = move.requests.emplace_back();
+            join.set_action(Action::JOIN_CODE);
+            join.set_code(slash == std::string::npos ? std::string{} : id.substr(slash + 1));
+            list.erase(invite);
+            return {.changed = true, .moves = {std::move(move)}};
+        }
         bbcoop::Team* team = FindTeam(request.team());
         if (!team) {
             list.erase(invite);
@@ -556,6 +573,15 @@ TeamLobby::Outcome TeamLobby::Request(const std::string& member, const bbcoop::T
         const auto team = std::ranges::find_if(
             teams, [&](const bbcoop::Team& t) { return !code.empty() && t.code() == code; });
         if (team == teams.end()) {
+            if (const std::string shard =
+                    region.shard_of_code && !code.empty() ? region.shard_of_code(code) : "";
+                !shard.empty() && shard != shard_name) {
+                Move move{member, shard, {}};
+                bbcoop::TeamRequest& join = move.requests.emplace_back();
+                join.set_action(Action::JOIN_CODE);
+                join.set_code(code);
+                return {.moves = {std::move(move)}};
+            }
             WrongLookup(member, now_ms);
             return refuse("no team has that code");
         }
@@ -589,9 +615,20 @@ TeamLobby::Outcome TeamLobby::Request(const std::string& member, const bbcoop::T
                 found.push_back(other);
             }
         }
-        if (found.size() != 1) {
+        std::vector<Elsewhere> far;
+        if (found.empty() && region.named && !wanted.empty()) {
+            far = region.named(wanted);
+        }
+        if (found.empty() && far.size() == 1) {
+            RemoteInvite out{far.front().shard, far.front().member, {}};
+            out.invite.set_team("@" + shard_name + "/" + mine->code());
+            out.invite.set_from(member);
+            out.invite.set_from_name(names[member]);
+            return {.remote_invites = {std::move(out)}};
+        }
+        if (found.size() + far.size() != 1) {
             WrongLookup(member, now_ms);
-            return refuse(found.empty()
+            return refuse(found.empty() && far.empty()
                               ? "no hunter of that name is online"
                               : "several hunters have that name: give yours the team's code");
         }
@@ -733,6 +770,30 @@ TeamLobby::Outcome TeamLobby::Request(const std::string& member, const bbcoop::T
         if (!mine->started() && !mine->world().empty() && PlayedBy(mine->world(), mine)) {
             return refuse("another team plays that world now");
         }
+        // A region: the world's writer is another shard; the team goes there and starts again.
+        if (const std::string holder =
+                !mine->started() && !mine->world().empty() && region.world_holder
+                    ? region.world_holder(mine->world())
+                    : "";
+            !holder.empty() && holder != shard_name) {
+            Outcome outcome;
+            for (const bbcoop::TeamMember& m : mine->members()) {
+                Move& move = outcome.moves.emplace_back(Move{m.member(), holder, {}});
+                if (m.member() == mine->leader()) {
+                    bbcoop::TeamRequest& pick = move.requests.emplace_back();
+                    pick.set_action(Action::WORLD);
+                    pick.set_world(mine->world());
+                    bbcoop::TeamRequest& create = move.requests.emplace_back();
+                    create.set_action(Action::CREATE);
+                    create.set_code(mine->code());
+                } else {
+                    bbcoop::TeamRequest& join = move.requests.emplace_back();
+                    join.set_action(Action::JOIN_CODE);
+                    join.set_code(mine->code());
+                }
+            }
+            return outcome;
+        }
         Outcome outcome{.changed = true};
         if (!mine->started()) {
             played.erase(mine->id()); // its games load: none plays yet
@@ -768,6 +829,43 @@ TeamLobby::Outcome TeamLobby::Request(const std::string& member, const bbcoop::T
     default:
         return refuse("unknown request");
     }
+}
+
+TeamLobby::Outcome TeamLobby::InviteFromElsewhere(const std::string& member,
+                                                  const bbcoop::TeamInvite& invite) {
+    if (!players.contains(member) || !invite.team().starts_with('@')) {
+        return {};
+    }
+    Changed();
+    auto& list = invites[member];
+    if (std::ranges::any_of(list, [&](const auto& i) { return i.team() == invite.team(); })) {
+        return {};
+    }
+    list.push_back(invite);
+    return {.changed = true};
+}
+
+std::vector<std::pair<std::string, std::string>> TeamLobby::Players() const {
+    std::vector<std::pair<std::string, std::string>> out;
+    out.reserve(players.size());
+    for (const auto& [member, player] : players) {
+        out.emplace_back(member, player.name);
+    }
+    return out;
+}
+
+std::vector<std::string> TeamLobby::Codes() const {
+    std::vector<std::string> out;
+    for (const bbcoop::Team& team : teams) {
+        if (!team.code().empty()) {
+            out.push_back(team.code());
+        }
+    }
+    return out;
+}
+
+std::string TeamLobby::Fold(std::string_view name) {
+    return Folded(name);
 }
 
 bbcoop::LobbyState TeamLobby::StateFor(const std::string& member) const {

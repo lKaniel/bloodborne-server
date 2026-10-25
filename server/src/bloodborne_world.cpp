@@ -1925,12 +1925,51 @@ void Service::OnLobbyHello(Member& member, const bbcoop::LobbyHello& hello, qint
         *envelope.mutable_lobby_state() = lobby.StateFor(member.lobby);
         SendTo(member, envelope, now_ms);
     }
+    // A region: what the shard that sent it here asked (join its team, make its team again).
+    if (const auto found = expected.find(member.lobby); found != expected.end()) {
+        const std::vector<bbcoop::TeamRequest> requests = std::move(found->second);
+        expected.erase(found);
+        for (const bbcoop::TeamRequest& request : requests) {
+            OnTeamRequest(member, request, now_ms, result, true);
+        }
+    }
 }
 
-void Service::OnTeamRequest(Member& member, const bbcoop::TeamRequest& request, qint64 now_ms,
-                            Result& result) {
+void Service::SetRegion(TeamLobby::Region region, std::string shard) {
+    lobby.SetRegion(std::move(region));
+    lobby.SetShardName(std::move(shard));
+}
+
+Service::Result Service::TakeInvites(
+    const std::vector<std::pair<std::string, bbcoop::TeamInvite>>& invites, qint64 now_ms) {
+    Result result;
+    for (const auto& [to, invite] : invites) {
+        const TeamLobby::Outcome outcome = lobby.InviteFromElsewhere(to, invite);
+        if (outcome.changed) {
+            result.log.append(
+                QStringLiteral("team lobby: %1 invited from another shard (%2)")
+                    .arg(QString::fromStdString(to), QString::fromStdString(invite.team())));
+        }
+        Settle(outcome, now_ms, result);
+    }
+    return result;
+}
+
+void Service::Expect(const std::string& member, std::vector<bbcoop::TeamRequest> requests) {
+    if (expected.size() > 4096) {
+        expected.clear(); // tickets nobody used (each holds 2 minutes)
+    }
+    expected[member] = std::move(requests);
+}
+
+void Service::OnTeamRequest(Member& member, const bbcoop::TeamRequest& said, qint64 now_ms,
+                            Result& result, bool ticket) {
     if (member.lobby.empty()) {
         return; // nothing before its lobby hello
+    }
+    bbcoop::TeamRequest request = said;
+    if (!ticket && request.action() == bbcoop::TeamRequest::CREATE) {
+        request.clear_code(); // a team's code is the server's to make
     }
     const TeamLobby::Outcome outcome = lobby.Request(member.lobby, request, now_ms);
     // Kaniel 2026-10-16: the world a Start plays is the team's last played.
@@ -2011,6 +2050,19 @@ void Service::ForgetMember(PartyWorld& world, const std::string& name, qint64 no
 }
 
 void Service::Settle(const TeamLobby::Outcome& outcome, qint64 now_ms, Result& result) {
+    for (const TeamLobby::Move& move : outcome.moves) {
+        for (const auto& [key, member] : members) {
+            if (member.lobby == move.member) {
+                result.moves.push_back(
+                    {endpoints.at(key), member.online_id, move.shard, move.requests});
+                result.log.append(QStringLiteral("team lobby: %1 goes to shard %2")
+                                      .arg(QString::fromStdString(move.member),
+                                           QString::fromStdString(move.shard)));
+            }
+        }
+    }
+    result.remote_invites.insert(result.remote_invites.end(), outcome.remote_invites.begin(),
+                                 outcome.remote_invites.end());
     if (outcome.changed) {
         if (hosted.enabled) {
             lobby_changed = true; // hosted: with the others at the next tick past the interval
@@ -2037,6 +2089,7 @@ void Service::Settle(const TeamLobby::Outcome& outcome, qint64 now_ms, Result& r
                 bbcoop::Envelope envelope;
                 *envelope.mutable_team_start() = start;
                 SendTo(member, envelope, now_ms);
+                result.started.append(member.online_id);
             }
         }
     }
