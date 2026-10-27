@@ -379,6 +379,7 @@ private:
         std::uint32_t level = 0;
         bool boss = false;
         std::string display; // its lobby hello's name (as players see it)
+        bool invasion_rewards = false; // LobbyHello's explicit extension capability
     };
     // Invasions: one invader on its way to (or in) a team world.
     struct Invasion {
@@ -386,6 +387,8 @@ private:
         quint64 invader = 0;      // its link (Endpoint::Key)
         std::string invader_name; // its lobby name
         std::string target;       // the member it hunts: the session's host
+        std::uint32_t invader_level = 0; // frozen at match; never the death report's level
+        std::uint32_t target_level = 0;  // frozen at join
         qint64 matched_ms = 0;
         bool joined = false;
         qint64 joined_ms = 0;
@@ -518,11 +521,19 @@ private:
     // The invasion of a world over: InvasionEnd to everyone in it, the invader out of its
     // routing, the cooldowns started.
     void EndInvasion(const QString& world, bbcoop::InvasionEnd::Reason reason, qint64 now_ms,
-                     Result& result);
+                     Result& result, bool killed_by_invader = false);
     // What a team member's vitals end (its target killed, a boss, a wipe).
     void CheckInvasion(const PartyWorld& world, const Member& member, const bbcoop::Vitals& vitals,
                        std::uint32_t wipe_before, qint64 now_ms, Result& result);
     // The world whose invasion `link` is the invader of, empty when none.
+    // A deterministic mailbox of the authenticated link identity, independent of party/team:
+    // solo invaders have no party Hello. Its grants use InvasionRewardGrantBit for safe ACKs.
+    QString RewardFolder(const Member& member) const;
+    void ResumeRewards(Member& member, qint64 now_ms, Result& result);
+    void DeliverRewards(Member& member, PartyWorld& mailbox,
+                        BloodborneCoop::TradeDesk::Result grants, qint64 now_ms, Result& result);
+    void RewardInvasion(Member& winner, quint64 invasion, const std::string& defeated,
+                        std::uint32_t echoes, qint64 now_ms, Result& result);
     QString InvadedBy(quint64 link) const;
     // An invasion's link gone: its own (the invader's) or its target's host's.
     void InvasionLinkGone(quint64 link, qint64 now_ms, Result& result);

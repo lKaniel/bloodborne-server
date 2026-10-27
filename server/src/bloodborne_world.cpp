@@ -1048,6 +1048,21 @@ void Service::Take(Member& member, const bbcoop::Envelope& envelope, qint64 now_
         OnInvadeRequest(member, envelope.invade_request(), now_ms, result);
         return;
     }
+    // Reward mailboxes are keyed by the authenticated link, never a party or client key.
+    // Handle their disjoint grant IDs even for a solo invader with no party Hello.
+    if (envelope.has_trade_granted() &&
+        (envelope.trade_granted().id() & InvasionRewardGrantBit) != 0) {
+        if (member.invasion_rewards && !member.lobby.empty()) {
+            const QString name = RewardFolder(member);
+            if (worlds.contains(name) || (!folder.isEmpty() && LoadWorld(name, now_ms, result))) {
+                PartyWorld& mailbox = worlds.at(name);
+                DeliverRewards(member, mailbox,
+                               mailbox.trades.Granted(member.lobby, envelope.trade_granted().id()),
+                               now_ms, result);
+            }
+        }
+        return;
+    }
     // An invader in a world, or one on its way with no world of its own: in no world here.
     if (member.hostile || (member.party.isEmpty() &&
                            (searches.contains(member.key) || !InvadedBy(member.key).isEmpty()))) {
@@ -1624,6 +1639,7 @@ Service::Result Service::Receive(const ServerLink::Endpoint& from, const QByteAr
                                          "hello")
                               .arg(QString::fromStdString(Who(member))));
         member.party.clear();
+        member.invasion_rewards = false; // renegotiate before sending an extension to a new game
         // An invader's game that started over is home: its invasion is over.
         searches.erase(member.key);
         if (const QString invaded = InvadedBy(member.key); !invaded.isEmpty()) {
@@ -2165,6 +2181,10 @@ void Service::OnLobbyHello(Member& member, const bbcoop::LobbyHello& hello, qint
     const bool arrived = member.lobby.empty() || std::exchange(member.lobby_again, false);
     member.lobby = hello.member();
     member.display = hello.name();
+    const bool rewards_before = std::exchange(member.invasion_rewards, hello.invasion_rewards());
+    if (member.invasion_rewards && (arrived || !rewards_before)) {
+        ResumeRewards(member, now_ms, result);
+    }
     if (arrived) {
         result.log.append(
             QStringLiteral("team lobby: %1 (%2) signed in")
@@ -2937,6 +2957,7 @@ void Service::Match(qint64 now_ms, Result& result) {
         invasion.invader = invader.key;
         invasion.invader_name = invader.lobby;
         invasion.target = world.session->host();
+        invasion.invader_level = search->second.level;
         invasion.matched_ms = now_ms;
         bbcoop::Envelope notice;
         notice.mutable_invasion_notice()->set_id(invasion.id);
@@ -3004,6 +3025,7 @@ void Service::JoinInvasion(PartyWorld& world, Invasion& invasion, qint64 now_ms,
         if (member.party == world.name && !member.hostile) {
             if (member.name == invasion.target) {
                 message.set_map(member.map);
+                invasion.target_level = member.level;
             }
             SendTo(member, joined, now_ms);
         }
@@ -3015,13 +3037,29 @@ void Service::JoinInvasion(PartyWorld& world, Invasion& invasion, qint64 now_ms,
 }
 
 void Service::EndInvasion(const QString& world, bbcoop::InvasionEnd::Reason reason, qint64 now_ms,
-                          Result& result) {
+                          Result& result, bool killed_by_invader) {
     const auto found = invasions.find(world);
     if (found == invasions.end()) {
         return;
     }
     const Invasion invasion = std::move(found->second);
-    invasions.erase(found);
+    invasions.erase(found); // retire first: a repeated end/death report cannot mint another grant
+    if (invasion.joined) {
+        for (auto& [key, member] : members) {
+            if (reason == bbcoop::InvasionEnd::INVADER_DIED && member.party == world &&
+                member.name == invasion.target && !member.hostile) {
+                RewardInvasion(member, invasion.id, invasion.invader_name,
+                               InvasionVictoryEchoes(invasion.invader_level, false), now_ms, result);
+                break;
+            }
+            if (reason == bbcoop::InvasionEnd::TARGET_KILLED && killed_by_invader &&
+                member.key == invasion.invader) {
+                RewardInvasion(member, invasion.id, invasion.target,
+                               InvasionVictoryEchoes(invasion.target_level, true), now_ms, result);
+                break;
+            }
+        }
+    }
     bbcoop::Envelope envelope;
     envelope.mutable_invasion_end()->set_id(invasion.id);
     envelope.mutable_invasion_end()->set_reason(reason);
@@ -3063,7 +3101,8 @@ void Service::CheckInvasion(const PartyWorld& world, const Member& member,
             QStringLiteral("invasions: %1 died%2")
                 .arg(QString::fromStdString(member.name),
                      vitals.killed_by_invader() ? " by the invader's hand" : QString{}));
-        EndInvasion(world.name, bbcoop::InvasionEnd::TARGET_KILLED, now_ms, result);
+        EndInvasion(world.name, bbcoop::InvasionEnd::TARGET_KILLED, now_ms, result,
+                    vitals.killed_by_invader());
         return;
     }
     const bbcoop::VitalsBoard board = world.boards.VitalsMessage();
@@ -3073,6 +3112,55 @@ void Service::CheckInvasion(const PartyWorld& world, const Member& member,
             return;
         }
     }
+}
+
+QString Service::RewardFolder(const Member& member) const {
+    return FolderOf(QByteArray{"invasion-rewards:"} + member.online_id.toHex());
+}
+
+void Service::DeliverRewards(Member& member, PartyWorld& mailbox, TradeDesk::Result grants,
+                             qint64 now_ms, Result& result) {
+    for (const TradeDesk::Send& send : grants.sends) {
+        if (send.to == member.lobby && member.invasion_rewards) {
+            SendTo(member, send.envelope, now_ms);
+        }
+    }
+    for (const std::string& line : grants.log) {
+        result.log.append(QStringLiteral("invasion rewards %1: %2")
+                              .arg(QString::fromStdString(member.lobby), QString::fromStdString(line)));
+    }
+    if (grants.changed && mailbox.store) {
+        writer->SaveTrades(mailbox.store->Folder(), mailbox.trades.Stored());
+    }
+}
+
+void Service::ResumeRewards(Member& member, qint64 now_ms, Result& result) {
+    const QString name = RewardFolder(member);
+    // A login never creates an empty mailbox. The first completed victory creates it.
+    if (!worlds.contains(name) && (folder.isEmpty() || !LoadWorld(name, now_ms, result))) {
+        return;
+    }
+    PartyWorld& mailbox = worlds.at(name);
+    DeliverRewards(member, mailbox, mailbox.trades.Resume(member.lobby, now_ms), now_ms, result);
+}
+
+void Service::RewardInvasion(Member& winner, quint64 invasion, const std::string& defeated,
+                             std::uint32_t echoes, qint64 now_ms, Result& result) {
+    if (!winner.invasion_rewards || winner.lobby.empty()) {
+        result.log.append(QStringLiteral("invasions: victory %1 has no reward-capable winner")
+                              .arg(invasion));
+        return;
+    }
+    const QString name = RewardFolder(winner);
+    if (!RoomFor(name, now_ms, result)) {
+        result.log.append(QStringLiteral("invasions: no room for victory %1's reward mailbox")
+                              .arg(invasion));
+        return;
+    }
+    PartyWorld& mailbox = WorldFor(name, now_ms, result);
+    DeliverRewards(winner, mailbox,
+                   mailbox.trades.InvasionVictory(winner.lobby, invasion, defeated, echoes),
+                   now_ms, result);
 }
 
 QString Service::InvadedBy(quint64 link) const {

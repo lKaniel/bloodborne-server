@@ -51,6 +51,12 @@ constexpr bool InLevelBand(u32 invader, u32 member) {
     return gap <= 20 + member / 5;
 }
 
+// Victory Echoes policy: 10% (invader wins) / 30% (host defends) of the defeated
+// hunter's previous-level cost. Integer arithmetic avoids platform rounding drift. Invalid
+// levels (below 10 or above 544) pay no Echoes; the separate one-Insight award still applies. See docs/INVASIONS.md
+// for provenance and the boundary between this explicit server policy and retail verification.
+u32 InvasionVictoryEchoes(u32 defeated_level, bool invader_won);
+
 // A team world as the matcher sees it.
 struct InvasionTarget {
     struct Member {

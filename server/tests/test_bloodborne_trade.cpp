@@ -399,9 +399,9 @@ int TestRefused() {
   CHECK(HasNotice(ada, TradeClient::Notice::Kind::Refused));
   party.online.insert("b2");
 
-  // Not an item the game has (no such category): back too.
+  // An invalid item claim is refused and cannot become an application grant.
   party.Offer(ada, bo, {{TradeItemKind::Item, 0x30000000 | 4242, 1}});
-  CHECK(ada.Held({TradeItemKind::Item, 0x30000000 | 4242, 0}) == 1);
+  CHECK(ada.Held({TradeItemKind::Item, 0x30000000 | 4242, 0}) == 0);
   CHECK(bo.client.Asked().empty());
   // Nor to itself.
   ada.Take({Vials(1)});
@@ -528,6 +528,84 @@ int TestTexts() {
   return 0;
 }
 
+int TestServerOnlyRewardsAndRefundSafety() {
+  const TradeItem insight{TradeItemKind::Insight, 0, 1};
+  const TradeItem unknown{static_cast<TradeItemKind>(99), 1000, 1};
+  CHECK(TradeItemsProblem(TradeItems{insight}, false).has_value());
+  TradeDesk desk;
+  bbcoop::TradeOffer offer;
+  offer.set_to("b");
+  PutTradeItems(TradeItems{insight, unknown, Vials(2)}, offer.mutable_give());
+  auto refused = desk.Offer("a", offer, {"a", "b"}, 10);
+  CHECK(desk.OpenTrades() == 0);
+  CHECK(desk.PendingGrants() == 1);
+  const auto& refund = refused.sends.back().envelope.trade_grant();
+  CHECK(TradeItemsOf(refund.items()) == TradeItems{Vials(2)});
+  CHECK(!TradeGrantItemsProblem(refund));
+  CHECK((refund.id() & InvasionRewardGrantBit) == 0);
+
+  // A forged late answer and a mismatched answer cannot launder server-only kinds.
+  bbcoop::TradeAnswer answer;
+  answer.set_id(9999);
+  answer.set_accept(true);
+  PutTradeItems(TradeItems{insight, unknown}, answer.mutable_taken());
+  auto late = desk.Answer("b", answer);
+  CHECK(desk.PendingGrants() == 1);
+  CHECK(std::ranges::none_of(late.sends, [](const auto& send) {
+    return send.envelope.has_trade_grant();
+  }));
+  PutTradeItems(TradeItems{Vials(1)}, offer.mutable_give());
+  auto opened = desk.Offer("a", offer, {"a", "b"}, 20);
+  answer.set_id(opened.sends.front().envelope.trade_status().id());
+  auto mismatch = desk.Answer("b", answer);
+  CHECK(desk.OpenTrades() == 0);
+  for (const auto& send : mismatch.sends) {
+    if (send.envelope.has_trade_grant()) {
+      CHECK(!TradeGrantItemsProblem(send.envelope.trade_grant()));
+      CHECK(TradeItemsOf(send.envelope.trade_grant().items()) == TradeItems{Vials(1)});
+    }
+  }
+
+  auto paid = desk.InvasionVictory("red", 7, "host", 556);
+  CHECK(paid.sends.size() == 1);
+  const auto reward = paid.sends.front().envelope.trade_grant();
+  CHECK((reward.id() & InvasionRewardGrantBit) != 0);
+  CHECK(reward.reason() == static_cast<u32>(TradeGrantReason::InvasionReward));
+  CHECK(!TradeGrantItemsProblem(reward));
+  CHECK((TradeItemsOf(reward.items()) == TradeItems{insight, Echoes(556)}));
+  TradeClient client;
+  auto got = client.Take(paid.sends.front().envelope);
+  CHECK(got.add.size() == 1 && got.replies.size() == 1);
+  CHECK(client.Take(paid.sends.front().envelope).add.empty());
+  CHECK(client.Take(paid.sends.front().envelope).replies.size() == 1);
+  bbcoop::Envelope forged = paid.sends.front().envelope;
+  forged.mutable_trade_grant()->set_reason(static_cast<u32>(TradeGrantReason::Returned));
+  CHECK(TradeGrantItemsProblem(forged.trade_grant()).has_value());
+  CHECK(client.Take(forged).add.empty() && client.Take(forged).replies.empty());
+  forged = paid.sends.front().envelope;
+  forged.mutable_trade_grant()->mutable_items(0)->set_count(2);
+  CHECK(TradeGrantItemsProblem(forged.trade_grant()).has_value());
+  forged = paid.sends.front().envelope;
+  forged.mutable_trade_grant()->mutable_items(0)->set_kind(99);
+  CHECK(TradeGrantItemsProblem(forged.trade_grant()).has_value());
+
+  TradeDesk restored;
+  restored.Restore(desk.Stored(), 100);
+  auto again = restored.Resume("red", 101);
+  CHECK(again.sends.size() == 1);
+  CHECK(again.sends.front().envelope.trade_grant().SerializeAsString() == reward.SerializeAsString());
+  CHECK(!restored.Granted("thief", reward.id()).changed);
+  CHECK(restored.Resume("red", 102).sends.size() == 1);
+  CHECK(restored.Granted("red", reward.id()).changed);
+  CHECK(restored.Resume("red", 103).sends.empty());
+  auto next = restored.InvasionVictory("red", 8, "host", 0);
+  CHECK(next.sends.front().envelope.trade_grant().id() > reward.id());
+  auto no_echoes = TradeItemsOf(next.sends.front().envelope.trade_grant().items());
+  CHECK(no_echoes == TradeItems{insight});
+  CHECK(!TradeGrantItemsProblem(next.sends.front().envelope.trade_grant()));
+  return 0;
+}
+
 int TestEchoesPicker() {
   // Blood Echoes go in round steps that fit what the player holds: under a
   // hundred presses to any of them, all of them past the last (Kaniel
@@ -558,6 +636,7 @@ int main() {
   int failed = 0;
   failed += TestItems();
   failed += TestEchoesPicker();
+  failed += TestServerOnlyRewardsAndRefundSafety();
   failed += TestAnyItemGiven();
   failed += TestGiveAccepted();
   failed += TestSwap();

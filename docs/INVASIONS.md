@@ -96,8 +96,8 @@ An end during the notice works the same way: the invader never joins.
 - `Vitals.level`, `Vitals.boss` and `Vitals.killed_by_invader`: new optional fields. A game that
   leaves them out means "unknown, no band", "no boss" and "not by the invader".
 
-`PROTOCOL_CURRENT` stays 7: the new fields are optional and the new messages go only to games
-that ask.
+`PROTOCOL_CURRENT` stays 8: the optional reward capability is append-only, and victory grants
+are sent only to games that advertise it.
 
 ## Settings (`shadnet.cfg`)
 
@@ -156,4 +156,55 @@ all but the Sinister bell, with the native kind/sign (the fallback behind
    in the invader's save, and that the team's games do not treat the invader as a session guest in
    `TeamGate` / `LoadProgress`.
 
-Phase 3 (rewards through `TradeDesk` grants, covenants, the Bell-Ringing Woman) is not started.
+## Opt-in victory rewards (2026-10-27)
+
+The server issues a reward only for a **joined** invasion that it ends as `INVADER_DIED`
+(the defending session host wins), or `TARGET_KILLED` with the victim's
+`Vitals.killed_by_invader=true` (the invader wins). The record is removed before issuing the
+payment, so duplicate death/end reports cannot issue another reward. A notice cancelled before
+joining, environmental host death, party wipe, boss, timeout, disconnect, cancelled search, or
+turning invasions off never pays. Guests do not get the host's defending reward.
+
+The payment is one Insight, plus Blood Echoes according to the explicit server policy in
+`InvasionVictoryEchoes`: 10% for an invading winner, 30% for a defending host, of
+`max(0, floor(0.02 L^3 + 3.06 L^2 + 105.6 L - 895))`. The defeated hunter's level is frozen at
+match (invader) or join (host); a death report cannot increase it. Unsupported low levels and unknown/out-of-range levels
+(outside 10..544) pay no Echoes. The polynomial is a **server policy**, not a claim that every
+low-level or covenant-specific retail reward has been verified. Native game validation and
+low-level curve verification are recorded separately by the consuming Mac client.
+
+The protocol remains 8. `LobbyHello.invasion_rewards=5` opts in to these grants. Original
+clients omit it and can still invade, defend and reconnect without receiving the unknown item
+kind. Opting in requires implementing all of the following:
+
+- `TradeItemKind::Insight=4`, id 0, count 1, empty name/data; it is server-issued and cannot be
+  offered, requested, answered, refunded, or otherwise supplied by a client.
+- `TradeGrantReason::InvasionReward=2`; its exact item shape is one Insight plus at most one
+  ordinary Echoes item (kind 1, id 0, positive count). Other items/reasons are rejected.
+- Reward grant IDs have bit 63 set. Ordinary party trade IDs do not. The client applies a valid
+  grant once per run and sends `TradeGranted{id}` only after applying it.
+
+Solo invaders send no party Hello. Their rewards therefore live in a separate **per-player
+mailbox**, reusing `WorldStore` and `TradeDesk`: the store key is the hash of
+`invasion-rewards:<authenticated online-id bytes as hex>`. It is calculated by the server;
+clients supply no mailbox key. It is never the invaded team's world. A party-free winner can
+receive and acknowledge a reward; its high-bit ACK is intercepted before hostile/party routing.
+An ACK from another authenticated identity cannot clear that mailbox. Pending grants and the
+next grant counter survive restart in `trades.pb`. A successful capable lobby hello resends
+pending grants; a legacy hello preserves them without sending them. The existing grant safety
+boundary remains: replay is once per **game run**, not an atomic transaction across a game crash
+between saving its inventory and acknowledging the grant.
+
+Both refused offers and late/mismatched answers now refund only valid ordinary items. The old
+"return whatever the client claimed" behavior could launder an unknown kind into an application
+grant; server-only Insight and unknown/invalid items are dropped instead. Legitimate ordinary
+trade/refund behavior remains covered by the existing trade suite.
+
+Original sources and authors: Kaniel / [lKaniel](https://github.com/lKaniel), Vitalii Shevchuk
+(as recorded by the source history), and the shadNet
+Project contributors, [pinned server source](https://github.com/lKaniel/bloodborne-server/tree/8d5e54fee50e1d7c9dd25ba0a32f224b1d76b6f1/server),
+[`TradeDesk` / `TradeClient`](https://github.com/lKaniel/bloodborne-server/blob/8d5e54fee50e1d7c9dd25ba0a32f224b1d76b6f1/server/coop/trade.cpp),
+and [invasion lifecycle](https://github.com/lKaniel/bloodborne-server/blob/8d5e54fee50e1d7c9dd25ba0a32f224b1d76b6f1/server/src/bloodborne_world.cpp).
+The durable reward mailbox, capability, validation and tests here extend those original
+GPL-2.0-or-later sources; they do not change their attribution or claim original authorship.
+Covenant-specific rewards and the Bell-Ringing Woman remain outside this change.
