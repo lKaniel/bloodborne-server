@@ -81,6 +81,7 @@ FROM qt-${QT_FROM} AS qt
 # --- shadnet -------------------------------------------------------------------------------------
 FROM qt AS build
 ARG BUILD_JOBS=0
+ARG SOURCE_REVISION
 WORKDIR /src/server
 # What CMakeLists.txt reads; not hosting/, so editing the ops files does not rebuild shadnet.
 COPY server/CMakeLists.txt /src/server/
@@ -96,10 +97,24 @@ RUN test -f externals/protobuf/CMakeLists.txt \
 # The build folder is a BuildKit cache: a rebuild after a source change compiles only that.
 RUN --mount=type=cache,id=shadnet-build,target=/src/server/build \
     cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/qt \
+    && if [ -n "$SOURCE_REVISION" ]; then \
+         printf '#pragma once\n#define BB_SCM_REV "%s"\n' "$SOURCE_REVISION" > build/include/bbcoop_revision.h; \
+       fi \
     && cmake --build build --target shadnet $( [ "$BUILD_JOBS" -gt 0 ] && echo -j"$BUILD_JOBS" ) \
     && mkdir -p /bin-out && strip -o /bin-out/shadnet build/shadnet
 COPY server/hosting/collect-runtime.sh /usr/local/bin/
 RUN sh /usr/local/bin/collect-runtime.sh /bin-out/shadnet /opt/qt /out
+
+# Opt-in verification image; the default runtime keeps its existing contents.
+#   docker build --target tests -f server/hosting/Dockerfile .
+FROM build AS tests
+ARG BUILD_JOBS=0
+RUN --mount=type=cache,id=shadnet-build,target=/src/server/build \
+    cmake --build build --target test_server_link test_build_fingerprint test_packet_routes \
+        test_rpc_tunnel test_admission test_http_gate test_team_lobby test_bloodborne_trade \
+        test_bloodborne_world test_world_writer $( [ "$BUILD_JOBS" -gt 0 ] && echo -j"$BUILD_JOBS" ) \
+    && ctest --test-dir build --output-on-failure \
+        -R '^(server_link|build_fingerprint|packet_routes|rpc_tunnel|admission|http_gate|team_lobby|bloodborne_trade|bloodborne_world|world_writer)$'
 
 # Simulated players (loadtest/bbload.cpp) for smoke tests against a deployed shard:
 #   docker build --target loadtest -t yharnam-bbload:local -f server/hosting/Dockerfile .
