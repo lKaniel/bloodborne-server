@@ -52,9 +52,11 @@ FROM toolchain AS qt-conda
 ARG QT_VERSION=6.8.4
 ARG QTHTTPSERVER_VERSION=6.8.3
 ARG MICROMAMBA_VERSION=2.3.3-0
+ARG TARGETARCH
 ARG BUILD_JOBS=0
-RUN curl -fsSL -o /usr/local/bin/micromamba \
-        "https://github.com/mamba-org/micromamba-releases/releases/download/${MICROMAMBA_VERSION}/micromamba-linux-64" \
+RUN case "$TARGETARCH" in arm64) MAMBA_ARCH=aarch64 ;; amd64) MAMBA_ARCH=64 ;; *) exit 1 ;; esac \
+    && curl -fsSL -o /usr/local/bin/micromamba \
+        "https://github.com/mamba-org/micromamba-releases/releases/download/${MICROMAMBA_VERSION}/micromamba-linux-${MAMBA_ARCH}" \
     && chmod +x /usr/local/bin/micromamba \
     && micromamba create -y -r /tmp/mamba -p /opt/qt -c conda-forge "qt6-main=${QT_VERSION}" \
     && rm -rf /tmp/mamba

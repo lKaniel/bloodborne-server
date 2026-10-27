@@ -130,3 +130,18 @@ To restore one world on production: stop shadNet, then run
 * Each TCP client gets its own thread and its own SQLite connection (`server.cpp`,
   `client_session.cpp`). That is why `pids_limit`/`TasksMax` are set to 4096.
 * Postgres and Redis are not needed for one machine. See docs/HOSTED_SERVER.md.
+
+## Native ARM64 Docker builds
+
+The default conda toolchain selects micromamba from BuildKit's `TARGETARCH`: `arm64`
+uses `micromamba-linux-aarch64` and `amd64` uses `micromamba-linux-64`. Unsupported
+architectures fail before downloading a mismatched executable. On an ARM64 Docker host:
+
+```sh
+docker build --platform linux/arm64 --build-arg BUILD_JOBS=2 \
+  -f server/hosting/Dockerfile -t shadnet:arm64 .
+```
+
+The architecture selection has been built and run on Linux ARM64. The optional
+`QT_FROM=aqt`/`linux_gcc_64` path retains its existing amd64 behavior. Existing
+configuration, firewall policy and invasion defaults are unchanged.
