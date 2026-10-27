@@ -7,6 +7,16 @@
 
 namespace BloodborneCoop {
 
+u32 InvasionVictoryEchoes(u32 level, bool invader_won) {
+    if (level < 10 || level > 544) {
+        return 0;
+    }
+    const s64 l = level;
+    const s64 previous_cost = std::max<s64>(0,
+        (2 * l * l * l + 306 * l * l + 10'560 * l - 89'500) / 100);
+    return static_cast<u32>(previous_cost * (invader_won ? 10 : 30) / 100);
+}
+
 void InvasionCooldowns::Ended(const std::string& world, const std::string& invader, s64 now_ms) {
     team_until[world] = now_ms + InvasionTeamCooldownMs;
     pair_until[{world, invader}] = now_ms + InvasionPairCooldownMs;

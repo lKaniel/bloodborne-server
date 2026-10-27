@@ -144,6 +144,8 @@ struct Game {
     envelope.mutable_lobby_hello()->set_member(name);
     envelope.mutable_lobby_hello()->set_name("Player " + name);
     envelope.mutable_lobby_hello()->set_playing(playing);
+    envelope.mutable_lobby_hello()->set_invasion_rewards(invasion_rewards);
+    envelope.mutable_lobby_hello()->set_covenant_rewards(covenant_rewards);
     Send(envelope, now_ms);
   }
   void Team(bbcoop::TeamRequest::Action action, qint64 now_ms,
@@ -162,10 +164,11 @@ struct Game {
     bbcoop::Envelope envelope;
     envelope.mutable_invade_request()->set_level(level);
     envelope.mutable_invade_request()->set_cancel(cancel);
+    envelope.mutable_invade_request()->set_covenant_effect(covenant_effect);
     Send(envelope, now_ms);
   }
   void Vitals(u32 map, u32 vital, qint64 now_ms, u32 level = 0,
-              bool boss = false) {
+              bool boss = false, bool killed_by_invader = false) {
     bbcoop::Envelope envelope;
     envelope.mutable_vitals()->set_map(map);
     envelope.mutable_vitals()->set_vital(vital);
@@ -173,6 +176,8 @@ struct Game {
     envelope.mutable_vitals()->set_max(100);
     envelope.mutable_vitals()->set_level(level);
     envelope.mutable_vitals()->set_boss(boss);
+    envelope.mutable_vitals()->set_killed_by_invader(killed_by_invader);
+    envelope.mutable_vitals()->set_covenant_effect(covenant_effect);
     envelope.mutable_vitals()->mutable_at()->set_x(1);
     Send(envelope, now_ms);
   }
@@ -228,12 +233,16 @@ struct Game {
       owners = envelope.enemy_owners();
       ++owner_messages;
     } else if (IsTradeMessage(envelope)) {
+      if (envelope.has_trade_grant()) {
+        if (on_grant) on_grant(envelope.trade_grant());
+        grants.push_back(envelope.trade_grant());
+      }
       TradeClient::Taken taken = trades.Take(envelope);
       for (TradeItems &items : taken.add) {
         added.push_back(std::move(items));
       }
       for (const bbcoop::Envelope &reply : taken.replies) {
-        Send(reply, now_ms);
+        if (ack_trades) Send(reply, now_ms);
       }
     } else if (envelope.has_welcome()) {
       welcome = envelope.welcome();
@@ -290,7 +299,13 @@ struct Game {
     Send(envelope, now_ms);
   }
   bool enemy_owner = true; // runs phase 4's owners (its hello says)
+  bool invasion_rewards = false;
+  bool covenant_rewards = false;
+  u32 covenant_effect = 0;
+  std::vector<bbcoop::TradeGrant> grants;
   TradeClient trades;
+  bool ack_trades = true;
+  std::function<void(const bbcoop::TradeGrant&)> on_grant;
   std::vector<TradeItems> added; // what its trades added
   u32 run = 0x1001;
   u32 number = 0;
@@ -2748,6 +2763,24 @@ struct InvasionRig {
       Allow(true);
     }
   }
+  void EnableRewards() {
+    for (Game* game : games) {
+      game->invasion_rewards = true;
+      game->LobbyHello(true, now);
+    }
+    Step();
+  }
+  void EnableCovenants(u32 host_oath, u32 invader_oath) {
+    a.covenant_effect = host_oath;
+    red.covenant_effect = invader_oath;
+    for (Game* game : games) {
+      game->invasion_rewards = true;
+      game->covenant_rewards = true;
+      game->LobbyHello(true, now);
+    }
+    a.Vitals(InvadedMap, 1, now, 50);
+    Step();
+  }
   void Allow(bool allow) {
     bbcoop::Envelope envelope;
     envelope.mutable_team_request()->set_action(bbcoop::TeamRequest::INVADERS);
@@ -2985,6 +3018,7 @@ int EachEndTellsEveryoneAndRestoresTheRouting() {
       };
   for (const auto &[reason, end] : ends) {
     InvasionRig rig;
+    rig.EnableRewards();
     CHECK(rig.Invade());
     CHECK(rig.Routes(rig.red, rig.a, 0x06));
     end(rig);
@@ -2992,6 +3026,8 @@ int EachEndTellsEveryoneAndRestoresTheRouting() {
     CHECK(EndedFor(rig.red, reason));
     CHECK(EndedFor(rig.a, reason) && EndedFor(rig.b, reason));
     CHECK(rig.red.ends.size() == 1 && rig.a.ends.size() == 1);
+    CHECK(rig.red.grants.empty() && rig.b.grants.empty());
+    CHECK(rig.a.grants.size() == (reason == Reason::INVADER_DIED ? 1 : 0));
     CHECK(rig.service.VisitingOf(rig.red.endpoint).isEmpty());
     CHECK(!rig.Routes(rig.red, rig.a, 0x06) &&
           !rig.Routes(rig.a, rig.red, 0x14));
@@ -3354,6 +3390,325 @@ int HostedTradesAreWithinAStartedTeam() {
 // invader whose stream breaks its limit is dropped like any game, and its
 // invasion ends; a world with an invasion is never put out of memory, and the
 // invader keeps no world loaded.
+int VictoryRewardsUseSoloMailboxesAndSurviveRestart() {
+  CHECK(InvasionVictoryEchoes(30, true) == 556);
+  CHECK(InvasionVictoryEchoes(30, false) == 1670);
+  CHECK(InvasionVictoryEchoes(0, true) == 0);
+  CHECK(InvasionVictoryEchoes(545, false) == 0);
+  CHECK(InvasionVictoryEchoes(4, false) == 0);
+  CHECK(InvasionVictoryEchoes(9, true) == 0);
+  CHECK(InvasionVictoryEchoes(10, true) == 48);
+  CHECK(InvasionVictoryEchoes(10, false) == 146);
+  // Freeze the defeated level at join/match, not an arbitrary death report.
+  {
+    InvasionRig rig;
+    rig.EnableRewards();
+    CHECK(rig.Invade());
+    rig.red.Vitals(InvadedMap, 3, rig.now, 544);
+    rig.Step();
+    CHECK(rig.a.grants.size() == 1 && rig.red.grants.empty() && rig.b.grants.empty());
+    CHECK((TradeItemsOf(rig.a.grants[0].items()) == TradeItems{
+        {TradeItemKind::Insight, 0, 1}, {TradeItemKind::Echoes, 0, 6233}}));
+    rig.red.Vitals(InvadedMap, 3, rig.now, 544);
+    rig.Step();
+    CHECK(rig.a.grants.size() == 1); // duplicate death cannot pay twice
+  }
+  {
+    InvasionRig early;
+    early.EnableRewards();
+    early.red.Invade(60, early.now);
+    early.red.Map(InvadedMap, early.now);
+    early.Step();
+    CHECK(early.red.notices.size() == 1 && !early.red.invasion);
+    early.red.Vitals(InvadedMap, 3, early.now, 60);
+    early.Step();
+    CHECK(EndedFor(early.red, bbcoop::InvasionEnd::INVADER_DIED));
+    CHECK(early.a.grants.empty() && early.b.grants.empty() && early.red.grants.empty());
+  }
+  {
+    InvasionRig legacy;
+    CHECK(legacy.Invade());
+    legacy.a.Vitals(InvadedMap, 3, legacy.now, 50, false, true);
+    legacy.Step();
+    CHECK(EndedFor(legacy.red, bbcoop::InvasionEnd::TARGET_KILLED));
+    CHECK(legacy.red.grants.empty()); // legacy client never receives Insight kind 4
+  }
+  QTemporaryDir folder;
+  CHECK(folder.isValid());
+  qint64 now = 0;
+  {
+    InvasionRig rig{true, true, folder.path()};
+    rig.EnableRewards();
+    CHECK(rig.Invade());
+    CHECK(rig.service.PartyOf(rig.red.endpoint).isEmpty()); // real solo: no party Hello
+    rig.red.deaf = true; // reward cannot reach it, so it remains owed on disk
+    rig.a.Vitals(InvadedMap, 3, rig.now, 99, false, true);
+    rig.Step();
+    CHECK(rig.a.grants.empty() && rig.b.grants.empty() && rig.red.grants.empty());
+    rig.service.Drain();
+    now = rig.now + 100;
+  }
+  Service service{folder.path()};
+  service.Load(now);
+  Game old{1002, "rr", 100};
+  old.LobbyHello(true, now);
+  Pump(service, {&old}, now);
+  CHECK(old.grants.empty()); // reconnect by an old client preserves but does not send the grant
+  // A different authenticated ID cannot acknowledge another identity's mailbox.
+  Game thief{1009, "thief", 101};
+  thief.invasion_rewards = true;
+  thief.LobbyHello(true, now);
+  bbcoop::Envelope stolen_ack;
+  stolen_ack.mutable_trade_granted()->set_id(InvasionRewardGrantBit | 1);
+  thief.Send(stolen_ack, now);
+  Pump(service, {&old, &thief}, now);
+  CHECK(thief.grants.empty());
+  old.invasion_rewards = true;
+  old.LobbyHello(true, now + 10);
+  Pump(service, {&old, &thief}, now + 10);
+  CHECK(old.grants.size() == 1);
+  const auto& grant = old.grants.front();
+  CHECK(grant.reason() == static_cast<u32>(TradeGrantReason::InvasionReward));
+  CHECK(grant.id() == (InvasionRewardGrantBit | 1));
+  CHECK((TradeItemsOf(grant.items()) == TradeItems{
+      {TradeItemKind::Insight, 0, 1}, {TradeItemKind::Echoes, 0, 1453}}));
+  CHECK(old.added.size() == 1);
+  CHECK(service.PartyOf(old.endpoint).isEmpty()); // ACK worked without ever joining a team/world
+  service.Drain();
+  // ACK survives restart too: another process with the same identity receives nothing.
+  Service after_ack{folder.path()};
+  after_ack.Load(now + 20);
+  Game newer{1002, "rr", 102};
+  newer.invasion_rewards = true;
+  newer.LobbyHello(true, now + 20);
+  Pump(after_ack, {&newer}, now + 20);
+  CHECK(newer.grants.empty() && newer.added.empty());
+  {
+    InvasionRig next{true, true, folder.path()};
+    next.EnableRewards();
+    CHECK(next.Invade());
+    next.a.Vitals(InvadedMap, 3, next.now, 50, false, true);
+    next.Step();
+    CHECK(next.red.grants.size() == 1);
+    CHECK(next.red.grants.front().id() == (InvasionRewardGrantBit | 2));
+  }
+  return 0;
+}
+
+int CovenantRewardsFollowFrozenNativeOaths() {
+  CHECK(NormalizeCovenantEffect(6100) == CorruptionCovenantEffect);
+  CHECK(NormalizeCovenantEffect(6110) == RadianceCovenantEffect);
+  CHECK(NormalizeCovenantEffect(6120) == HunterCovenantEffect);
+  CHECK(NormalizeCovenantEffect(6130) == BloodAddledHunterCovenantEffect);
+  CHECK(NormalizeCovenantEffect(12345) == 0);
+  CHECK(NormalizeCovenantEffect(0xffffffff) == 0);
+  // Native lots 5500/5510 contain one Dreg; 5600/5610/5700/5710/5800/5810 are empty.
+  for (const u32 effect : {0u, 6100u, 6110u, 6120u, 6130u, 12345u}) {
+    for (const bool host_wins : {true, false}) {
+      InvasionRig rig;
+      rig.EnableCovenants(effect, effect);
+      CHECK(rig.Invade());
+      // Neither swapping out a Corruption rune nor swapping one in mid-visit changes rewards.
+      rig.a.covenant_effect = effect == 6100 ? 0 : 6100;
+      rig.red.covenant_effect = rig.a.covenant_effect;
+      rig.a.Vitals(InvadedMap, 1, rig.now, 50);
+      rig.red.Vitals(InvadedMap, 1, rig.now, 60);
+      rig.Step();
+      if (host_wins) {
+        rig.red.Vitals(InvadedMap, 3, rig.now, 60);
+      } else {
+        rig.a.Vitals(InvadedMap, 3, rig.now, 50, false, true);
+      }
+      rig.Step();
+      const auto& winner = host_wins ? rig.a : rig.red;
+      const auto& loser = host_wins ? rig.red : rig.a;
+      CHECK(winner.grants.size() == 1 && loser.grants.empty() && rig.b.grants.empty());
+      const auto& grant = winner.grants.front();
+      CHECK(!TradeGrantItemsProblem(grant));
+      const auto items = TradeItemsOf(grant.items());
+      CHECK(items.size() == (effect == 6100 ? 3 : 2));
+      const auto dregs = std::ranges::count_if(items, [](const TradeItem& item) {
+        return item.kind == TradeItemKind::Goods && item.id == BloodDregGoods && item.count == 1;
+      });
+      CHECK(dregs == (effect == 6100 ? 1 : 0));
+    }
+  }
+  // A reward-capable client without the covenant extension keeps the original two-item grant.
+  for (const bool host_wins : {true, false}) {
+    InvasionRig old;
+    old.EnableRewards();
+    old.a.covenant_effect = old.red.covenant_effect = CorruptionCovenantEffect;
+    old.a.Vitals(InvadedMap, 1, old.now, 50);
+    old.Step();
+    CHECK(old.Invade());
+    if (host_wins) old.red.Vitals(InvadedMap, 3, old.now, 60);
+    else old.a.Vitals(InvadedMap, 3, old.now, 50, false, true);
+    old.Step();
+    const auto& winner = host_wins ? old.a : old.red;
+    CHECK(winner.grants.size() == 1);
+    CHECK(winner.grants.front().items_size() == 2);
+  }
+  return 0;
+}
+
+int ExtendedCovenantGrantsWaitForACapableReconnect() {
+  QTemporaryDir folder;
+  CHECK(folder.isValid());
+  qint64 now = 0;
+  {
+    InvasionRig rig{true, true, folder.path()};
+    rig.EnableCovenants(RadianceCovenantEffect, CorruptionCovenantEffect);
+    CHECK(rig.Invade());
+    rig.red.deaf = true;
+    rig.a.Vitals(InvadedMap, 3, rig.now, 50, false, true);
+    rig.Step();
+    rig.service.Drain();
+    now = rig.now + 100;
+  }
+  {
+    Service service{folder.path()};
+    service.Load(now);
+    Game old{1002, "rr", 800};
+    old.invasion_rewards = true;
+    old.LobbyHello(true, now);
+    Pump(service, {&old}, now);
+    CHECK(old.grants.empty() && old.added.empty()); // old validator cannot accept a Dreg
+    old.covenant_rewards = true;
+    old.LobbyHello(true, now + 10);
+    Pump(service, {&old}, now + 10);
+    CHECK(old.grants.size() == 1 && old.added.size() == 1);
+    CHECK((old.added.front() == TradeItems{
+        {TradeItemKind::Insight, 0, 1}, {TradeItemKind::Echoes, 0, 1453},
+        {TradeItemKind::Goods, BloodDregGoods, 1}}));
+    CHECK(service.PartyOf(old.endpoint).isEmpty());
+    service.Drain();
+  }
+  Service after_ack{folder.path()};
+  after_ack.Load(now + 20);
+  Game again{1002, "rr", 801};
+  again.invasion_rewards = again.covenant_rewards = true;
+  again.LobbyHello(true, now + 20);
+  Pump(after_ack, {&again}, now + 20);
+  CHECK(again.grants.empty() && again.added.empty());
+  return 0;
+}
+
+int RewardPublicationAndAckAreDurableWithoutDrain() {
+  QTemporaryDir folder;
+  CHECK(folder.isValid());
+  const QString mailbox = QDir{folder.path()}.filePath(
+      BloodborneWorld::PartyFolderName(QByteArray{"invasion-rewards:"} + QByteArray{"rr"}.toHex()));
+  bool durable_at_delivery = false;
+  qint64 now = 0;
+  {
+    InvasionRig rig{true, true, folder.path()};
+    rig.EnableCovenants(0, CorruptionCovenantEffect);
+    rig.red.ack_trades = false;
+    rig.red.on_grant = [&](const bbcoop::TradeGrant& grant) {
+      const auto stored = BloodborneWorld::WorldStore{mailbox}.LoadTrades();
+      durable_at_delivery = stored && stored->next_id() == 2 && stored->grants_size() == 1 &&
+          stored->grants(0).grant().SerializeAsString() == grant.SerializeAsString();
+    };
+    CHECK(rig.Invade());
+    rig.a.Vitals(InvadedMap, 3, rig.now, 50, false, true);
+    rig.Step();
+    CHECK(rig.red.grants.size() == 1 && durable_at_delivery);
+    CHECK(!QFile::exists(QDir{mailbox}.filePath("world.pb"))); // trades-only mailbox
+    now = rig.now + 100;
+  }
+  // A crash after persistence and before an application ACK resumes the same grant/counter,
+  // without requiring unrelated world metadata to have survived.
+  Service restarted{folder.path()};
+  restarted.Load(now);
+  Game red{1002, "rr", 901};
+  red.invasion_rewards = red.covenant_rewards = true;
+  red.LobbyHello(true, now);
+  Pump(restarted, {&red}, now);
+  CHECK(red.grants.size() == 1 && red.added.size() == 1);
+  CHECK(red.grants.front().id() == (InvasionRewardGrantBit | 1));
+  const auto acked = BloodborneWorld::WorldStore{mailbox}.LoadTrades();
+  CHECK(acked && acked->next_id() == 2 && acked->grants_size() == 0); // no Drain
+  return 0;
+}
+
+int FailedRewardWritesPublishNothingAndPreserveAckState() {
+  QTemporaryDir folder;
+  CHECK(folder.isValid());
+  const QString mailbox = QDir{folder.path()}.filePath(
+      BloodborneWorld::PartyFolderName(QByteArray{"invasion-rewards:"} + QByteArray{"rr"}.toHex()));
+  BloodborneWorld::WorldStore store{mailbox};
+  TradeDesk initial;
+  CHECK(store.SaveTrades(initial.Stored()));
+  InvasionRig rig{true, true, folder.path()};
+  rig.EnableCovenants(0, CorruptionCovenantEffect); // loads the valid empty mailbox
+  rig.red.ack_trades = false;
+  CHECK(rig.Invade());
+  const QString ledger = QDir{mailbox}.filePath("trades.pb");
+  CHECK(QFile::remove(ledger));
+  CHECK(QDir{}.mkpath(ledger)); // atomic replacement cannot replace a directory
+  rig.a.Vitals(InvadedMap, 3, rig.now, 50, false, true);
+  rig.Step();
+  CHECK(rig.red.grants.empty() && !EndedFor(rig.red, bbcoop::InvasionEnd::TARGET_KILLED));
+  CHECK(!rig.service.VisitingOf(rig.red.endpoint).isEmpty());
+  CHECK(QDir{}.rmdir(ledger));
+  rig.a.Vitals(InvadedMap, 3, rig.now + 100, 50, false, true);
+  rig.Step(100);
+  CHECK(rig.red.grants.empty()); // bounded failure backoff, even after the disk recovers
+  rig.a.Vitals(InvadedMap, 3, rig.now + 1000, 50, false, true);
+  rig.Step(1000);
+  CHECK(rig.red.grants.size() == 1 && EndedFor(rig.red, bbcoop::InvasionEnd::TARGET_KILLED));
+  CHECK(store.LoadTrades()->next_id() == 2); // failed attempt did not publish/reuse an observed id
+  const QString saved = ledger + ".saved";
+  CHECK(QFile::rename(ledger, saved));
+  CHECK(QDir{}.mkpath(ledger));
+  bbcoop::Envelope ack;
+  ack.mutable_trade_granted()->set_id(InvasionRewardGrantBit | 1);
+  rig.red.Send(ack, rig.now);
+  rig.Step(); // failed ACK persistence must leave the confirmed in-memory grant pending
+  CHECK(QDir{}.rmdir(ledger));
+  CHECK(QFile::rename(saved, ledger));
+  rig.red.invasion_rewards = false;
+  rig.red.LobbyHello(true, rig.now + 1000);
+  rig.Step(1000);
+  rig.red.invasion_rewards = true;
+  rig.red.ack_trades = true;
+  rig.red.LobbyHello(true, rig.now);
+  rig.Step();
+  CHECK(rig.red.grants.size() == 2); // replay proves failed ACK did not erase current memory
+  CHECK(rig.red.added.size() == 1); // duplicate application is suppressed
+  const auto complete = store.LoadTrades();
+  CHECK(complete && complete->next_id() == 2 && complete->grants_size() == 0);
+  return 0;
+}
+
+int CorruptRewardLedgerNeverResetsItsCounter() {
+  QTemporaryDir folder;
+  CHECK(folder.isValid());
+  const QString mailbox = QDir{folder.path()}.filePath(
+      BloodborneWorld::PartyFolderName(QByteArray{"invasion-rewards:"} + QByteArray{"rr"}.toHex()));
+  CHECK(QDir{}.mkpath(mailbox));
+  QFile ledger{QDir{mailbox}.filePath("trades.pb")};
+  CHECK(ledger.open(QIODevice::WriteOnly));
+  const QByteArray corrupt = "not-a-protobuf-ledger";
+  CHECK(ledger.write(corrupt) == corrupt.size());
+  ledger.close();
+  InvasionRig rig{true, true, folder.path()};
+  rig.EnableCovenants(0, CorruptionCovenantEffect);
+  CHECK(rig.Invade());
+  rig.a.Vitals(InvadedMap, 3, rig.now, 50, false, true);
+  rig.Step();
+  CHECK(rig.red.grants.empty());
+  CHECK(ledger.open(QIODevice::ReadOnly));
+  CHECK(ledger.readAll() == corrupt); // never overwritten with a fresh next_id=1
+  ledger.close();
+  CHECK(ledger.open(QIODevice::WriteOnly | QIODevice::Truncate));
+  ledger.close(); // an empty protobuf parses, but its absent/zero counter is not a ledger
+  rig.a.Vitals(InvadedMap, 3, rig.now + 1000, 50, false, true);
+  rig.Step(1000);
+  CHECK(rig.red.grants.empty() && ledger.size() == 0);
+  return 0;
+}
+
 int AnInvasionLivesWithTheCapsAndTheCollector() {
   {
     BloodborneWorld::Limits limits;
@@ -3663,6 +4018,13 @@ int main() {
        AnInvaderNeverChangesTheTeamsWorld},
       {"EachEndTellsEveryoneAndRestoresTheRouting",
        EachEndTellsEveryoneAndRestoresTheRouting},
+      {"VictoryRewardsUseSoloMailboxesAndSurviveRestart",
+       VictoryRewardsUseSoloMailboxesAndSurviveRestart},
+      {"CovenantRewardsFollowFrozenNativeOaths", CovenantRewardsFollowFrozenNativeOaths},
+      {"ExtendedCovenantGrantsWaitForACapableReconnect", ExtendedCovenantGrantsWaitForACapableReconnect},
+      {"RewardPublicationAndAckAreDurableWithoutDrain", RewardPublicationAndAckAreDurableWithoutDrain},
+      {"FailedRewardWritesPublishNothingAndPreserveAckState", FailedRewardWritesPublishNothingAndPreserveAckState},
+      {"CorruptRewardLedgerNeverResetsItsCounter", CorruptRewardLedgerNeverResetsItsCounter},
       {"AnInvasionLivesWithTheCapsAndTheCollector",
        AnInvasionLivesWithTheCapsAndTheCollector},
       {"AForgottenHostedWorldIsRestoredToItsPlayer",

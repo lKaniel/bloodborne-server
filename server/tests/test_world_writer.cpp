@@ -205,6 +205,60 @@ int AWorldThatDoesNotWriteKeepsItsJournal() {
   return 0;
 }
 
+// Reward publication uses this completion barrier, rather than Drain after sending. Older
+// asynchronous snapshots must finish first; a process stop immediately after it keeps the ACK.
+int DurableTradeCompletionOrdersSnapshotsAndSurvivesStop() {
+  QTemporaryDir dir;
+  CHECK(dir.isValid());
+  const QString folder = QDir{dir.path()}.filePath("new-parent/mailbox");
+  BloodborneCoop::TradeDesk desk;
+  desk.InvasionVictory("red", 9, "host", 48, true);
+  const auto pending = desk.Stored();
+  CHECK(pending.next_id() == 2 && pending.grants_size() == 1);
+  WorldWriter writer;
+  for (int at = 0; at < 32; ++at) writer.SaveTrades(folder, pending);
+  CHECK(writer.SaveTradesDurable(folder, pending));
+  CHECK(WorldStore{folder}.LoadTrades()->grants_size() == 1); // no Drain
+  desk.Granted("red", BloodborneCoop::InvasionRewardGrantBit | 1);
+  CHECK(writer.SaveTradesDurable(folder, desk.Stored()));
+  writer.Abandon(); // no final drain can repair ordering after this point
+  const auto acked = WorldStore{folder}.LoadTrades();
+  CHECK(acked && acked->next_id() == 2 && acked->grants_size() == 0);
+  CHECK(!writer.SaveTradesDurable(folder, pending));
+  return 0;
+}
+
+int TradeWriteFaultsLeaveACompleteRestartableLedger() {
+  using Point = WorldStore::TradesWritePoint;
+  for (const auto point : {Point::BeforeFileSync, Point::BeforeRename,
+                           Point::AfterRename, Point::AfterDirectorySync}) {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    WorldStore store{QDir{dir.path()}.filePath("mailbox")};
+    BloodborneCoop::TradeDesk desk;
+    CHECK(store.SaveTrades(desk.Stored()));
+    desk.InvasionVictory("red", 9, "host", 48, true);
+    WorldWriter writer;
+    CHECK(!writer.SaveTradesDurable(store.Folder(), desk.Stored(),
+        [point](Point at) { return at != point; }));
+    writer.Abandon();
+    const auto restored = store.LoadTrades();
+    CHECK(restored.has_value());
+    const bool replaced = point == Point::AfterRename || point == Point::AfterDirectorySync;
+    CHECK(restored->grants_size() == (replaced ? 1 : 0));
+    CHECK(restored->next_id() == (replaced ? 2 : 1));
+    if (replaced) {
+      CHECK(restored->grants(0).grant().id() == (BloodborneCoop::InvasionRewardGrantBit | 1));
+      BloodborneCoop::TradeDesk next;
+      next.Restore(*restored, 0);
+      const auto payment = next.InvasionVictory("red", 10, "host", 48);
+      CHECK(payment.sends.front().envelope.trade_grant().id() ==
+            (BloodborneCoop::InvasionRewardGrantBit | 2));
+    }
+  }
+  return 0;
+}
+
 // The main thread's time per record: fsynced on it (the old way) and handed to
 // the writer.
 int TheLinkThreadNoLongerWaitsForTheDisk() {
@@ -254,6 +308,10 @@ int main() {
        AStopWithoutTheDrainLosesOnlyTheTail},
       {"AWorldThatDoesNotWriteKeepsItsJournal",
        AWorldThatDoesNotWriteKeepsItsJournal},
+      {"DurableTradeCompletionOrdersSnapshotsAndSurvivesStop",
+       DurableTradeCompletionOrdersSnapshotsAndSurvivesStop},
+      {"TradeWriteFaultsLeaveACompleteRestartableLedger",
+       TradeWriteFaultsLeaveACompleteRestartableLedger},
       {"TheLinkThreadNoLongerWaitsForTheDisk",
        TheLinkThreadNoLongerWaitsForTheDisk},
   };
