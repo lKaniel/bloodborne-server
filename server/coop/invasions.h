@@ -51,6 +51,30 @@ constexpr bool InLevelBand(u32 invader, u32 member) {
     return gap <= 20 + member / 5;
 }
 
+// Victory Echoes policy: 10% (invader wins) / 30% (host defends) of the defeated
+// hunter's previous-level cost. Integer arithmetic avoids platform rounding drift. Invalid
+// levels (below 10 or above 544) pay no Echoes; the separate one-Insight award still applies. See docs/INVASIONS.md
+// for provenance and the boundary between this explicit server policy and retail verification.
+u32 InvasionVictoryEchoes(u32 defeated_level, bool invader_won);
+
+// Native 1.09 GemeffectParam oath markers; an unknown client value is never a covenant.
+// See docs/INVASION_COVENANT_REWARDS.md for original assets, field definitions and native calls.
+constexpr u32 CorruptionCovenantEffect = 6100;
+constexpr u32 RadianceCovenantEffect = 6110;
+constexpr u32 HunterCovenantEffect = 6120;
+constexpr u32 BloodAddledHunterCovenantEffect = 6130;
+constexpr u32 NormalizeCovenantEffect(u32 effect) {
+    switch (effect) {
+    case CorruptionCovenantEffect:
+    case RadianceCovenantEffect:
+    case HunterCovenantEffect:
+    case BloodAddledHunterCovenantEffect:
+        return effect;
+    default:
+        return 0;
+    }
+}
+
 // A team world as the matcher sees it.
 struct InvasionTarget {
     struct Member {

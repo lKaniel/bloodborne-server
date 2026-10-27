@@ -20,8 +20,8 @@ the port with the server world (Kaniel 2026-10-14); shadPS4 has none.
    to keep every row), with the game's own Use and Discard too.
 2. The giver's game takes the items out of its inventory at once, then sends `TradeOffer`.
 3. shadNet checks it (both members online in the party, tradeable items, counts within limits, at
-   most 4 open offers per member) and asks the other member (`TradeAsk`), or gives the items
-   straight back (refused).
+   most 4 open offers per member) and asks the other member (`TradeAsk`), or gives valid ordinary
+   items straight back (refused). Invalid or unknown item claims are never turned into grants.
 4. The other member's game shows the game's yes/no box: "Ada offers you 4 Blood Vials. Accept?"
    (the cursor starts on No). To accept a swap its game takes out what was asked of it first.
 5. shadNet hands each side its part (`TradeGrant`); declined, unanswered for 60 s, or withdrawn,
@@ -92,3 +92,9 @@ The giver writes the item into `data` before taking it out; the receiver makes a
 Goods: Blood Vial 1000, Quicksilver Bullets 900 (max held 20, storage 600). Other consumables that
 could follow: Molotov 1200, Throwing Knife 1240, Pebble 1230, Antidote 1100, Sedative 1101,
 Numbing Mist 1270, Blood Stone Shard 3000, Twin Shards 3010, Chunk 3020, Blood Rock 3030.
+
+## Server-issued invasion grants
+
+Opt-in invasion victory grants reuse the durable grant/ack path with reason 2, high-bit grant
+IDs and server-only Insight kind 4. They are never ordinary trades or refunds. Their per-player
+authenticated mailboxes, compatibility gate and safety limits are described in [INVASIONS.md](INVASIONS.md#opt-in-victory-rewards-2026-10-27).
