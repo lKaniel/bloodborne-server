@@ -305,7 +305,7 @@ namespace {
 
 bool HasReviveCalls(const GhostDeathCalls& calls) {
     return calls.set_event_flag && calls.clear_return_state && calls.request_full_recover &&
-           calls.update_blood_mark && calls.revive_player && calls.revive_local_character &&
+           calls.restock_from_storage && calls.update_blood_mark && calls.revive_player && calls.revive_local_character &&
            calls.restore_alive_state && calls.chr_reset_animation && calls.warp_to_last_lamp;
 }
 
@@ -315,6 +315,8 @@ void ReviveInPlace(const GhostDeathCalls& calls, std::optional<s32> character_ty
     calls.set_event_flag(0, DeathEventFlag, false);
     calls.clear_return_state();
     calls.request_full_recover();
+    // The respawn load a death skips here also refills vials and bullets from the storage box.
+    calls.restock_from_storage();
     calls.update_blood_mark();
     calls.revive_player();
     calls.revive_local_character();
