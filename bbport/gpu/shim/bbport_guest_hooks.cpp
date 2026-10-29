@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors (the GX occlusion query guard: deadinside28/bloodborne_pc 0.7)
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_guest_hooks.h"
 #include "bbport_heap_sites.h"
@@ -5,6 +6,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -393,6 +395,217 @@ bool InstallGxNodeGuard() {
     return true;
 }
 
+/// The live detours below.
+bool DetourLive(u64 address, u64 stub, std::size_t covered, u64 second = 0, u64 second_stub = 0);
+
+/// The GX occlusion queries: a guest fault at 0x2169edc on GXRenderThread (address 0). A query
+/// (0x30 bytes, made by its pool) gets its handle, its first field, from 0xe2f080(this, 1) ->
+/// 0x21674f0, which allocates a 0x18-byte handle and its data from the device's allocators. On a
+/// failure it returns 8 or 9 and the handle stays null; the pool does not look. The render command
+/// then begins the query (0xe2f130: state [this + 8] 0 -> 2, then 0x2169ec0, which reads the
+/// handle: the fault) and ends it (0xe2f160: state 1, then 0x216a070, which reads it too). The
+/// guard: at the begin, a query whose creation failed (GxQueryCreated keeps their addresses) is
+/// created again; one still without a handle is not begun, and its end is skipped. Its state stays
+/// 0, so the result getter gives its stored result, 0 (nothing visible). A null handle the creation
+/// did not leave (a query released while the render thread holds it) is only skipped: creating
+/// one would write into a freed object.
+/// Ported from deadinside28's bbport 0.7 (deadinside28/bloodborne_pc 0fc2921,
+/// gpu/games/bloodborne/hooks_gx.cpp, their pull request #343 by whp199; GPL-2.0-or-later,
+/// Copyright 2026 bbport contributors), onto this port's detours (DetourLive).
+/// BB_GX_QUERY_GUARD=0: not installed. BB_RE_GX_QUERY=1: the first creations and guard events.
+/// BB_GX_QUERY_FAIL=N (diagnostics): every N-th creation (retries too) fails as with a full heap
+/// (the game's release 0xe2f020 takes the new handle back), so the guard's paths run in any
+/// session. The pool makes 8192 at startup and hands out the last made first: N = 2 reaches a scene.
+constexpr u64 GxQueryBeginSite = 0xe2f134; // cmp dword [rdi + 8], 0; jne 0xe2f157 (begun already)
+constexpr u64 GxQueryReturn = 0xe2f157;    // mov al, 1; pop rbp; ret
+constexpr unsigned char GxQueryBeginCode[6] = {0x83, 0x7f, 0x08, 0x00, 0x75, 0x1d};
+constexpr u64 GxQueryEndSite = 0xe2f164;   // mov dword [rdi + 8], 1
+constexpr u64 GxQueryEndReturn = 0xe2f181; // mov al, 1; pop rbp; ret
+constexpr unsigned char GxQueryEndCode[7] = {0xc7, 0x47, 0x08, 0x01, 0x00, 0x00, 0x00};
+constexpr u64 GxQueryCreate = 0xe2f080;
+constexpr u64 GxQueryRelease = 0xe2f020;
+/// The creation's common exit (`mov rcx, [r15]; cmp rcx, [rbp - 0x20]`, the stack check): eax the
+/// result, r14 where the handle goes (the query), rbx null when the handle's allocation failed.
+constexpr u64 GxQueryCreateExit = 0x21675b0;
+constexpr unsigned char GxQueryCreateExitCode[7] = {0x49, 0x8b, 0x0f, 0x48, 0x3b, 0x4d, 0xe0};
+std::array<std::atomic<u64>, 256> gx_query_failed{}; ///< queries whose creation failed (0: free)
+std::atomic<u64> gx_query_failures{0}, gx_query_recreated{0}, gx_query_skipped{0};
+std::atomic<long long> gx_query_failure_told{0}, gx_query_guard_told{0};
+
+/// True the first time and then at most once a minute (`last`: steady clock, ms).
+bool OncePerMinute(std::atomic<long long>& last) {
+    const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+    long long seen = last.load(std::memory_order_relaxed);
+    return (seen == 0 || now - seen >= 60000) && last.compare_exchange_strong(seen, now);
+}
+
+/// BB_RE_GX_QUERY=1: true for the first 16 events counted in `traced`.
+bool GxQueryTrace(std::atomic<int>& traced) {
+    static const bool trace = [] {
+        const char* env = std::getenv("BB_RE_GX_QUERY");
+        return env && env[0] == '1';
+    }();
+    return trace && traced.fetch_add(1) < 16;
+}
+
+/// At the creation's exit: `result` the saved eax (changed for BB_GX_QUERY_FAIL), `query` r14,
+/// `handle` rbx (null when the handle's allocation failed).
+GUEST_ABI void GxQueryCreated(u64* result, u64 query, u64 handle) {
+    auto status = std::uint32_t(*result);
+    static const long fail_every = [] {
+        const char* env = std::getenv("BB_GX_QUERY_FAIL");
+        return env ? std::strtol(env, nullptr, 10) : 0l;
+    }();
+    static std::atomic<u64> creations{0};
+    const bool simulated =
+        status == 0 && fail_every > 0 && (creations.fetch_add(1) + 1) % u64(fail_every) == 0;
+    if (simulated) {
+        using Release = GUEST_ABI void (*)(u64 query);
+        reinterpret_cast<Release>(ImageBase + GxQueryRelease)(query);
+        *result = (*result & ~u64(0xffffffff)) | 9;
+        status = 9;
+    }
+    static std::atomic<int> traced{0};
+    if (GxQueryTrace(traced)) {
+        std::printf("GX query: %#llx created, result %u%s\n", static_cast<unsigned long long>(query),
+                    status, simulated ? " (BB_GX_QUERY_FAIL)" : "");
+    }
+    if (status == 0) {
+        for (auto& slot : gx_query_failed) {
+            u64 expected = query;
+            if (slot.load(std::memory_order_relaxed) == query) {
+                slot.compare_exchange_strong(expected, 0);
+            }
+        }
+        return;
+    }
+    bool known = false;
+    for (const auto& slot : gx_query_failed) {
+        known = known || slot.load(std::memory_order_relaxed) == query;
+    }
+    for (auto& slot : gx_query_failed) {
+        u64 expected = 0;
+        if (known || slot.compare_exchange_strong(expected, query)) {
+            break;
+        }
+    }
+    const u64 n = gx_query_failures.fetch_add(1) + 1;
+    if (!OncePerMinute(gx_query_failure_told)) {
+        return;
+    }
+    std::printf("Guest hooks: a GX occlusion query could not be created (error %u: %s), %llu so far; "
+                "the query guard creates it again before it begins\n",
+                status,
+                simulated     ? "BB_GX_QUERY_FAIL"
+                : status == 9 ? (handle ? "no memory for its data" : "no memory for its handle")
+                              : "the device or its data not ready",
+                static_cast<unsigned long long>(n));
+}
+
+/// The begin's stub calls this for a query without a handle (rdi). A query whose creation failed
+/// is created again (the game's own 0xe2f080, as the pool does); the stub then looks again.
+GUEST_ABI void GxQueryWithoutHandle(u64 query) {
+    bool failed = false;
+    for (const auto& slot : gx_query_failed) {
+        failed = failed || slot.load(std::memory_order_relaxed) == query;
+    }
+    if (failed) {
+        using Create = GUEST_ABI bool (*)(u64 query, std::uint32_t kind);
+        reinterpret_cast<Create>(ImageBase + GxQueryCreate)(query, 1); // GxQueryCreated keeps or forgets it
+    }
+    const bool created = *reinterpret_cast<const volatile u64*>(query) != 0;
+    const u64 recreated = gx_query_recreated.fetch_add(created) + created;
+    const u64 skipped = gx_query_skipped.fetch_add(!created) + !created;
+    static std::atomic<int> traced{0};
+    if (!OncePerMinute(gx_query_guard_told) && !GxQueryTrace(traced)) {
+        return;
+    }
+    std::printf("Guest hooks: GX occlusion query %#llx had no handle at its begin (%s): %llu created "
+                "again, %llu not begun (no fault; nothing visible) so far\n",
+                static_cast<unsigned long long>(query),
+                failed ? "its creation had failed" : "no failed creation seen: released?",
+                static_cast<unsigned long long>(recreated), static_cast<unsigned long long>(skipped));
+}
+
+/// "in", or why not (for the log).
+const char* InstallGxQueryGuard() {
+    if (const char* env = std::getenv("BB_GX_QUERY_GUARD"); env && env[0] == '0') {
+        return "off (BB_GX_QUERY_GUARD=0)";
+    }
+    const u64 begin = ImageBase + GxQueryBeginSite;
+    const u64 end = ImageBase + GxQueryEndSite;
+    const u64 exit = ImageBase + GxQueryCreateExit;
+    if (std::memcmp(reinterpret_cast<const void*>(begin), GxQueryBeginCode, sizeof(GxQueryBeginCode)) ||
+        std::memcmp(reinterpret_cast<const void*>(end), GxQueryEndCode, sizeof(GxQueryEndCode)) ||
+        std::memcmp(reinterpret_cast<const void*>(exit), GxQueryCreateExitCode,
+                    sizeof(GxQueryCreateExitCode))) {
+        return "not installed (other code there)";
+    }
+    // The begin: the game's state check, then the handle's.
+    Emitter b;
+    b.Bytes({0x83, 0x7f, 0x08, 0x00}); // cmp dword [rdi + 8], 0
+    b.Bytes({0x75, 0x00});             // jne done (begun or ended already)
+    const std::size_t to_done = b.size;
+    b.Bytes({0x48, 0x83, 0x3f, 0x00}); // cmp qword [rdi], 0
+    b.Bytes({0x74, 0x00});             // je none
+    const std::size_t to_none = b.size;
+    const std::size_t body = b.size;
+    b.JmpAbs(begin + sizeof(GxQueryBeginCode)); // body: state 2, the begin
+    const std::size_t done = b.size;
+    b.JmpAbs(ImageBase + GxQueryReturn);
+    b.code[to_done - 1] = u8(done - to_done);
+    b.code[to_none - 1] = u8(b.size - to_none);
+    b.SaveVolatile(); // none: rdi (the query) and rsi kept
+    b.CallAbs(reinterpret_cast<const void*>(&GxQueryWithoutHandle));
+    b.RestoreVolatile();
+    b.Bytes({0x48, 0x83, 0x3f, 0x00});        // cmp qword [rdi], 0: created again?
+    b.Bytes({0x75, u8(body - (b.size + 2))}); // jne body
+    b.Bytes({0xeb, u8(done - (b.size + 2))}); // jmp done: not begun, the state stays 0
+    const u64 begin_stub = PlaceStub(b);
+    // The end: only a query with a handle (begun) is ended.
+    Emitter e;
+    e.Bytes({0x48, 0x83, 0x3f, 0x00}); // cmp qword [rdi], 0
+    e.Bytes({0x74, 0x00});             // je none
+    const std::size_t to_skip = e.size;
+    for (const u8 c : GxQueryEndCode) {
+        e.Bytes({c}); // mov dword [rdi + 8], 1
+    }
+    e.JmpAbs(end + sizeof(GxQueryEndCode));
+    e.code[to_skip - 1] = u8(e.size - to_skip);
+    e.JmpAbs(ImageBase + GxQueryEndReturn); // none: not ended, the state stays 0
+    const u64 end_stub = PlaceStub(e);
+    // The creation's exit: the observer with the result (saved rax, [r12 + 72] after SaveVolatile),
+    // the query (r14) and the handle (rbx), then the exit's own instructions.
+    Emitter x;
+    x.SkipRedZone();
+    x.SaveVolatile();
+    x.SaveXmm();
+    x.Bytes({0x49, 0x8d, 0x7c, 0x24, 0x48}); // lea rdi, [r12 + 72]: the saved rax
+    x.Bytes({0x4c, 0x89, 0xf6});             // mov rsi, r14
+    x.Bytes({0x48, 0x89, 0xda});             // mov rdx, rbx
+    x.CallAbs(reinterpret_cast<const void*>(&GxQueryCreated));
+    x.RestoreXmm();
+    x.RestoreVolatile();
+    x.UnskipRedZone();
+    for (const u8 c : GxQueryCreateExitCode) {
+        x.Bytes({c});
+    }
+    x.JmpAbs(exit + sizeof(GxQueryCreateExitCode));
+    const u64 exit_stub = PlaceStub(x);
+    if (!begin_stub || !end_stub || !exit_stub) {
+        return "not installed (no room for its code)";
+    }
+    // The observer first: without it a query without a handle is only skipped.
+    const bool observer = DetourLive(exit, exit_stub, sizeof(GxQueryCreateExitCode));
+    if (!DetourLive(end, end_stub, sizeof(GxQueryEndCode)) ||
+        !DetourLive(begin, begin_stub, sizeof(GxQueryBeginCode))) {
+        return "not installed (the detours did not go in)";
+    }
+    return observer ? "in" : "in, without the creation observer (queries only skipped)";
+}
+
 /// The copy call sites: the call's target becomes a trampoline to LoaderCopy.
 bool InstallCallDetour(u64 offset) {
     Emitter e;
@@ -762,7 +975,7 @@ u64 LiveStubFor(u64 rip) {
     return 0;
 }
 
-bool DetourLive(u64 address, u64 stub, std::size_t covered, u64 second = 0, u64 second_stub = 0) {
+bool DetourLive(u64 address, u64 stub, std::size_t covered, u64 second, u64 second_stub) {
     std::uint32_t rel = 0;
     const std::size_t index = live_count.load(std::memory_order_relaxed);
     if (!stub || covered < 5 || index == live_sites.size() || !Rel32To(address + 5, stub, rel)) {
@@ -1329,6 +1542,7 @@ void Install(RangeCallback on_gpu_range_allocated) {
             }
         }
         const bool gx_guard = InstallGxNodeGuard();
+        const char* gx_query = InstallGxQueryGuard();
         const bool job_slots = InstallJobSlotFix();
         const bool kernel_clamp = InstallKernelSampleClamp();
         // BB_ASPECT_HOOKS=0: the camera, HUD markers and UI keep 16:9 (the output too).
@@ -1340,6 +1554,7 @@ void Install(RangeCallback on_gpu_range_allocated) {
                     detours);
         std::printf("Guest hooks: GX command heap guard %s\n",
                     gx_guard ? "in" : "not installed (other code there)");
+        std::printf("Guest hooks: GX occlusion query guard %s\n", gx_query);
         std::printf("Guest hooks: render job slot fix %s\n", job_slots ? "on" : "not installed");
         std::printf("Guest hooks: blur-kernel sample count clamp %s\n",
                     kernel_clamp ? "on" : "not installed");
