@@ -1929,6 +1929,8 @@ void TickPlayersOnThisMap() {
         }
     }
     RecheckShopLinesOnce(IsUsablePackedMap(map) ? map : 0);
+    TimeTickStep("GiveNpcDeathDrops",
+                 [&] { GiveNpcDeathDrops(in_session, IsUsablePackedMap(map) ? map : 0); });
     GiveBackPhantomKeyItems();
     KeepHeldItemFlagsOwn();
     KeepGestureFlagsOwn();
