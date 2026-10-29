@@ -873,6 +873,39 @@ void HideCharactersAgain() {
     }
 }
 
+} // namespace
+
+namespace Coop {
+
+// Kaniel 2026-10-29: in co-op vials, bullets and other consumables did not come back from the
+// storage box after a death or a trip. A death revives in place and a trip can load by the summon
+// placement (WarpGuestToLampPoint), so the respawn load's restock never ran: its two steps here
+// instead (see RestockItemClampOffset), only while both are the 01.09 functions.
+bool RestockFromStorage(std::string_view why) {
+    const auto starts_with = [](u64 offset, std::span<const u8> bytes) {
+        return image_base != 0 && HasMemoryAccess(image_base + offset, bytes.size(),
+                                                  MemoryProt::CpuRead) &&
+               std::ranges::equal(
+                   std::span<const u8>{reinterpret_cast<const u8*>(image_base + offset),
+                                       bytes.size()},
+                   bytes);
+    };
+    const bool found = starts_with(RestockItemClampOffset, RestockItemClampPrologue) &&
+                       starts_with(RestockFromStorageOffset,
+                                   std::span<const u8>{StandardR15Prologue.data(), 6});
+    if (found) {
+        reinterpret_cast<void PS4_SYSV_ABI (*)()>(image_base + RestockItemClampOffset)();
+        reinterpret_cast<void PS4_SYSV_ABI (*)()>(image_base + RestockFromStorageOffset)();
+    }
+    LOG_INFO(Debug, "Bloodborne restock from storage after {}: {}", why,
+             found ? "done" : "functions not found");
+    return found;
+}
+
+} // namespace Coop
+
+namespace {
+
 // Does what a reload at the lamp would (see RefreshAtLamp) and asks WorldChrMan for the bonfire
 // respawn (see WorldRespawnStateOffset).
 void RefreshWorldAtLamp(s32 lamp, s32 players) {
@@ -2049,6 +2082,11 @@ void TickPartyTrip() {
         // Again on arrival (below), in case the load created no map items (see
         // SetGuestPickupsBeforeMapItems): the headstone reads the lamps when it is used.
         guest_arrived = IsPartyGuestRole();
+        // A lamp's, headstone's or death's trip restocks as its load would have (a world reload
+        // for the time of day does not travel).
+        if (!party_trip.WorldReload()) {
+            RestockFromStorage("a trip");
+        }
         if (guest_trip_in_flight) {
             guest_trip_in_flight = false;
             guest_trip_fixup_at = std::chrono::steady_clock::now() + std::chrono::seconds{1};

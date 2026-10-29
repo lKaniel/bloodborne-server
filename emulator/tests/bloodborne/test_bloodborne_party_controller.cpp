@@ -1468,12 +1468,16 @@ void PS4_SYSV_ABI FakeChrResetAnimation(u64, s32 entity) {
 void FakeWarpToLastLamp() {
     revive_calls.push_back("WarpToLastLamp");
 }
+void FakeRestockFromStorage() {
+    revive_calls.push_back("RestockFromStorage");
+}
 
 constexpr GhostDeathCalls FakeCalls{
     .is_white_ghost = FakeIsWhiteGhost,
     .set_event_flag = FakeSetEventFlag,
     .clear_return_state = FakeClearReturnState,
     .request_full_recover = FakeRequestFullRecover,
+    .restock_from_storage = FakeRestockFromStorage,
     .update_blood_mark = FakeUpDateBloodMark,
     .revive_player = FakeRevivePlayer,
     .revive_local_character = FakeReviveLocalCharacter,
@@ -1500,6 +1504,8 @@ constexpr GhostDeathCalls FakeCalls{
 // (A summon reload instead needs the host's side of the summon handshake and drops the session.)
 // Last, like a death in its own world, it is moved to the last lamp it rested at, which works
 // whenever that lamp is in the map the host's world has loaded; otherwise it stays where it fell.
+// As the death's respawn load would, vials and bullets come back from the storage box with the
+// HP (Kaniel 2026-10-29: in co-op nothing was restocked after a death).
 TEST(BloodborneGhostDeath, ADeadPartyGuestRevivesWhereItFell) {
     revive_calls.clear();
     white_ghost = true;
@@ -1509,6 +1515,7 @@ TEST(BloodborneGhostDeath, ADeadPartyGuestRevivesWhereItFell) {
                                 "SetEventFlag 4000 off",
                                 "ClearReturnState",
                                 "RequestFullRecover",
+                                "RestockFromStorage",
                                 "UpDateBloodMark",
                                 "RevivePlayer",
                                 "ReviveLocalCharacter",
@@ -1530,7 +1537,13 @@ TEST(BloodborneGhostDeath, LeavesEveryoneElseAlone) {
     missing.chr_reset_animation = nullptr;
     EXPECT_FALSE(ReviveDeadPartyGuest(missing));
     EXPECT_TRUE(revive_calls.empty());
+
+    missing = FakeCalls;
+    missing.restock_from_storage = nullptr;
+    EXPECT_FALSE(ReviveDeadPartyGuest(missing));
+    EXPECT_TRUE(revive_calls.empty());
 }
+
 
 namespace {
 
@@ -1708,6 +1721,7 @@ TEST(BloodborneHostDeath, AHostWithAPartyRevivesLikeAGuestWithoutAReload) {
                                 "SetEventFlag 4000 off",
                                 "ClearReturnState",
                                 "RequestFullRecover",
+                                "RestockFromStorage",
                                 "UpDateBloodMark",
                                 "RevivePlayer",
                                 "ReviveLocalCharacter",

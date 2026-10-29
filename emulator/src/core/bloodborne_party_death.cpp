@@ -583,6 +583,7 @@ GhostDeathCalls MakeReviveCalls() {
             },
         .request_full_recover =
             reinterpret_cast<bool PS4_SYSV_ABI (*)()>(image_base + RequestFullRecoverOffset),
+        .restock_from_storage = [] { RestockFromStorage("a death"); },
         .update_blood_mark = UpdateGuestBloodMark,
         .revive_player = reinterpret_cast<bool PS4_SYSV_ABI (*)()>(image_base + RevivePlayerOffset),
         .revive_local_character =
@@ -1746,6 +1747,7 @@ void WakeAtOwnLamp(PartyDeathRun& run, const DeathTick& tick, SpectateEnd why) {
     const s32 hp = std::max(ReadValue<s32>(tick.data, 0xFC), 1);
     WriteValue(tick.data, 0xF8, hp);
     run.downed.GetUp(tick.now);
+    RestockFromStorage("spectating"); // as the death it stands in for would
     const u64 global = GetGlobalState();
     const s32 point = global >= 0x10000 ? ReadValue<s32>(global, 0x1528) : -1;
     const u64 blocks = ReadValue<u64>(image_base + LoadedBlocksPointerOffset, 0);

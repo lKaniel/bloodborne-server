@@ -425,6 +425,9 @@ bool BringBackWhatTheHostBroughtBack(std::span<const u32> handles);
 // HoldsBringBacks.
 extern std::atomic<s64> session_host_moved_ms;
 void MoveToRespawnPoint(bool arriving_from_trip);
+// The respawn load's restock of vials and bullets from the storage box, for the deaths and trips
+// that skip it. The game's thread only.
+bool RestockFromStorage(std::string_view why);
 extern std::optional<std::chrono::steady_clock::time_point> guest_lamp_trip_at;
 constexpr u64 WarpNextStageBonfireOffset = 0x0132E050;
 void InstallLampsAsCampfires(u64 base, u64 image_size);
