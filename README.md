@@ -71,7 +71,7 @@ expect rough edges and keep backups of your saves. New builds come out as GitHub
 - **Going down** (from Elden Ring Nightreign, the default): a killing blow puts you down instead of
   killing you while a partner is near. They revive you by striking you; when the whole party is
   down, it wipes and wakes at the host's lamp, and the area resets.
-- **Or spectate** (the team leader's pick on the team screen, **Death mode**): a killing blow while
+- **Or spectate** (the team leader's pick in the team screen's **Team settings**, **Death mode**): a killing blow while
   a partner stands near takes you out of the fight instead. You watch your teammates (L1 / R1 the
   next one) until one of them uses a lamp or the area's boss dies, then wake at your own lamp;
   holding Circle wakes you there at once. The whole team falling is still a wipe.
