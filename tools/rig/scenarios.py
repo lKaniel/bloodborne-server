@@ -760,10 +760,12 @@ SCENARIOS = {
     "guest-alone-mobs": {
         "about": "the host far away on the same map (by Iosefka's door), the guest walks up to an "
                  "enemy alone: it comes for the guest (moves) and hits it",
+        # Rig 2026-10-29: without godmode its hit put the guest down, the enemies forgot the
+        # downed player (party death) and it walked home before the last census, about 1 in 3.
         "roles": {
             "host": [START, "godmode", "wait-session 2 300", f"teleport {IOSEFKA_WAIT}",
                      "wait 75", "expect-session 2"],
-            "guest": [START, "wait-session 2 300", "wait 15", f"census 40",
+            "guest": [START, "godmode", "wait-session 2 300", "wait 15", f"census 40",
                       f"teleport {GUEST_ALONE_SPOT}", "wait 3", "census 40", "wait 25",
                       "census 40", "expect-session 2"],
         },
@@ -797,9 +799,9 @@ SCENARIOS = {
         "roles": {
             "host": [START, "godmode", "wait-session 3 300", f"teleport {IOSEFKA_WAIT}",
                      "wait 80", "expect-session 3"],
-            "guest": [START, "wait-session 3 300", "wait 15", f"teleport {GUEST_ALONE_SPOT}",
+            "guest": [START, "godmode", "wait-session 3 300", "wait 15", f"teleport {GUEST_ALONE_SPOT}",
                       "wait 3", "census 40", "wait 25", "census 40", "expect-session 3"],
-            "guest2": [START, "wait-session 3 300", "wait 15", f"teleport {GUEST_PAIR_SPOT}",
+            "guest2": [START, "godmode", "wait-session 3 300", "wait 15", f"teleport {GUEST_PAIR_SPOT}",
                        "wait 3", "census 40", "wait 25", "census 40", "expect-session 3"],
         },
         "moves": {"guest": ENEMY},
@@ -868,7 +870,7 @@ SCENARIOS = {
         "roles": {
             "host": [START, "godmode", "wait-session 2 300", "wait 18",
                      f"teleport {GUEST_ALONE_SPOT}", "wait 40", "expect-session 2"],
-            "guest": [START, "wait-session 2 300", "wait 15", f"census 40",
+            "guest": [START, "godmode", "wait-session 2 300", "wait 15", f"census 40",
                       f"teleport {GUEST_ALONE_SPOT}", "wait 3", "census 40", "wait 25",
                       "census 40", "expect-session 2"],
         },
