@@ -35,6 +35,9 @@ constexpr u64 AllocReturn = 0x26aa255, HeapReturn = 0x11e6629, CopyCall = 0x216d
               Memcpy = 0x261a1b0, GxNodeSite = 0x2199310, GxNodeSkip = 0x219934e;
 // The output's aspect ratio: a camera parameter store, a HUD marker placement and its constants,
 // Scaleform's SetViewport and the in-game screen's update.
+// The GX occlusion queries: begin and end, the creation (its exit) and the release.
+constexpr u64 GxQueryBegin = 0xe2f130, GxQueryEnd = 0xe2f160, GxQueryCreate = 0xe2f080,
+              GxQueryRelease = 0xe2f020, GxQueryCreateExit = 0x21675b0;
 constexpr u64 CameraStore = 0x1436c2c, MarkerSite = 0x1644379, MarkerScale = 0x48f9a00,
               MarkerBias = 0x48f9a10, SetViewport = 0x1f510, HudFrame = 0x1bf9e10;
 using v4 = float __attribute__((vector_size(16)));
@@ -112,6 +115,55 @@ u64 WriteGxNodeFunction() {
     Put(GxNodeSkip, {0x31, 0xc0, 0x41, 0x5f, 0x41, 0x5d, 0x41, 0x5c, 0xc3});
     return ImageBase + entry;
 }
+/// The GX query's begin (0xe2f130) and end (0xe2f160), rdi the query ([0] its handle, [+8] its
+/// state): the game's code up to the state, then a read through the handle as the game's begin
+/// (0x2169ec0) and end (0x216a070) do (the fault at 0x2169edc without one), then `mov al, 1`.
+void WriteGxQueryFunctions() {
+    // push rbp; mov rbp, rsp; cmp dword [rdi + 8], 0; jne +0x1d; mov dword [rdi + 8], 2
+    u8* at = Put(GxQueryBegin, {0x55, 0x48, 0x89, 0xe5, 0x83, 0x7f, 0x08, 0x00, 0x75, 0x1d, 0xc7, 0x47,
+                                0x08, 0x02, 0x00, 0x00, 0x00});
+    at = More(at, {0x48, 0x8b, 0x07, 0x48, 0x8b, 0x00}); // mov rax, [rdi]; mov rax, [rax]
+    while (at < reinterpret_cast<u8*>(ImageBase + GxQueryBegin + 0x27)) {
+        at = More(at, {0x90});
+    }
+    More(at, {0xb0, 0x01, 0x5d, 0xc3}); // 0xe2f157: mov al, 1; pop rbp; ret
+    // push rbp; mov rbp, rsp; mov dword [rdi + 8], 1; mov rax, [rdi]; mov rax, [rax]
+    at = Put(GxQueryEnd, {0x55, 0x48, 0x89, 0xe5, 0xc7, 0x47, 0x08, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8b,
+                          0x07, 0x48, 0x8b, 0x00});
+    while (at < reinterpret_cast<u8*>(ImageBase + GxQueryEnd + 0x21)) {
+        at = More(at, {0x90});
+    }
+    More(at, {0xb0, 0x01, 0x5d, 0xc3}); // 0xe2f181
+    // The release (0xe2f020): mov qword [rdi], 0; ret
+    Put(GxQueryRelease, {0x48, 0xc7, 0x07, 0x00, 0x00, 0x00, 0x00, 0xc3});
+}
+
+/// The creation (0xe2f080(query, kind) -> its exit at 0x21675b0): the handle from `handle_from`
+/// ([0] the handle to give, 0: the allocation fails), result 0 or 9, through the game's exit
+/// `mov rcx, [r15]; cmp rcx, [rbp - 0x20]` with rbx the handle and r14 the query.
+void WriteGxQueryCreate(const u64* handle_from) {
+    // The creation's entry jumps to the code before its exit.
+    constexpr u64 Body = GxQueryCreateExit - 0x40;
+    u8* at = Put(GxQueryCreate, {0xe9});
+    Put32(at, std::uint32_t(std::int32_t(Body - (GxQueryCreate + 5))));
+    // push rbp; mov rbp, rsp; push r15; push r14; push rbx; sub rsp, 0x28
+    at = Put(Body, {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x53, 0x48, 0x83, 0xec, 0x28});
+    // mov qword [rbp - 0x20], 0; lea r15, [rbp - 0x20]; mov r14, rdi; mov rax, handle_from
+    at = More(at, {0x48, 0xc7, 0x45, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x8d, 0x7d, 0xe0, 0x49, 0x89,
+                   0xfe, 0x48, 0xb8});
+    at = Put64(at, reinterpret_cast<u64>(handle_from));
+    // mov rbx, [rax]; mov [r14], rbx; xor eax, eax; test rbx, rbx; jnz exit; mov eax, 9
+    at = More(at, {0x48, 0x8b, 0x18, 0x49, 0x89, 0x1e, 0x31, 0xc0, 0x48, 0x85, 0xdb, 0x75, 0x05, 0xb8,
+                   0x09, 0x00, 0x00, 0x00});
+    while (at < reinterpret_cast<u8*>(ImageBase + GxQueryCreateExit)) {
+        at = More(at, {0x90});
+    }
+    // mov rcx, [r15]; cmp rcx, [rbp - 0x20]; add rsp, 0x28; pop rbx; pop r14; pop r15; pop rbp;
+    // test eax, eax; sete al; ret (the game's: true when created)
+    More(at, {0x49, 0x8b, 0x0f, 0x48, 0x3b, 0x4d, 0xe0, 0x48, 0x83, 0xc4, 0x28, 0x5b, 0x41, 0x5e, 0x41,
+              0x5f, 0x5d, 0x85, 0xc0, 0x0f, 0x94, 0xc0, 0xc3});
+}
+
 /// The camera manager's copy (rdi the current camera): `vmovss %xmm0, 0x5c(%rbx)` at CameraStore.
 u64 WriteCameraFunction() {
     const u64 entry = CameraStore - 4;
@@ -205,6 +257,15 @@ int main(int argc, char** argv) {
     const auto viewport_fn = reinterpret_cast<Viewport>(WriteEntryFunction(SetViewport));
     using Screen = GUEST_ABI void (*)(u64 screen);
     const auto screen_fn = reinterpret_cast<Screen>(WriteEntryFunction(HudFrame));
+    static u64 gx_handle_data[3] = {};
+    static u64 gx_next_handle[1] = {reinterpret_cast<u64>(gx_handle_data)};
+    WriteGxQueryFunctions();
+    WriteGxQueryCreate(gx_next_handle);
+    using GxQueryCall = GUEST_ABI u8 (*)(u64* query);
+    using GxCreate = GUEST_ABI u8 (*)(u64* query, std::uint32_t kind);
+    const auto gx_begin = reinterpret_cast<GxQueryCall>(ImageBase + GxQueryBegin);
+    const auto gx_end = reinterpret_cast<GxQueryCall>(ImageBase + GxQueryEnd);
+    const auto gx_create = reinterpret_cast<GxCreate>(ImageBase + GxQueryCreate);
 
     BbGuestHooks::Install([](u64 address, u64 size) {
         range_start = address;
@@ -238,6 +299,35 @@ int main(int argc, char** argv) {
             assert(gx_fn(gx_node, 0x1234) == 1 && gx_node[1] == 0x1234);
             assert(gx_fn(nullptr, 0x1234) == 0);
         }
+    }
+    // The GX occlusion query guard (detours only; shadPS4's crash 0x2169edc): a query without a
+    // handle is never begun or ended; one whose creation failed is created again at its begin.
+    if (!traps) {
+        assert(code[GxQueryBegin + 4] == 0xe9 && code[GxQueryEnd + 4] == 0xe9 &&
+               code[GxQueryCreateExit] == 0xe9);
+        // Created: begun and ended as before.
+        u64 created[6] = {};
+        assert(gx_create(created, 1) == 1 && created[0] == reinterpret_cast<u64>(gx_handle_data));
+        assert(gx_begin(created) == 1 && std::uint32_t(created[1]) == 2);
+        assert(gx_end(created) == 1 && std::uint32_t(created[1]) == 1);
+        // Its creation failed (no memory): created again when it begins, then begun.
+        u64 failed[6] = {};
+        gx_next_handle[0] = 0;
+        assert(gx_create(failed, 1) == 0 && failed[0] == 0);
+        gx_next_handle[0] = reinterpret_cast<u64>(gx_handle_data);
+        assert(gx_begin(failed) == 1 && failed[0] != 0 && std::uint32_t(failed[1]) == 2);
+        assert(gx_end(failed) == 1 && std::uint32_t(failed[1]) == 1);
+        // Still no memory at its begin: not begun, not ended, its state stays 0 (no fault).
+        u64 still[6] = {};
+        gx_next_handle[0] = 0;
+        assert(gx_create(still, 1) == 0);
+        assert(gx_begin(still) == 1 && still[0] == 0 && std::uint32_t(still[1]) == 0);
+        assert(gx_end(still) == 1 && std::uint32_t(still[1]) == 0);
+        // No failed creation seen (released?): only skipped, never created into.
+        gx_next_handle[0] = reinterpret_cast<u64>(gx_handle_data);
+        u64 released[6] = {};
+        assert(gx_begin(released) == 1 && released[0] == 0 && std::uint32_t(released[1]) == 0);
+        assert(gx_end(released) == 1 && std::uint32_t(released[1]) == 0);
     }
     // The output's aspect ratio (detours only; traps: not installed, the output keeps 16:9).
     assert(BbGuestHooks::AspectSupported() == !traps);
