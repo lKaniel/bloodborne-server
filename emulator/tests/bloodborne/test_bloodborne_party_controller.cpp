@@ -1544,7 +1544,6 @@ TEST(BloodborneGhostDeath, LeavesEveryoneElseAlone) {
     EXPECT_TRUE(revive_calls.empty());
 }
 
-
 namespace {
 
 std::vector<std::string> placement_calls;

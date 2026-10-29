@@ -305,8 +305,9 @@ namespace {
 
 bool HasReviveCalls(const GhostDeathCalls& calls) {
     return calls.set_event_flag && calls.clear_return_state && calls.request_full_recover &&
-           calls.restock_from_storage && calls.update_blood_mark && calls.revive_player && calls.revive_local_character &&
-           calls.restore_alive_state && calls.chr_reset_animation && calls.warp_to_last_lamp;
+           calls.restock_from_storage && calls.update_blood_mark && calls.revive_player &&
+           calls.revive_local_character && calls.restore_alive_state && calls.chr_reset_animation &&
+           calls.warp_to_last_lamp;
 }
 
 // What both deaths share. `character_type` is set back after the local revive makes the player

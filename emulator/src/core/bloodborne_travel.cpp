@@ -883,16 +883,16 @@ namespace Coop {
 // instead (see RestockItemClampOffset), only while both are the 01.09 functions.
 bool RestockFromStorage(std::string_view why) {
     const auto starts_with = [](u64 offset, std::span<const u8> bytes) {
-        return image_base != 0 && HasMemoryAccess(image_base + offset, bytes.size(),
-                                                  MemoryProt::CpuRead) &&
+        return image_base != 0 &&
+               HasMemoryAccess(image_base + offset, bytes.size(), MemoryProt::CpuRead) &&
                std::ranges::equal(
                    std::span<const u8>{reinterpret_cast<const u8*>(image_base + offset),
                                        bytes.size()},
                    bytes);
     };
-    const bool found = starts_with(RestockItemClampOffset, RestockItemClampPrologue) &&
-                       starts_with(RestockFromStorageOffset,
-                                   std::span<const u8>{StandardR15Prologue.data(), 6});
+    const bool found =
+        starts_with(RestockItemClampOffset, RestockItemClampPrologue) &&
+        starts_with(RestockFromStorageOffset, std::span<const u8>{StandardR15Prologue.data(), 6});
     if (found) {
         reinterpret_cast<void PS4_SYSV_ABI (*)()>(image_base + RestockItemClampOffset)();
         reinterpret_cast<void PS4_SYSV_ABI (*)()>(image_base + RestockFromStorageOffset)();
