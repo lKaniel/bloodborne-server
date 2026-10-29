@@ -5517,3 +5517,34 @@ SCENARIOS["boss-tempo-party"] = {
     "forbid": {"host": SESSION_HOLDS, "guest": SESSION_HOLDS},
     "timeout": 600,
 }
+
+
+# PROBE (handover-aggro, local only): guest-alone-mobs with the enemy dumped as it is handed over.
+SCENARIOS["probe-alone-mobs"] = {
+    "about": "guest-alone-mobs with dumps of the enemy 3, 8 and 15 s after the guest arrives",
+    "settings": {"SHADPS4_BLOODBORNE_TRACE_ENEMY_HP": "aistate",
+                 "SHADPS4_BLOODBORNE_TRACE_GOALS": "1001400b"},
+    "roles": {
+        "host": [START, "godmode", "wait-session 2 300", f"teleport {IOSEFKA_WAIT}", "wait 75",
+                 "expect-session 2"],
+        "guest": [START, "wait-session 2 300", "wait 15", f"dump {ENEMY}",
+                  f"teleport {GUEST_ALONE_SPOT}", *[s for _ in range(6) for s in ("wait 1", f"dump {ENEMY}")],
+                  "wait 7", f"dump {ENEMY}", "wait 10", "census 40",
+                  "expect-session 2"],
+    },
+    "moves": {"guest": ENEMY},
+    "forbid": {"host": SESSION_HOLDS, "guest": SESSION_HOLDS},
+    "timeout": 600,
+}
+
+
+# PROBE (handover-aggro, local only): the same spot by the same enemy, alone (no party, the game's
+# own AI from the start): does it come for a player who stands still?
+SCENARIOS["probe-solo-mobs"] = {
+    "about": "a lone game at GUEST_ALONE_SPOT: does the enemy there come for a still player",
+    "settings": {"SHADPS4_BLOODBORNE_TRACE_GOALS": "1001400b"},
+    "roles": {"host": [START, "wait 15", "census 40", f"teleport {GUEST_ALONE_SPOT}", "wait 3",
+                       f"dump {ENEMY}", "wait 5", "census 40", "wait 20", "census 40"]},
+    "moves": {"host": ENEMY},
+    "timeout": 300,
+}

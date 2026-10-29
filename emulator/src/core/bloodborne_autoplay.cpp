@@ -1352,6 +1352,16 @@ bool AutoplayDump(const AutoplayStep& step) {
     for (u64 index = 0; modules >= 0x10000 && index < 0x20; ++index) {
         dump(fmt::format("module{:02x}", index).c_str(), ReadValue<u64>(modules, index * 8), 0x100);
     }
+    // Rig 2026-10-29 (an enemy taken over by another game that never engages): its physics
+    // (place +0x1E0, turn +0x1D0), its AI manager (+0x3B8), the AI ([manager +0xB0]) and the AI's
+    // targeting ([AI +0x560]), to diff an engaging enemy against one that stands.
+    dump("physics", modules >= 0x10000 ? ReadValue<u64>(modules, 0x68) : 0, 0x200);
+    dump("action", modules >= 0x10000 ? ReadValue<u64>(modules, 0x08) : 0, 0x300);
+    const u64 manager = ReadValue<u64>(found->character, 0x3B8);
+    dump("aiman", manager, 0x100);
+    const u64 ai = manager >= 0x10000 ? ReadValue<u64>(manager, 0xB0) : 0;
+    dump("ai", ai, 0x1000);
+    dump("targeting", ai >= 0x10000 ? ReadValue<u64>(ai, 0x560) : 0, 0x100);
     return true;
 }
 

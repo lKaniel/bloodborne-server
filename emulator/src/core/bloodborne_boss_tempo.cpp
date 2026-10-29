@@ -81,6 +81,29 @@ namespace Coop {
 
 void PS4_SYSV_ABI BossTempoGoal(u64 tag, const GuestRegisterSnapshot* registers) {
     const s32 goal = static_cast<s32>(static_cast<u32>(registers->rsi));
+    // PROBE (handover-aggro 2026-10-29): SHADPS4_BLOODBORNE_TRACE_GOALS=<handle hex> logs every
+    // sub-goal that character's AI adds.
+    static const u32 traced = [] {
+        const char* value = std::getenv("SHADPS4_BLOODBORNE_TRACE_GOALS");
+        return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 16)) : 0u;
+    }();
+    if (traced != 0) {
+        const u64 parent = registers->rdi;
+        const u64 ai = parent >= 0x10000 ? ReadValue<u64>(parent, 0) : 0;
+        const u64 character = ai >= 0x10000 ? ReadValue<u64>(ai, AiCharacterOffset) : 0;
+        static std::atomic<u32> traced_lines{0};
+        if (character >= 0x10000 && ReadValue<u32>(character, 0x08) == traced &&
+            traced_lines.fetch_add(1) < 3000) {
+            const u64 at = registers->rbp + static_cast<u64>(tag == AddSubGoalFrontTag
+                                                                 ? AddSubGoalFrontLifeFrameOffset
+                                                                 : AddSubGoalLifeFrameOffset);
+            LOG_INFO(Debug,
+                     "Bloodborne goal trace: {:#x} parent goal {} adds {} {} life {:.2f} "
+                     "(t={:.2f})",
+                     traced, ReadValue<s32>(parent, 0x10), goal, GoalName(goal),
+                     TryRead<float>(at, 0).value_or(-1.0f), SteadyMilliseconds() / 1000.0);
+        }
+    }
     if (!IsBossTempoGoal(goal)) {
         return;
     }

@@ -302,7 +302,17 @@ void LogNearbyEnemyControl() {
     // asleep), set by WorldChrMan's activation pass (0x019192A0), for a guest alone whose
     // enemies stay asleep.
     static const char* trace_enemy = std::getenv("SHADPS4_BLOODBORNE_TRACE_ENEMY_HP");
-    if (trace_enemy != nullptr && !nearby.empty() && nearby.front().first < 6.0f) {
+    // =aistate: the nearest enemy within 12 m, its AI's mode byte ([[+0x3B8]+0xB0]+0xA62: 1 as
+    // it engages, 2 when an enemy taken over by another game stands; rig 2026-10-29).
+    if (trace_enemy != nullptr && std::string_view{trace_enemy} == "aistate" && !nearby.empty() &&
+        nearby.front().first < 12.0f) {
+        const u64 character = nearby.front().second;
+        const u64 manager = ReadValue<u64>(character, 0x3B8);
+        const u64 ai = manager >= 0x10000 ? ReadValue<u64>(manager, 0xB0) : 0;
+        if (ai >= 0x10000) {
+            WatchEnemyHp(ai + 0xA62, ReadValue<u32>(character, 0x08));
+        }
+    } else if (trace_enemy != nullptr && !nearby.empty() && nearby.front().first < 6.0f) {
         const u64 character = nearby.front().second;
         const u64 modules = ReadValue<u64>(character, 0x3B0);
         const u64 data = modules >= 0x10000 ? ReadValue<u64>(modules, 0x20) : 0;

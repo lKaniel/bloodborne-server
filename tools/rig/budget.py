@@ -69,6 +69,7 @@ RECENT = {
 LONG = {
     "boss-death-spectate": "#414: a boss fight to a teammate's death and the fight after (600 s)",
     "boss-death-wipe": "#414: a boss fight to the whole party's deaths (600 s)",
+    "probe-alone-mobs": "2026-10-29 hand-over aggro probe: guest-alone-mobs with enemy dumps",
     "boss-tempo-vanilla": "Kaniel 2026-10-28 boss tempo: 90 s of Paarl's fight at the game's tempo",
     "boss-tempo-aggressive": "Kaniel 2026-10-28 boss tempo: 90 s of Paarl's fight at Aggressive",
     "boss-tempo-relentless": "Kaniel 2026-10-28 boss tempo: 90 s of Paarl's fight at Relentless",
