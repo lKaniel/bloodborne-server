@@ -1459,15 +1459,17 @@ SCENARIOS = {
     },
     "crash-apart": {
         "about": "a guest's game dies while it is apart from the host (in the Ward); the host "
-                 "stays in its world (it once went to the title screen) and they join again",
+                 "stays in its world (it once went to the title screen) and the guest comes back "
+                 "beside the host (#225, as the crashes suite's crash-apart)",
         "roles": {
             "host": [START, "godmode", "wait-session 2 300", "wait 40", "wait-solo 120",
                      "wait 30", "snapshot", f"expect-map {CENTRAL_YHARNAM}",
                      "wait-session 2 420", "wait 20", "snapshot", "expect-session 2"],
             "guest": [[START, "godmode", "wait-session 2 300", "wait 10",
                        f"travel {CATHEDRAL_WARD_LAMP}", "wait 25", "snapshot", "done"],
-                      ["godmode", f"wait-map {CATHEDRAL_WARD} 180", "wait-session 2 420",
-                       "wait 10", "snapshot", "expect-session 2", f"expect-map {CATHEDRAL_WARD}"]],
+                      ["godmode", f"wait-map {CENTRAL_YHARNAM} 180", "wait-session 2 420",
+                       "wait 10", "snapshot", "expect-session 2",
+                       f"expect-map {CENTRAL_YHARNAM}"]],
         },
         "allow": CRASH_CLEANUP,
         "timeout": 900,
@@ -2167,8 +2169,11 @@ SCENARIOS = {
                       "wait-session 2 300", "sync lamps-joined", "wait 15",
                       f"set-flag {FORBIDDEN_WOODS_LAMP_LIT} 1", "wait 20",
                       f"expect-flag {FORBIDDEN_WOODS_LAMP_LIT} 1", "done"],
-                     ["team-create", "team-invite rig_guest", "team-wait 2", "team-start", START,
-                      "wait-session 2 300", "sync lamps-back", "done"]],
+                     # #403: the guest's game went first (out of the team, invited back) and took
+                     # its invite back while the host still played; the host's game going then
+                     # left the team to the guest: the host takes its own invite back and joins.
+                     ["team-accept", "team-ready", START, "wait-session 2 300", "sync lamps-back",
+                      "done"]],
             "guest": [["team-accept", "team-ready", START, "wait-session 2 300",
                        f"expect-flag {FORBIDDEN_WOODS_LAMP_LIT} 0", "sync lamps-joined", "done"],
                       ["team-accept", "team-ready", START, "wait-session 2 300", "wait 20",
@@ -2348,8 +2353,9 @@ SCENARIOS = {
             "guest": [["team-accept", "team-ready", START, "godmode", "wait-session 2 300",
                        f"travel {CATHEDRAL_WARD_LAMP}", "wait-members 2 120", "wait 15",
                        "snapshot", "done"],
-                      ["team-ready", "godmode", "wait-session 2 420", "wait-members 2 120",
-                       "wait 20", "snapshot", f"expect-map {CATHEDRAL_WARD}",
+                      # #403: started again, it is out of the team: it takes the invite back.
+                      ["team-accept", "team-ready", "godmode", "wait-session 2 420",
+                       "wait-members 2 120", "wait 20", "snapshot", f"expect-map {CATHEDRAL_WARD}",
                        "expect-others-shown 1", "expect-session 2"]],
         },
         "allow": CRASH_CLEANUP,
@@ -3820,7 +3826,9 @@ def CHALICE_INSIDE_FIRST(role: str) -> list[str]:
 
 
 def CHALICE_INSIDE_AGAIN(role: str) -> list[str]:
-    head = ["title-wait 20", "team-start"] if role == "host" else ["team-ready"]
+    # #403 (Kaniel 2026-10-25): a game started again is out of its team (the other one plays on and
+    # leads it); it takes the standing invite back and joins the leader inside, host or guest.
+    head = ["team-accept", "team-ready"]
     return [*head, "godmode", "wait-session 2 420", "wait-members 2 180", "wait 20",
             f"expect-map {CHALICE_DUNGEON}", f"log {role} loaded inside again",
             *ALTAR_RECORDS(f"{role} loaded inside"), "expect-session 2"]

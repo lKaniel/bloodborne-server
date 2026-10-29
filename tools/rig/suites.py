@@ -1094,11 +1094,14 @@ SUITES = {
                                      r"epoch)"]},
                     allow=CRASH_CLEANUP),
             # Last: the guest's game crashes in it (a crash ends the suite).
+            # #403 (Kaniel 2026-10-25): the guest leads the team and hosts where it stands, and the
+            # old host's game comes back as its guest, beside it in the Ward (as the scenario
+            # host-crash-apart).
             chapter("host-crash-apart", "the host's game dies while the guest is apart (in the "
-                                        "Ward); the guest stays and rings from there, and they "
-                                        "join again without meeting first",
+                                        "Ward); the guest leads the team and hosts there, and "
+                                        "the old host's game comes back as its guest in the Ward",
                     {"host": ["sync hca-ready", RESTART, START, "godmode", "wait-session 2 420",
-                              "wait 10", "expect-session 2", f"expect-map {CENTRAL_YHARNAM}",
+                              "wait 10", "expect-session 2", f"expect-map {CATHEDRAL_WARD}",
                               "sync hca-back"],
                      "guest": [f"travel {CATHEDRAL_WARD_LAMP}", "wait-members 1 60",
                                "sync hca-ready", "wait-solo 180", "wait 10",
