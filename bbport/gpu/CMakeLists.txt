@@ -528,6 +528,10 @@ target_include_directories(ui-composition-test PRIVATE ..)
 add_executable(key-guide-test EXCLUDE_FROM_ALL ../tests/test_key_guide.cpp)
 target_compile_options(key-guide-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(key-guide-test PRIVATE ..)
+# bbport co-op: the focus on our button screens follows their grid (shim/bbport_menu_focus.h).
+add_executable(menu-focus-test EXCLUDE_FROM_ALL ../tests/test_menu_focus.cpp)
+target_compile_options(menu-focus-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(menu-focus-test PRIVATE ..)
 # bbport co-op: party death's HUD keeps clear of the game's own HUD (shim/bbport_party_layout.h).
 add_executable(party-layout-test EXCLUDE_FROM_ALL ../tests/test_party_layout.cpp)
 target_compile_options(party-layout-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)

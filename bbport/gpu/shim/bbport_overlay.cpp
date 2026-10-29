@@ -27,6 +27,7 @@
 #include "bbport_prompts.h"
 #include "bbport_coop_art.h"
 #include "bbport_key_guide.h"
+#include "bbport_menu_focus.h"
 #include "bbport_map_3d.h"
 #include "bbport_map_charts.h"
 #include "bbport_pad_rebind.h"
@@ -2870,8 +2871,8 @@ void TextPrompt() {
 // save's load for the team (bbcoop_team_screen). Four hunters' places, the players online to
 // invite, the invitations, and the buttons: create or leave a team, begin the hunt, its world.
 // Drawn like the menu (its colours and ornaments, the game's serif); focus moves with the
-// d-pad / arrows over the buttons in the order they are drawn, Cross / Enter presses, the mouse
-// works too.
+// d-pad / arrows over the buttons as they stand on screen (BbMenuFocus: Up and Down change rows,
+// Left and Right stay in the row), Cross / Enter presses, the mouse works too.
 namespace Team {
 using namespace Ui;
 
@@ -2879,9 +2880,9 @@ bbcoop_lobby lobby{};
 bool open = false; // present thread: as Visible() read it last
 
 struct Focus {
-    int focus = 0;
+    int focus = 0; // the focused button's index, last frame (when its id is drawn no more)
     int items = 0;
-    int move = 0;
+    BbMenuFocus::Dir move = BbMenuFocus::Dir::None;
     bool activate = false;
     bool fresh = true; // the screen just came up: the focus goes to the Begin button
     // The focused button by its id, so the focus stays on it when the rows before it change
@@ -2889,9 +2890,33 @@ struct Focus {
     // next button); this frame's button ids in order.
     std::string id;
     std::vector<std::string> ids;
+    // Kaniel 2026-10-29: this frame's buttons on screen (the d-pad follows their grid), and the one
+    // the mouse moved onto or clicked (it takes the focus wherever it is in the order: before, a
+    // button drawn ahead of the focused one lost the mouse to it, and both showed lit).
+    std::vector<BbMenuFocus::Item> rects;
+    int pointed = -1;
     bool was_in_team = false;
 };
 Focus focus;
+
+/// The frame's buttons are drawn: the focus goes where the mouse pointed, else moves as asked.
+void SettleFocus() {
+    if (focus.items <= 0) {
+        return;
+    }
+    int current = -1;
+    for (int i = 0; i < focus.items; ++i) {
+        if (focus.ids[static_cast<size_t>(i)] == focus.id) {
+            current = i;
+            break;
+        }
+    }
+    if (current < 0) {
+        current = std::clamp(focus.focus, 0, focus.items - 1); // its button went: the one in its place
+    }
+    focus.focus = BbMenuFocus::Settle(focus.rects, current, focus.pointed, focus.move);
+    focus.id = focus.ids[static_cast<size_t>(focus.focus)];
+}
 
 // A friend the lobby does not list (a hosted server lists 32 players): the hunter's name to invite,
 // or the team's code to join, typed in the window's text entry (the game's name dialog's, drawn by
@@ -2922,25 +2947,31 @@ void PollAsk() {
     asking = Ask::None;
 }
 
-/// One button: its label (drawn centred in `size` at `at`), true when pressed.
-bool Button(ImDrawList* draw, const char* id, const char* label, ImVec2 at, ImVec2 size, bool enabled = true,
-            bool primary = false) {
+/// A button's place in the focus and the mouse, `size` at `at`: true when pressed (clicked, or
+/// Cross on it); `focused` says whether the focus is on it.
+bool Press(const char* id, ImVec2 at, ImVec2 size, bool enabled, bool& focused) {
     const int index = focus.items++;
     focus.ids.emplace_back(id);
-    if (!focus.id.empty() && focus.id == id) {
-        focus.focus = index;
-    }
+    focus.rects.push_back({at.x, at.y, at.x + size.x, at.y + size.y, enabled});
     ImGui::SetCursorScreenPos(at);
     ImGui::PushID(id);
     const bool clicked = ImGui::InvisibleButton("##b", size) && enabled;
     const bool hovered = ImGui::IsItemHovered();
     ImGui::PopID();
-    if (hovered && ImGui::GetIO().MouseDelta.x * ImGui::GetIO().MouseDelta.x +
-                           ImGui::GetIO().MouseDelta.y * ImGui::GetIO().MouseDelta.y >
-                       0.0f) {
-        focus.focus = index;
+    const ImVec2 delta = ImGui::GetIO().MouseDelta;
+    if (clicked || (hovered && delta.x * delta.x + delta.y * delta.y > 0.0f)) {
+        focus.pointed = index; // the focus goes here once the frame is drawn (SettleFocus)
     }
-    const bool focused = focus.focus == index;
+    // One focused button a frame: the one SettleFocus chose last frame, by its id.
+    focused = focus.id.empty() ? focus.focus == index : focus.id == id;
+    return clicked || (enabled && focused && focus.activate);
+}
+
+/// One button: its label (drawn centred in `size` at `at`), true when pressed.
+bool Button(ImDrawList* draw, const char* id, const char* label, ImVec2 at, ImVec2 size, bool enabled = true,
+            bool primary = false) {
+    bool focused = false;
+    const bool pressed = Press(id, at, size, enabled, focused);
     const ImVec2 end(at.x + size.x, at.y + size.y);
     // The game's row; the focused one framed in gold over it (the game's selected row is tinted
     // blue, out of place on this screen's stone).
@@ -2958,7 +2989,7 @@ bool Button(ImDrawList* draw, const char* id, const char* label, ImVec2 at, ImVe
     const ImVec2 ts = ImGui::CalcTextSize(label);
     draw->AddText(ImVec2(at.x + (size.x - ts.x) * 0.5f, at.y + (size.y - ts.y) * 0.5f),
                   !enabled ? Dim(0.6f) : focused ? Bright() : Plain(), label);
-    return clicked || (enabled && focused && focus.activate);
+    return pressed;
 }
 
 const char* StateText(const bbcoop_lobby_entry& e, bool member) {
@@ -3095,6 +3126,7 @@ void MenuHint(ImDrawList* draw, ImVec2 win, ImVec2 size, float y, bool leader_ho
                   lobby.notice[0] ? ImU32(IM_COL32(220, 150, 110, 255)) : Plain(0.8f), line);
     const Keys::Hint keys[] = {{"Dpad", "Arrows", T("Move", "Выбор")},
                                {"Cross", "Enter", T("Choose", "Нажать")},
+                               {"Triangle", "", T("Team settings", "Настройки команды")},
                                {"Circle", "Esc", T("Close", "Закрыть")}};
     Keys::Guide(draw, keys, win.x + S(36.0f), win.x + size.x - S(36.0f),
                 win.y + size.y - S(BbKeyGuide::BottomClearance));
@@ -3119,40 +3151,7 @@ bool CanPickWorld() {
     return lobby.signed_in && !lobby.menu && (lobby.in_team ? lobby.leader && !lobby.started : true);
 }
 
-/// Kaniel 2026-10-25: how the team's deaths play out, one for the whole team: its leader picks it
-/// (at the title and in the game), the others see it. A caption over the mode, as the world's
-/// button; in no team the default (down for a revive) shows, greyed.
-void DeathModeButton(ImDrawList* draw, ImVec2 at, ImVec2 size) {
-    const bool pick = lobby.signed_in && lobby.in_team && lobby.leader;
-    const bool spectate = lobby.in_team && lobby.death_mode == BBCOOP_DEATH_SPECTATE;
-    const ImVec2 end(at.x + size.x, at.y + size.y);
-    bool lit = false;
-    if (pick) {
-        const int index = focus.items;
-        if (Button(draw, "deaths", "", at, size)) {
-            bbcoop_lobby_request(BBCOOP_TEAM_DEATH_MODE, spectate ? "0" : "1");
-        }
-        lit = focus.focus == index;
-    } else if (!MenuArt::Nine(draw, MenuArt::Row, at, end, 12.0f, S(9.0f), 0.5f)) {
-        draw->AddRect(at, end, Gold(0.15f), S(2.0f), 0, S(1.2f));
-    }
-    const float fit = size.x - S(24.0f);
-    ImGui::PushFont(MenuArt::Font(), 16.0f);
-    const std::string caption = Fit(T("Death mode", "Режим смерти"), fit);
-    ImVec2 cs = ImGui::CalcTextSize(caption.c_str());
-    draw->AddText(ImVec2(at.x + (size.x - cs.x) * 0.5f, at.y + S(6.0f)), Gold(pick ? 0.85f : 0.6f), caption.c_str());
-    ImGui::PopFont();
-    ImGui::PushFont(MenuArt::Font(), 21.0f);
-    const std::string mode =
-        Fit(spectate ? T("Spectate teammates", "Наблюдать за союзниками") : T("Go down (revive)", "Падать (поднимают)"),
-            fit);
-    cs = ImGui::CalcTextSize(mode.c_str());
-    draw->AddText(ImVec2(at.x + (size.x - cs.x) * 0.5f, at.y + S(26.0f)), lit ? Bright() : Plain(pick ? 1.0f : 0.8f),
-                  mode.c_str());
-    ImGui::PopFont();
-}
-
-/// What the death mode means, under the buttons while its button has the focus.
+/// What the death mode means, under the team settings while its row has the focus.
 const char* DeathModeHint() {
     return lobby.in_team && lobby.death_mode == BBCOOP_DEATH_SPECTATE
                ? T("Spectate: a hunter who falls watches a teammate until one uses a lamp or the boss dies, then "
@@ -3162,6 +3161,224 @@ const char* DeathModeHint() {
                : T("Go down: a hunter who falls stays down until a teammate strikes them back up, or gives up "
                    "with {Circle}.",
                    "Падение: павший охотник лежит, пока союзник не поднимет его ударами, или сдаётся {Circle}.");
+}
+
+/// Kaniel 2026-10-29 ("too overcrowded"): how the team is joined, invaders and the death mode, one
+/// choice each for the whole team, on their own page behind the settings button in the screen's top
+/// right corner (Triangle opens it too). Its leader changes them, the others see them; the host
+/// rules (the leader's launcher's Co-op settings) are listed under them.
+struct SettingsPage {
+    bool open = false;
+    // A press shows its new value at once, until the server's word comes back (or 2 s pass): the
+    // row kept its old value meanwhile and read as a press that did nothing.
+    int join = -1, invaders = -1, deaths = -1;
+    double pressed_at = 0.0;
+};
+SettingsPage settings;
+
+void OpenSettings() {
+    settings.open = true;
+    focus.id = "set_join";
+    focus.activate = false; // the press that opened it is used up
+}
+
+void CloseSettings() {
+    settings.open = false;
+    focus.id = "settings"; // back on the button that opened it
+    focus.activate = false;
+}
+
+/// The settings button: the game's square slot (gold-framed with the focus) and a cog in it.
+bool SettingsButton(ImDrawList* draw, ImVec2 at, float side) {
+    bool focused = false;
+    const bool pressed = Press("settings", at, ImVec2(side, side), true, focused);
+    const ImVec2 end(at.x + side, at.y + side);
+    if (!MenuArt::Draw(draw, focused ? MenuArt::SlotSelected : MenuArt::Slot, at, end, 1.0f)) {
+        draw->AddRectFilled(at, end, focused ? Gold(0.20f) : Gold(0.05f), S(2.0f));
+        draw->AddRect(at, end, focused ? Gold(0.95f) : Gold(0.45f), S(2.0f), 0, S(1.2f));
+    }
+    const ImVec2 mid((at.x + end.x) * 0.5f, (at.y + end.y) * 0.5f);
+    const ImU32 ink = focused ? Bright() : Plain(0.9f);
+    const float outer = side * 0.30f, inner = side * 0.22f, hole = side * 0.09f;
+    constexpr int teeth = 8;
+    for (int i = 0; i < teeth; ++i) {
+        const float a = float(i) * 6.2831853f / teeth, w = 0.22f;
+        const auto p = [&](float r, float t) { return ImVec2(mid.x + std::cos(t) * r, mid.y + std::sin(t) * r); };
+        draw->AddQuadFilled(p(inner, a - w), p(outer, a - w * 0.7f), p(outer, a + w * 0.7f), p(inner, a + w), ink);
+    }
+    draw->AddCircle(mid, (inner + hole) * 0.5f + S(1.0f), ink, 24, inner - hole);
+    return pressed;
+}
+
+/// One setting's row: its name on the left, its value on the right; true when pressed.
+bool SettingRow(ImDrawList* draw, const char* id, const char* name, const char* value, ImVec2 at, ImVec2 size,
+                bool enabled) {
+    // The focus goes onto a row its player cannot change too: what it means shows under the rows.
+    bool focused = false;
+    const bool pressed = Press(id, at, size, true, focused) && enabled;
+    const ImVec2 end(at.x + size.x, at.y + size.y);
+    if (MenuArt::Nine(draw, MenuArt::Row, at, end, 12.0f, S(9.0f), enabled ? 1.0f : 0.6f)) {
+        if (focused) {
+            const float in = S(2.0f);
+            draw->AddRectFilled(ImVec2(at.x + in, at.y + in), ImVec2(end.x - in, end.y - in), Gold(0.10f));
+            draw->AddRect(ImVec2(at.x + in, at.y + in), ImVec2(end.x - in, end.y - in), Gold(0.9f), 0.0f, 0, S(1.5f));
+        }
+    } else {
+        draw->AddRectFilled(at, end, focused ? Gold(0.20f) : Gold(0.05f), S(2.0f));
+        draw->AddRect(at, end, focused ? Gold(0.95f) : Gold(enabled ? 0.45f : 0.15f), S(2.0f), 0, S(1.2f));
+    }
+    const float pad = S(22.0f), half = size.x * 0.5f - pad;
+    const std::string left = Fit(name, half), right = Fit(value, half);
+    const ImVec2 ls = ImGui::CalcTextSize(left.c_str()), rs = ImGui::CalcTextSize(right.c_str());
+    draw->AddText(ImVec2(at.x + pad, at.y + (size.y - ls.y) * 0.5f), Gold(enabled ? 0.9f : 0.6f), left.c_str());
+    draw->AddText(ImVec2(end.x - pad - rs.x, at.y + (size.y - rs.y) * 0.5f),
+                  focused ? Bright() : Plain(enabled ? 1.0f : 0.7f), right.c_str());
+    return pressed;
+}
+
+/// The host rules on, joined with dots; "none".
+std::string HostRules() {
+    std::string rules;
+    const auto add = [&](bool on, const char* name) {
+        if (on) {
+            rules += rules.empty() ? "" : "  \xC2\xB7  ";
+            rules += name;
+        }
+    };
+    add(lobby.rule_rot, T("Rot", "Гниль"));
+    add(lobby.rule_travel, lobby.rule_vote ? T("Travel together (vote)", "Путь вместе (голосование)")
+                                           : T("Travel together", "Путь вместе"));
+    add(lobby.rule_scale, T("Enemies scale with the team", "Враги сильнее с командой"));
+    add(lobby.rule_tempo == 1, T("Boss tempo: Aggressive", "Темп боссов: агрессивный"));
+    add(lobby.rule_tempo == 2, T("Boss tempo: Relentless", "Темп боссов: беспощадный"));
+    return rules.empty() ? std::string(T("none", "нет")) : rules;
+}
+
+void DrawSettings(ImDrawList* draw, ImVec2 win, ImVec2 size) {
+    const bool back = ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
+    ImGui::PushFont(MenuArt::Font(), 40.0f);
+    const char* title = T("Team settings", "Настройки команды");
+    ImVec2 ts = ImGui::CalcTextSize(title);
+    draw->AddText(ImVec2(win.x + (size.x - ts.x) * 0.5f, win.y + S(30.0f)), Bright(), title);
+    ImGui::PopFont();
+    const float mid = win.x + size.x * 0.5f;
+    const float under = HeaderOrnament(draw, mid, win.y + S(80.0f), 0.9f);
+    const bool leads = lobby.signed_in && lobby.in_team && lobby.leader;
+    ImGui::PushFont(MenuArt::Font(), 20.0f);
+    const char* who = !lobby.in_team ? T("In a team its leader chooses these for everyone.",
+                                         "В команде их выбирает лидер для всех.")
+                      : leads        ? T("Your choice is the whole team's.", "Ваш выбор действует на всю команду.")
+                                     : T("The leader chooses these for the team.", "Их выбирает лидер команды.");
+    ts = ImGui::CalcTextSize(who);
+    draw->AddText(ImVec2(mid - ts.x * 0.5f, win.y + S(88.0f) + under), Gold(0.85f), who);
+    ImGui::PopFont();
+
+    // The server's word arrived (or never will): the rows show it again.
+    const double now = ImGui::GetTime();
+    const int join_now = lobby.in_team ? lobby.join : BBCOOP_JOIN_INVITE_ONLY;
+    const int invaders_now = lobby.in_team && lobby.allow_invaders ? 1 : 0;
+    const int deaths_now = lobby.in_team && lobby.death_mode == BBCOOP_DEATH_SPECTATE ? 1 : 0;
+    if (now - settings.pressed_at > 2.0) {
+        settings.join = settings.invaders = settings.deaths = -1;
+    }
+    if (settings.join == join_now) {
+        settings.join = -1;
+    }
+    if (settings.invaders == invaders_now) {
+        settings.invaders = -1;
+    }
+    if (settings.deaths == deaths_now) {
+        settings.deaths = -1;
+    }
+    const int join = settings.join >= 0 ? settings.join : join_now;
+    const int invaders = settings.invaders >= 0 ? settings.invaders : invaders_now;
+    const int deaths = settings.deaths >= 0 ? settings.deaths : deaths_now;
+
+    ImGui::PushFont(MenuArt::Font(), 24.0f);
+    const ImVec2 row(std::min(S(820.0f), size.x - S(160.0f)), S(62.0f));
+    const float rx = mid - row.x * 0.5f, gap = S(16.0f);
+    float y = win.y + S(150.0f) + under;
+    // Amanises 2026-10-25, open teams: how the team is joined, each press the next way (by invite
+    // only, listed with its leader taking who asks, listed for anyone to join).
+    const char* join_text = join == BBCOOP_JOIN_OPEN  ? T("Open to all", "Открыт всем")
+                            : join == BBCOOP_JOIN_ASK ? T("On request", "По запросу")
+                                                      : T("Invite only", "По приглашению");
+    if (SettingRow(draw, "set_join", T("Joining", "Вступление"), join_text, ImVec2(rx, y), row, leads)) {
+        settings.join = join == BBCOOP_JOIN_INVITE_ONLY ? BBCOOP_JOIN_ASK
+                        : join == BBCOOP_JOIN_ASK      ? BBCOOP_JOIN_OPEN
+                                                       : BBCOOP_JOIN_INVITE_ONLY;
+        settings.pressed_at = now;
+        bbcoop_lobby_request(BBCOOP_TEAM_OPEN, settings.join == BBCOOP_JOIN_ASK    ? "1"
+                                               : settings.join == BBCOOP_JOIN_OPEN ? "2"
+                                                                                   : "0");
+    }
+    y += row.y + gap;
+    // Invasions (docs/INVASIONS.md): the leader allows invaders into the team's world (the server
+    // keeps them out unless its operator turned invasions on).
+    if (SettingRow(draw, "set_invaders", T("Invaders", "Захватчики"),
+                   invaders ? T("Allowed", "Разрешены") : T("Not allowed", "Запрещены"), ImVec2(rx, y), row, leads)) {
+        settings.invaders = invaders ? 0 : 1;
+        settings.pressed_at = now;
+        bbcoop_team_allow_invaders(settings.invaders);
+    }
+    y += row.y + gap;
+    // Kaniel 2026-10-25: how the team's deaths play out; in no team the default (down for a revive).
+    if (SettingRow(draw, "deaths", T("Death mode", "Режим смерти"),
+                   deaths ? T("Spectate teammates", "Наблюдать за союзниками") : T("Go down (revive)", "Падать (поднимают)"),
+                   ImVec2(rx, y), row, leads)) {
+        settings.deaths = deaths ? 0 : 1;
+        settings.pressed_at = now;
+        bbcoop_lobby_request(BBCOOP_TEAM_DEATH_MODE, settings.deaths ? "1" : "0");
+    }
+    y += row.y + S(30.0f);
+    ImGui::PopFont();
+
+    // What the focused row means, then the host rules.
+    ImGui::PushFont(MenuArt::Font(), 19.0f);
+    const char* about = focus.id == "set_join"
+                            ? T("Invite only: hunters come in when invited. On request: the team is listed and its "
+                                "leader takes who asks. Open to all: anyone listed joins at once.",
+                                "По приглашению: охотники входят по приглашению. По запросу: команда видна в списке, "
+                                "лидер принимает просящихся. Открыт всем: любой из списка входит сразу.")
+                        : focus.id == "set_invaders"
+                            ? T("Allowed: hunters of other worlds may invade the team's world as red phantoms (when "
+                                "the server allows invasions).",
+                                "Разрешены: охотники других миров могут вторгаться в мир команды красными фантомами "
+                                "(если сервер разрешает вторжения).")
+                        : focus.id == "deaths" ? DeathModeHint()
+                                               : "";
+    if (about[0]) {
+        WrappedText(draw, ImVec2(rx, y), row.x, Plain(0.8f), about);
+    }
+    y += S(90.0f);
+    Divider(draw, rx, rx + row.x, y, 0.6f);
+    y += S(24.0f);
+    ImGui::PushFont(MenuArt::Font(), 21.0f);
+    const char* rules_title = T("Host rules", "Правила хоста");
+    ts = ImGui::CalcTextSize(rules_title);
+    draw->AddText(ImVec2(mid - ts.x * 0.5f, y), Gold(0.85f), rules_title);
+    ImGui::PopFont();
+    y += S(34.0f);
+    const std::string rules = HostRules();
+    WrappedText(draw, ImVec2(rx, y), row.x, Plain(0.85f), rules.c_str());
+    y += S(30.0f);
+    const char* where = T("Set in the leader's launcher, on its Co-op page.", "Задаются в лаунчере лидера, на странице «Кооп».");
+    ts = ImGui::CalcTextSize(where);
+    draw->AddText(ImVec2(mid - ts.x * 0.5f, y), Dim(0.8f), where);
+    ImGui::PopFont();
+
+    ImGui::PushFont(MenuArt::Font(), 18.0f);
+    const Keys::Hint keys[] = {{"Dpad", "Arrows", T("Move", "Выбор")},
+                               {"Cross", "Enter", T("Change", "Изменить")},
+                               {"Circle", "Esc", T("Back", "Назад")}};
+    Keys::Guide(draw, keys, win.x + S(36.0f), win.x + size.x - S(36.0f),
+                win.y + size.y - S(BbKeyGuide::BottomClearance));
+    ImGui::PopFont();
+    if (back) {
+        CloseSettings();
+    }
 }
 
 void OpenWorldPicker() {
@@ -3601,28 +3818,33 @@ void Screen() {
         }
         return false;
     };
-    focus.move = pressed_any({ImGuiKey_UpArrow, ImGuiKey_LeftArrow, ImGuiKey_GamepadDpadUp,
-                              ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickUp, ImGuiKey_GamepadLStickLeft})
-                     ? -1
-                 : pressed_any({ImGuiKey_DownArrow, ImGuiKey_RightArrow, ImGuiKey_Tab, ImGuiKey_GamepadDpadDown,
-                                ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickDown,
-                                ImGuiKey_GamepadLStickRight})
-                     ? 1
-                     : 0;
+    // Kaniel 2026-10-29: the d-pad and the arrows follow the buttons' grid (BbMenuFocus), Tab the
+    // order they are drawn in.
+    using BbMenuFocus::Dir;
+    focus.move = pressed_any({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadLStickUp})       ? Dir::Up
+                 : pressed_any({ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadLStickDown}) ? Dir::Down
+                 : pressed_any({ImGuiKey_LeftArrow, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickLeft}) ? Dir::Left
+                 : pressed_any({ImGuiKey_RightArrow, ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickRight})
+                     ? Dir::Right
+                 : pressed_any({ImGuiKey_Tab}) ? Dir::Next
+                                               : Dir::None;
     focus.activate = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) ||
                      ImGui::IsKeyPressed(ImGuiKey_Space, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
     focus.items = 0;
     focus.ids.clear();
+    focus.rects.clear();
+    focus.pointed = -1;
     PollAsk();
     // Amanises 2026-10-25: while the friends page's search box has the keyboard, the keys type.
-    if (asking != Ask::None || (friends.open ? friends.typing : friends.online_typing)) {
-        focus.move = 0; // the pad's other buttons stay with the text entry
+    const bool typing = asking != Ask::None || (friends.open ? friends.typing : friends.online_typing);
+    if (typing) {
+        focus.move = Dir::None; // the pad's other buttons stay with the text entry
         focus.activate = false;
     }
     // Kaniel 2026-10-16: opened from the game's System menu (lobby.menu), Circle or Escape closes
     // it, as the game's own pages close (the friends page takes them first: back to the team).
-    if (lobby.menu && !friends.open && !friends.online_typing && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
-                       ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))) {
+    if (lobby.menu && !friends.open && !settings.open && !friends.online_typing &&
+        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))) {
         bbcoop_team_menu(0);
     }
     // Over the game the world stays in sight behind it, darkened as under the game's menus.
@@ -3677,17 +3899,31 @@ void Screen() {
         return;
     }
     if (friends.open) {
+        settings.open = false;
         DrawFriends(draw, win, size);
-        if (focus.items > 0) {
-            focus.focus = ((focus.focus + focus.move) % focus.items + focus.items) % focus.items;
-            focus.id = focus.ids[static_cast<size_t>(focus.focus)];
-        }
+        SettleFocus();
+        ImGui::End();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        return;
+    }
+    if (settings.open) {
+        DrawSettings(draw, win, size);
+        SettleFocus();
         ImGui::End();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
         return;
     }
 
+    // Kaniel 2026-10-29: the team settings behind a button in the top right corner (Triangle too).
+    {
+        const float side = S(58.0f);
+        if (SettingsButton(draw, ImVec2(x1 - side, win.y + S(30.0f)), side) ||
+            (!typing && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false))) {
+            OpenSettings();
+        }
+    }
     // Title and the team's state.
     ImGui::PushFont(MenuArt::Font(), 40.0f);
     const char* title = T("The Hunt Together", "Совместная охота");
@@ -3965,31 +4201,13 @@ void Screen() {
     const float bw = S(BbPartyLayout::TeamButtonWidth), bh = S(54.0f);
     // Kaniel 2026-10-19: high enough for the line under them and the key guide over the ornament.
     const float by = win.y + size.y - S(180.0f);
-    // Kaniel 2026-10-25: over the game a fourth, the team's duel; the death mode the last.
-    const int buttons = lobby.menu ? 5 : 4;
+    // Kaniel 2026-10-25: over the game a fourth, the team's duel. Kaniel 2026-10-29: the death mode,
+    // how the team is joined and invaders went to the team settings (SettingsPage).
+    const int buttons = lobby.menu ? 4 : 3;
     float bx = win.x + (size.x - (buttons * bw + (buttons - 1) * gap)) * 0.5f;
     // The leader hosts the hunt: it leaves only once it is alone in it (its game leaving would
     // end the others' session).
     const bool leader_hosts = lobby.leader && lobby.in_hunt && lobby.member_count > 1;
-    // Invasions (docs/INVASIONS.md): the leader allows invaders into the team's world, over the
-    // buttons (the server keeps them out unless its operator turned invasions on).
-    if (lobby.in_team && lobby.leader) {
-        // Amanises 2026-10-25, open teams: how the team is joined, each press the next way (by
-        // invite only, listed with its leader taking who asks, listed for anyone to join).
-        const char* join = lobby.join == BBCOOP_JOIN_OPEN ? T("Join: open to all", "Вход: открыт всем")
-                           : lobby.join == BBCOOP_JOIN_ASK ? T("Join: ask to join", "Вход: по запросу")
-                                                           : T("Join: invite only", "Вход: по приглашению");
-        if (Button(draw, "openteam", join, ImVec2(bx, by - bh - S(14.0f)), ImVec2(bw, bh), lobby.signed_in != 0)) {
-            const char* next = lobby.join == BBCOOP_JOIN_INVITE_ONLY ? "1" : lobby.join == BBCOOP_JOIN_ASK ? "2" : "0";
-            bbcoop_lobby_request(BBCOOP_TEAM_OPEN, next);
-        }
-        const char* invaders = lobby.allow_invaders ? T("Invaders: allowed", "Захватчики: разрешены")
-                                                    : T("Invaders: off", "Захватчики: запрещены");
-        if (Button(draw, "invaders", invaders, ImVec2(win.x + (size.x - bw) * 0.5f, by - bh - S(14.0f)),
-                   ImVec2(bw, bh), lobby.signed_in != 0)) {
-            bbcoop_team_allow_invaders(lobby.allow_invaders ? 0 : 1);
-        }
-    }
     if (!lobby.in_team) {
         if (Button(draw, "create", T("Create a team", "Создать команду"), ImVec2(bx, by), ImVec2(bw, bh),
                    lobby.signed_in != 0)) {
@@ -4005,7 +4223,6 @@ void Screen() {
         // stands), and close back to the game's menu.
         if (focus.fresh) {
             focus.fresh = false;
-            focus.focus = focus.items;
             focus.id = lobby.playing && lobby.in_team && !lobby.in_hunt ? "hunt" : "close";
         }
         // Invasions: a player in no team invades another team's world from here instead (a red
@@ -4045,21 +4262,9 @@ void Screen() {
         if (Button(draw, "close", T("Close", "Закрыть"), ImVec2(bx, by), ImVec2(bw, bh))) {
             bbcoop_team_menu(0);
         }
-        bx += bw + gap;
         ImGui::PopFont();
-        DeathModeButton(draw, ImVec2(bx, by), ImVec2(bw, bh));
-        if (focus.id == "deaths") {
-            ImGui::PushFont(MenuArt::Font(), 18.0f);
-            WrappedText(draw, ImVec2(win.x + S(80.0f), by + bh + S(16.0f)), size.x - S(160.0f), Plain(0.8f),
-                        DeathModeHint());
-            ImGui::PopFont();
-        } else {
-            MenuHint(draw, win, size, by + bh + S(20.0f), leader_hosts);
-        }
-        if (focus.items > 0) {
-            focus.focus = ((focus.focus + focus.move) % focus.items + focus.items) % focus.items;
-            focus.id = focus.ids[static_cast<size_t>(focus.focus)];
-        }
+        MenuHint(draw, win, size, by + bh + S(20.0f), leader_hosts);
+        SettleFocus();
         ImGui::End();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
@@ -4086,8 +4291,9 @@ void Screen() {
     focus.was_in_team = lobby.in_team != 0;
     if (focus.fresh && lobby.in_team) {
         focus.fresh = false;
-        focus.focus = focus.items; // the next button's index
         focus.id = "go";
+    } else if (focus.id.empty()) {
+        focus.id = "friends"; // in no team, as before the settings button came first
     }
     if (Button(draw, "go", T("Begin the hunt", "Начать охоту"), ImVec2(bx, by), ImVec2(bw, bh),
                !lobby.in_team || lobby.leader, true)) {
@@ -4107,11 +4313,10 @@ void Screen() {
         const ImVec2 at(bx, by), end(bx + bw, by + bh);
         bool lit = false;
         if (pick) {
-            const int index = focus.items;
             if (Button(draw, "world", "", at, ImVec2(bw, bh))) {
                 OpenWorldPicker();
             }
-            lit = focus.focus == index;
+            lit = focus.id == "world";
         } else if (!MenuArt::Nine(draw, MenuArt::Row, at, end, 12.0f, S(9.0f), 0.5f)) {
             draw->AddRect(at, end, Gold(0.15f), S(2.0f), 0, S(1.2f));
         }
@@ -4128,8 +4333,6 @@ void Screen() {
         draw->AddText(ImVec2(bx + (bw - cs.x) * 0.5f, by + S(26.0f)), lit ? Bright() : Plain(pick ? 1.0f : 0.8f),
                       name.c_str());
         ImGui::PopFont();
-        bx += bw + gap;
-        DeathModeButton(draw, ImVec2(bx, by), ImVec2(bw, bh));
     }
 
     // The server's last refusal, the hint and the controls.
@@ -4143,53 +4346,24 @@ void Screen() {
                                        : T("Your character plays its own world alone.",
                                            "Ваш персонаж играет в своём мире один.");
     const char* line = lobby.notice[0] ? lobby.notice : hint;
-    if (!lobby.notice[0] && focus.id == "deaths") {
-        // Kaniel 2026-10-25: what the death mode means while its button has the focus.
-        WrappedText(draw, ImVec2(win.x + S(80.0f), by + bh + S(16.0f)), size.x - S(160.0f), Plain(0.8f),
-                    DeathModeHint());
-    } else {
-        ts = ImGui::CalcTextSize(line);
-        draw->AddText(ImVec2(win.x + (size.x - ts.x) * 0.5f, by + bh + S(20.0f)),
-                      lobby.notice[0] ? ImU32(IM_COL32(220, 150, 110, 255)) : Plain(0.8f), line);
-    }
+    ts = ImGui::CalcTextSize(line);
+    draw->AddText(ImVec2(win.x + (size.x - ts.x) * 0.5f, by + bh + S(20.0f)),
+                  lobby.notice[0] ? ImU32(IM_COL32(220, 150, 110, 255)) : Plain(0.8f), line);
     ImGui::PopFont();
-    {
-        // Kaniel 2026-10-25: the host rules (the leader's launcher's Co-op settings), shown to all.
-        std::string rules;
-        const auto add = [&](bool on, const char* name) {
-            if (on) {
-                rules += rules.empty() ? "" : "  \xC2\xB7  ";
-                rules += name;
-            }
-        };
-        add(lobby.rule_rot, T("Rot", "Гниль"));
-        add(lobby.rule_travel, lobby.rule_vote ? T("Travel together (vote)", "Путь вместе (голосование)")
-                                               : T("Travel together", "Путь вместе"));
-        add(lobby.rule_scale, T("Enemies scale with the team", "Враги сильнее с командой"));
-        add(lobby.rule_tempo == 1, T("Boss tempo: Aggressive", "Темп боссов: агрессивный"));
-        add(lobby.rule_tempo == 2, T("Boss tempo: Relentless", "Темп боссов: беспощадный"));
-        const std::string text = std::string(T("Host rules: ", "Правила хоста: ")) +
-                                 (rules.empty() ? std::string(T("none", "нет")) : rules);
-        ImGui::PushFont(MenuArt::Font(), 16.0f);
-        ts = ImGui::CalcTextSize(text.c_str());
-        draw->AddText(ImVec2(win.x + (size.x - ts.x) * 0.5f, by + bh + S(46.0f)), Plain(0.7f), text.c_str());
-        ImGui::PopFont();
-    }
     {
         // As the game's own key guide: the buttons' icons, then what they do.
         ImGui::PushFont(MenuArt::Font(), 18.0f);
+        // Kaniel 2026-10-29: the host rules went to the team settings (they ran into this line).
         const Keys::Hint keys[] = {{"Dpad", "Arrows", T("Move", "Выбор")},
                                    {"Cross", "Enter", T("Choose", "Нажать")},
+                                   {"Triangle", "", T("Team settings", "Настройки команды")},
                                    {"L3+R3", "Insert", T("Settings", "Настройки")}};
         Keys::Guide(draw, keys, win.x + S(36.0f), win.x + size.x - S(36.0f),
                     win.y + size.y - S(BbKeyGuide::BottomClearance));
         ImGui::PopFont();
     }
 
-    if (focus.items > 0) {
-        focus.focus = ((focus.focus + focus.move) % focus.items + focus.items) % focus.items;
-        focus.id = focus.ids[static_cast<size_t>(focus.focus)];
-    }
+    SettleFocus();
     ImGui::End();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
@@ -7631,7 +7805,9 @@ bool Visible() {
 }
 
 bool MenuOpen() {
-    return menu_open || quit_open;
+    // Kaniel 2026-10-29: the team screen's buttons take the mouse too ("mouse hover not working
+    // sometimes"): fullscreen hid the cursor over them.
+    return menu_open || quit_open || Team::open;
 }
 
 bool CapturesInput() {
