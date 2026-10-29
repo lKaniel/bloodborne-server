@@ -634,6 +634,55 @@ def coop_conflicts(named_writes, coop=None):
     return conflicts
 
 
+# Frame-rate fixes from Supermedo's bloodborne_pc windows-v1.9.6, with a frame rate patch only (at
+# 30 FPS, the PS4's, they would change nothing): our own code in the code segment's last page
+# (code_cave.py), at the same addresses as there.
+HIGH_FPS = ('60 FPS++', '90 FPS++', 'Uncap FPS++')
+
+
+def frame_rate_fixes(names, image_bytes, segments, env=os.environ):
+    """[(name, offset, data)] of the frame-rate fixes for patch `names` on the image (image_bytes(start,
+    end); segments [(start, end)]). Each is skipped when its sites hold other code; BB_FRAME_RATE_FIXES=0
+    turns them all off, BB_CLOTH_TIME, BB_STEADY_CLOTH, BB_FOLIAGE_TIME, BB_AIR_DRAG and BB_EFFECT_TIME=0
+    one each."""
+    if not any(n in names for n in HIGH_FPS) or env.get('BB_FRAME_RATE_FIXES')=='0':
+        return []
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
+    import air_drag, cloth, cloth_time, code_cave, effect_time, foliage_time
+    try:
+        code_cave.check_segments(segments)
+    except ValueError as error:
+        print(f'Patches: {error}; frame-rate fixes skipped')
+        return []
+    named=[]
+
+    def add(module, name, **options):
+        try:
+            module.check_original(image_bytes)
+        except ValueError as error:
+            print(f'Patches: {error}; {name} skipped')
+            return False
+        named.extend((name,offset,data) for offset,data in module.code_writes(**options))
+        return True
+
+    # A steady time step for the cloth: a stutter is no kick to capes and dresses.
+    steady=env.get('BB_CLOTH_TIME')!='0' and add(cloth_time,'Steady cloth time')
+    # Cloth as at 30 FPS at any frame rate; it steps with the steady time, so only with that one.
+    if steady and env.get('BB_STEADY_CLOTH')!='0':
+        add(cloth,'Steady cloth')
+    # Plants sway with the frame's (steady) time, not a step a frame.
+    if env.get('BB_FOLIAGE_TIME')!='0':
+        add(foliage_time,'Plant sway time')
+    # Jumps as at 30 FPS: the air drag per second of 30 FPS.
+    if env.get('BB_AIR_DRAG')!='0':
+        add(air_drag,'Jumps as at 30 FPS')
+    # Effects in whole 1/60 s steps: updated more than 60 times a second, particles pile up
+    # (Ebrietas' fight down to 45 FPS uncapped, 30 at 90 FPS++).
+    if ('Uncap FPS++' in names or '90 FPS++' in names) and env.get('BB_EFFECT_TIME')!='0':
+        add(effect_time,'Effects in 1/60 s steps',measured='Uncap FPS++' in names)
+    return named
+
+
 def report_coop_conflicts(conflicts, out=sys.stderr):
     """Says, loudly, which game patch breaks which co-op feature (the launcher shows this output
     and keeps it in last_run.log)."""
@@ -753,6 +802,11 @@ def main():
                   f'{", ".join(fps_names)}')
             names=[n for n in names if n not in fps_names]
         named+=external
+    if 'fps' in groups:
+        elf=(a.out/'eboot.elf').read_bytes()
+        fixes=frame_rate_fixes(names,lambda start,end: eboot_bytes(elf,start,end),segments)
+        named+=fixes
+        names+=list(dict.fromkeys(name for name,_,_ in fixes))
     try:
         report_coop_conflicts(coop_conflicts(named))
     except (OSError, ValueError, KeyError) as error:
