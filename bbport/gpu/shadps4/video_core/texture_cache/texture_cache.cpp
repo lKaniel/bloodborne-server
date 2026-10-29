@@ -459,7 +459,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
     const bool bpp_match = requested_info.num_bits == cache_image.info.num_bits;
 
     // If an image in the cache has less slices we need to expand it
-    bool recreate = cache_image.info.resources < requested_info.resources;
+    bool recreate = !cache_image.info.resources.Contains(requested_info.resources);
 
     switch (binding) {
     case BindingType::Texture:
@@ -582,7 +582,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
         // Size and resources are greater, expand the image.
         if (image_info.type == cache_image.info.type &&
-            image_info.resources > cache_image.info.resources) {
+            !cache_image.info.resources.Contains(image_info.resources)) {
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
@@ -889,11 +889,23 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         if (exact_fmt && info.pixel_format != image_resolved.info.pixel_format) {
             // Cannot reuse this image as we need the exact requested format.
             image_id = {};
-        } else if (image_resolved.info.resources < info.resources) {
+        } else if (!image_resolved.info.resources.Contains(info.resources)) {
             // The image was clearly picked up wrong.
+            // bbport: which images (a guest's CopyMip stop on 2026-10-29 followed three of these,
+            // and the plain line said nothing about them).
+            LOG_WARNING(Render_Vulkan,
+                        "Image overlap resolve failed: wanted {:#x} {}x{}x{} {} levels {} layers {} "
+                        "tile {}, found {:#x} {}x{}x{} {} levels {} layers {} tile {}",
+                        info.guest_address, info.size.width, info.size.height, info.size.depth,
+                        vk::to_string(info.pixel_format), info.resources.levels,
+                        info.resources.layers, u32(info.tile_mode),
+                        image_resolved.info.guest_address, image_resolved.info.size.width,
+                        image_resolved.info.size.height, image_resolved.info.size.depth,
+                        vk::to_string(image_resolved.info.pixel_format),
+                        image_resolved.info.resources.levels, image_resolved.info.resources.layers,
+                        u32(image_resolved.info.tile_mode));
             FreeImage(image_id);
             image_id = {};
-            LOG_WARNING(Render_Vulkan, "Image overlap resolve failed");
         }
     }
     // Create and register a new image

@@ -531,6 +531,20 @@ void Runtime::CopyMip(VideoCore::Image* src, VideoCore::Image* dst, u32 mip, u32
     const auto mip_block_p = std::max<u32>(dst->info.mips_layout[mip].pitch >> dst_dim, 1u);
 
     const auto src_dim = src->info.props.is_block ? 2 : 0;
+    // bbport: the images, before the checks below stop the game (a guest on 2026-10-29).
+    if (mip_block_w != (src->info.size.width >> src_dim) ||
+        mip_block_h != (src->info.size.height >> src_dim) ||
+        mip_block_p != (src->info.pitch >> src_dim)) {
+        LOG_ERROR(Render_Vulkan,
+                  "CopyMip: mip {} slice {} of {:#x} {}x{} pitch {} levels {} layers {} ({}) "
+                  "from {:#x} {}x{} pitch {} levels {} layers {} ({})",
+                  mip, slice, dst->info.guest_address, dst->info.size.width,
+                  dst->info.size.height, dst->info.pitch, dst->info.resources.levels,
+                  dst->info.resources.layers, vk::to_string(dst->info.pixel_format),
+                  src->info.guest_address, src->info.size.width, src->info.size.height,
+                  src->info.pitch, src->info.resources.levels, src->info.resources.layers,
+                  vk::to_string(src->info.pixel_format));
+    }
     ASSERT(mip_block_w == (src->info.size.width >> src_dim));
     ASSERT(mip_block_h == (src->info.size.height >> src_dim));
     ASSERT(mip_block_p == (src->info.pitch >> src_dim));
