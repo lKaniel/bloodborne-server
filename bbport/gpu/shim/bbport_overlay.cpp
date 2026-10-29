@@ -2896,11 +2896,19 @@ struct Focus {
     std::vector<BbMenuFocus::Item> rects;
     int pointed = -1;
     bool was_in_team = false;
+    // A page opened or closed during this frame (OpenSettings, CloseSettings): `id` names a button
+    // of the next frame's page, so this frame's buttons do not settle it (the focus went to the
+    // settings' last row by its index, and back to the wrong button).
+    bool page_switched = false;
 };
 Focus focus;
 
 /// The frame's buttons are drawn: the focus goes where the mouse pointed, else moves as asked.
 void SettleFocus() {
+    if (focus.page_switched) {
+        focus.page_switched = false;
+        return;
+    }
     if (focus.items <= 0) {
         return;
     }
@@ -3180,12 +3188,14 @@ void OpenSettings() {
     settings.open = true;
     focus.id = "set_join";
     focus.activate = false; // the press that opened it is used up
+    focus.page_switched = true;
 }
 
 void CloseSettings() {
     settings.open = false;
     focus.id = "settings"; // back on the button that opened it
     focus.activate = false;
+    focus.page_switched = true;
 }
 
 /// The settings button: the game's square slot (gold-framed with the focus) and a cog in it.
@@ -7779,6 +7789,7 @@ bool Visible() {
     if (!Team::open) {
         Team::friends.open = false; // the team screen opens on the team, not where it was left
         Team::friends.online_typing = false;
+        Team::settings.open = false;
     }
     Joining::open = initialized && bbcoop_team_load_view(&Joining::load) != 0;
     loading_cover = Joining::open;
