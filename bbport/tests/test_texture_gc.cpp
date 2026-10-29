@@ -6,6 +6,7 @@
 // mips whose guest bytes did not change), were dropped and later rebuilt from stale memory.
 #include <cassert>
 #include "gpu/shadps4/video_core/texture_cache/gc_policy.h"
+#include "gpu/shadps4/video_core/texture_cache/types.h"
 #include "gpu/shadps4/video_core/texture_cache/vram_placement.h"
 
 using VideoCore::GcAction;
@@ -13,6 +14,7 @@ using VideoCore::GcActionFor;
 using VideoCore::GcImageState;
 using VideoCore::HeapUse;
 using VideoCore::ImageEvent;
+using VideoCore::SubresourceExtent;
 using VideoCore::ArenaReserveBytes;
 using VideoCore::BufferWriteMarkAfter;
 using VideoCore::ArenaSpillsOutsideVram;
@@ -93,6 +95,21 @@ int main() {
     assert(BufferWriteMarkAfter(ImageEvent::Use, 0x1234) == 0x1234);
     assert(BufferWriteMarkAfter(ImageEvent::Use, 0) == 0);
     assert(BufferWriteMarkAfter(ImageEvent::Reload, 0x1234) == 0);
+
+    // shadPS4 #5524: whether a cached image can serve every subresource a request needs is a
+    // question per dimension. More mips does not make up for missing layers (the defaulted
+    // comparison is lexicographic and said it did), nor more layers for missing mips.
+    {
+        constexpr SubresourceExtent full{.levels = 5, .layers = 6};
+        constexpr SubresourceExtent mips_only{.levels = 5, .layers = 1};
+        constexpr SubresourceExtent layers_only{.levels = 1, .layers = 6};
+        constexpr SubresourceExtent fewer_mips{.levels = 4, .layers = 6};
+        assert(full.Contains(full));
+        assert(full.Contains(SubresourceExtent{}));
+        assert(!mips_only.Contains(layers_only));
+        assert(!layers_only.Contains(mips_only));
+        assert(!fewer_mips.Contains(full));
+    }
 
     // krolebord's play test 2026-10-17 (RTX 4050 Laptop, 5920 MiB): 5834 MiB in use of a ~5150
     // MiB budget, the GPU stopped. NVIDIA: heap 0 VRAM, heap 1 system memory; types 0-1 in
