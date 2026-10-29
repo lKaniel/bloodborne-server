@@ -121,6 +121,18 @@ class ScenarioTest(unittest.TestCase):
                 self.assertEqual(
                     scenario.get("settings", {}).get("SHADPS4_BLOODBORNE_PARTY_DEATH") == "1", uses)
 
+    def test_a_player_an_enemy_must_come_for_stays_up(self):
+        # Rig 2026-10-29 (guest-alone-mobs red about 1 in 3, release-1.3.1 full run): the enemy
+        # came for the guest and put it down, the enemies forgot the downed player as party death
+        # wants, and it walked home before the last census: "stood still". A "moves" check's
+        # player holds godmode (and never turns it off) so the enemy stays on it.
+        for name, scenario in scenarios.SCENARIOS.items():
+            for role in scenario.get("moves", {}):
+                commands = sum(run_scenario.stages_of(scenario["roles"][role]), [])
+                godmode = [command for command in commands if command.split()[0] == "godmode"]
+                with self.subTest(scenario=name, role=role):
+                    self.assertEqual(godmode, ["godmode"])
+
     def test_nothing_plays_without_party_death_or_dies_by_the_games_own_kill(self):
         # Party death is always on in the port (Kaniel 2026-10-13): a player dies by going down and
         # giving up, by a wipe or alone on its map, never by the game's own kill of itself, unless
