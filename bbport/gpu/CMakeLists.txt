@@ -532,6 +532,10 @@ target_include_directories(key-guide-test PRIVATE ..)
 add_executable(menu-focus-test EXCLUDE_FROM_ALL ../tests/test_menu_focus.cpp)
 target_compile_options(menu-focus-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(menu-focus-test PRIVATE ..)
+# bbport co-op: our screens that hold the game's input take it themselves (shim/bbport_overlay_input.h).
+add_executable(overlay-input-test EXCLUDE_FROM_ALL ../tests/test_overlay_input.cpp)
+target_compile_options(overlay-input-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(overlay-input-test PRIVATE ..)
 # bbport co-op: party death's HUD keeps clear of the game's own HUD (shim/bbport_party_layout.h).
 add_executable(party-layout-test EXCLUDE_FROM_ALL ../tests/test_party_layout.cpp)
 target_compile_options(party-layout-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
