@@ -117,6 +117,21 @@ def strings_of(emevd: bytes) -> bytes:
 
 
 class GuestsEnterBossFogFirst(unittest.TestCase):
+    def test_the_unlocked_banner_gives_way_to_the_downed_banner(self):
+        """Slot 15 (TextEffect_YouWin) is party death's YOU ARE DOWN in the HUD patch: m29 12900192, the
+        only event that queues it, shows none (id 0 is out of SetTextEffect's range)."""
+        banner = (2007, 2, struct.pack('<i', tool.DOWNED_BANNER_ID))
+        other = (2007, 2, struct.pack('<i', 16))
+        edits: list = []
+        patched, count = tool.drop_banners(build_emevd({12900192: [banner], 12900193: [banner, other]}),
+                                           {12900192}, edits)
+        events = read_events(patched)
+        self.assertEqual(count, 1)
+        self.assertEqual(events[12900192], [(2007, 2, struct.pack('<i', 0))])
+        self.assertEqual(events[12900193], [banner, other])
+        self.assertEqual(edits[0]['event'], 12900192)
+        self.assertEqual(tool.DROPPED_BANNER_EVENTS, {'m29.emevd.dcx': {12900192}})
+
     """A white phantom's boss fog event waits for the host's "entered" flag, so a guest could
     never enter first and was stuck behind the fog after a world reset."""
 
