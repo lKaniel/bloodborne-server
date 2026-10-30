@@ -10,6 +10,7 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
@@ -222,6 +223,21 @@ std::vector<std::pair<s32, bool>> WorldFlagChanges(u32 flags_per_block,
 // the host's progress since shows from the guest's next trip.
 bool TakesTeamWorldBlock(u32 block, const std::set<u32>& taken, std::span<const u32> covered,
                          bool guest_trip);
+// Kaniel's players 2026-10-28/29: an ending (the Dream's 12100000, 12100002, 12100180) starts the
+// next playthrough (2003:21): the game puts its world back to a new game's and reloads the save,
+// its clear count (GameDataMan +0x68, the GetClearCount event function) one up. The team's world
+// from before it then went over that load: every lamp and boss back (Provi's day 4), and the
+// Dream's ending flag on again, so the ending played at the next visit, NG+ 1, 2, 3 (Lisara's
+// group). A load is the next playthrough's when its save slot's clear count is past the one
+// the last load of that slot saw in this game.
+class PlaythroughWatch {
+public:
+    // Notes a load of `slot` with its clear count: whether it starts a new playthrough.
+    bool NextPlaythrough(int slot, s32 clear_count);
+
+private:
+    std::map<int, s32> seen;
+};
 // The lamps lit in the team's world in the blocks a load took (`blocks`), as lamp entities
 // (LampOfActiveFlag). A lamp stays lit only for a character whose lamp list holds it, so they go on
 // the guest's list as its flags go in (Kaniel's play test 2026-10-18: krolebord's lamps listed only

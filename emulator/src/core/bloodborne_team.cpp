@@ -486,6 +486,13 @@ bool TakesTeamWorldBlock(u32 block, const std::set<u32>& taken, std::span<const 
            std::binary_search(covered.begin(), covered.end(), block);
 }
 
+bool PlaythroughWatch::NextPlaythrough(int slot, s32 clear_count) {
+    const auto it = seen.find(slot);
+    const bool next = it != seen.end() && clear_count > it->second;
+    seen[slot] = clear_count;
+    return next;
+}
+
 std::vector<s32> TeamWorldLamps(u32 flags_per_block, std::span<const u32> blocks,
                                 const WorldFlags& target) {
     std::vector<s32> lamps;

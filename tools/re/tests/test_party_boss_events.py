@@ -644,8 +644,7 @@ class GuestsSeeStoryCutscenes(unittest.TestCase):
     cutscenes whose events end for a client (1003:6 state 1) before the cutscene: Cainhurst's
     arrival (m25_00 12500000), the Hypogean Gaol's arrival after a kidnapping (common 9422, also
     a point of insight) and the one after the Nightmare of Mensis' boss (m26_00 12601854). The
-    Dream's endings (m21_00 12100000, 12100002, 12100180: they start the next playthrough) stay
-    the host's."""
+    Dream's endings: GuestsSeeTheEndings."""
 
     def test_the_story_cutscenes_play_for_a_client(self):
         for name, event in (('m25_00_00_00.emevd.dcx', 12500000), ('common.emevd.dcx', 9422),
@@ -658,9 +657,50 @@ class GuestsSeeStoryCutscenes(unittest.TestCase):
             self.assertEqual(read_events(patched)[event][1][2][:2], bytes([0, tool.NEVER]), name)
             self.assertEqual(count, 1, name)
 
-    def test_the_endings_stay_the_hosts(self):
-        dream = tool.CLIENT_EVENTS['m21_00_00_00.emevd.dcx']
-        self.assertFalse(dream & {12100000, 12100002, 12100180})
+
+
+class GuestsSeeTheEndings(unittest.TestCase):
+    """Kaniel's players 2026-10-28/29: killing Gehrman played the ending for the host only, the
+    guests' session ended under them and they stayed in the old playthrough. The Dream's endings
+    (m21_00 12100000, 12100002, 12100180) end for a client (1003:6 state 1), 12100000 also unless
+    the local player is alive (4:3 player 10000 type 0, a white phantom is type 1)."""
+
+    DREAM = 'm21_00_00_00.emevd.dcx'
+
+    @staticmethod
+    def ending(alive_check: bool) -> list:
+        instructions = [(2000, 2, struct.pack('<i', 0)),
+                        (1003, 6, struct.pack('<BBxx', 0, 1)),
+                        (3, 0, struct.pack('<bBBxi', 1, 1, 0, 12101800))]
+        if alive_check:
+            instructions.append((4, 3, struct.pack('<bxxxiBxxx', 1, 10000, 0)))
+        return instructions + [(0, 0, struct.pack('<bBbx', 0, 1, 1)),
+                               (2002, 3, struct.pack('<iii', 21000020, 0, 10000)),
+                               (2003, 21, struct.pack('<i', 1))]
+
+    def test_every_ending_plays_for_a_guest(self):
+        self.assertEqual(tool.ENDING_EVENTS[self.DREAM], {12100000, 12100002, 12100180})
+        original = build_emevd({12100000: self.ending(True), 12100002: self.ending(False),
+                                12100010: self.ending(True)})
+        patched, count = tool.let_guests_see_the_endings(original, tool.ENDING_EVENTS[self.DREAM])
+        events, before = read_events(patched), read_events(original)
+        self.assertEqual(count, 3)
+        self.assertEqual(events[12100000][1][2][:2], bytes([0, tool.NEVER]))
+        self.assertEqual(events[12100000][3][2][0], tool.UNUSED_GROUP,
+                         'the alive check no longer holds it for a phantom')
+        self.assertEqual(events[12100000][4:], before[12100000][4:])
+        self.assertEqual(events[12100002][1][2][:2], bytes([0, tool.NEVER]))
+        self.assertEqual(events[12100010], before[12100010], 'not an ending')
+        self.assertEqual(tool.let_guests_see_the_endings(patched, tool.ENDING_EVENTS[self.DREAM]),
+                         (patched, 0))
+
+    def test_the_dream_file_patch_validates(self):
+        original = build_emevd({12100000: self.ending(True), 12100180: self.ending(False)})
+        edits: list = []
+        patched, count = tool.let_guests_see_the_endings(original,
+                                                         tool.ENDING_EVENTS[self.DREAM], edits)
+        self.assertEqual(count, 3)
+        tool.validate(original, patched, edits, self.DREAM)
 
 
 class GuestsPickUpGlowingItems(unittest.TestCase):
