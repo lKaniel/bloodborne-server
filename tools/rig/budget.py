@@ -61,6 +61,8 @@ RECENT = {
     "chalice-enter-broken": "10-24 entering a dungeon with a broken altar record crashed (#391)",
     "guest-cutscene-cainhurst": "10-25 audit: a guest missed the story cutscenes",
     "guest-death-target": "10-25 Logarius went for the host only: a dead guest's mark stayed",
+    "yahargul-mummy-guest": "10-30 Provi: only the host could inspect Yahar'gul's mummy",
+    "yahargul-mummy-host": "10-30 Provi: the host's inspection of the mummy is its own trip",
 }
 
 # Single scenarios that do not fit the budget (their own boot plus fixed waits over 30 s, or

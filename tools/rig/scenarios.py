@@ -197,9 +197,21 @@ YAHARGUL_BELL_GUEST = "258.5 -38.5 116.5"  # (at 256.0 -38.5 112.0 a guest died,
 # Open ground 30 m from the bell's area, on the street from the lamp (where crowd 2800301 walks):
 # a rise from 10.7 m off its middle (254.8 -38.5 127.4) was still inside it (it is 23 m high).
 YAHARGUL_BY_THE_BELL = "268.0 -46.5 89.0"
+# The mummy at the end of the Yahar'gul Chapel's hall (m28_00 event 12800430: action button
+# 2800020 on its warp object 2801500 at 460.06 -111.97 -293.97, heading 135 degrees, then 2003:49
+# to the Lecture Building's 3202959): in front of it, facing it. The One Reborn's defeat
+# (12801800) as after Provi's fight (day 4, v1.3.1).
+YAHARGUL_CHAPEL_LAMP = 2802951  # 418.8 -123.66 -253.4
+YAHARGUL_CHAPEL_LAMP_LIT = 12807830
+ONE_REBORN_DEFEATED = 12801800
+BEFORE_THE_MUMMY = "459.35 -111.97 -294.68 -0.785"
+LECTURE_BUILDING = "0x20000000"
+YAHARGUL = "0x1c000000"
 THIS_MAP_FLAG = 12410999
 FORBIDDEN_WOODS_LAMP_LIT = 12707810  # a lamp neither rig character has lit (see LampOfActiveFlag)
 START = f"ensure-map {CENTRAL_YHARNAM} {CENTRAL_YHARNAM_LAMP}"
+MUMMY_SETUP = [START, "godmode", f"set-flag {YAHARGUL_CHAPEL_LAMP_LIT} 1",
+               f"set-flag {BLOOD_MOON} 1", f"set-flag {ONE_REBORN_DEFEATED} 1"]
 # An enemy by a player moved farther in one frame than any runs (a hand-over that jumped).
 ENEMY_JUMPED = r"Bloodborne party: enemy [0-9a-f]+ jumped"
 # Phase 5b: a world flag of Central Yharnam's block no event uses (the rig's saves have it off).
@@ -3607,6 +3619,42 @@ SCENARIOS = {
                       f"teleport {YAHARGUL_BELL_GUEST} 0", "census 40", "wait 30", "census 40",
                       "wait 10", "census 40", "wait 25", "census 40", "attack nearest 40",
                       "wait 3", "census 40", "wait 30", "census 40", "expect-session 2"],
+        },
+        "forbid": {"host": SESSION_HOLDS, "guest": SESSION_HOLDS},
+        "timeout": 300,
+    },
+    # Provi's day 4 (v1.3.1): after The One Reborn only the host could inspect the mummy at the
+    # end of Yahar'gul's hall, and only the host was taken to the Lecture Building. Each player's
+    # inspection takes that player alone; the team holds.
+    "yahargul-mummy-guest": {
+        "about": "in a session in Yahar'gul after The One Reborn the guest inspects the mummy at "
+                 "the end of the chapel's hall: the guest goes to the Lecture Building, the host "
+                 "stays",
+        "roles": {
+            "host": [*MUMMY_SETUP, "wait-session 2 300", f"travel {YAHARGUL_CHAPEL_LAMP}",
+                     "wait-members 2 120", "wait 30", f"expect-map {YAHARGUL}", "wait 30",
+                     f"expect-map {YAHARGUL}", "expect-session 2"],
+            "guest": [*MUMMY_SETUP, "wait-session 2 300", f"travel {YAHARGUL_CHAPEL_LAMP}",
+                      "wait-members 2 120", "wait 5", f"teleport {BEFORE_THE_MUMMY}", "wait 3",
+                      "snapshot", "press cross 200", f"wait-map {LECTURE_BUILDING} 90",
+                      "wait 10", "snapshot", f"expect-map {LECTURE_BUILDING}",
+                      "expect-session 2"],
+        },
+        "forbid": {"host": SESSION_HOLDS, "guest": SESSION_HOLDS},
+        "timeout": 300,
+    },
+    "yahargul-mummy-host": {
+        "about": "in a session in Yahar'gul after The One Reborn the host inspects the mummy: "
+                 "the host goes to the Lecture Building, the guest beside it stays",
+        "roles": {
+            "host": [*MUMMY_SETUP, "wait-session 2 300", f"travel {YAHARGUL_CHAPEL_LAMP}",
+                     "wait-members 2 120", "wait 5", f"teleport {BEFORE_THE_MUMMY}", "wait 3",
+                     "press cross 200", f"wait-map {LECTURE_BUILDING} 90", "wait 10",
+                     f"expect-map {LECTURE_BUILDING}", "expect-session 2"],
+            "guest": [*MUMMY_SETUP, "wait-session 2 300", f"travel {YAHARGUL_CHAPEL_LAMP}",
+                      "wait-members 2 120", "wait 3", f"teleport {BEFORE_THE_MUMMY}", "wait 30",
+                      f"expect-map {YAHARGUL}", "wait 30", f"expect-map {YAHARGUL}",
+                      "expect-session 2"],
         },
         "forbid": {"host": SESSION_HOLDS, "guest": SESSION_HOLDS},
         "timeout": 300,

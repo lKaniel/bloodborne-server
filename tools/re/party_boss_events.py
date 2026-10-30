@@ -144,12 +144,17 @@ def patch_events(emevd: bytes, edits: list | None = None) -> tuple[bytes, int]:
 # kidnapping (and its point of insight), m25_00 12500000 Cainhurst's arrival, m26_00 12601854 the
 # one after the Nightmare of Mensis' boss. The Dream's endings (m21_00 12100000, 12100002,
 # 12100180: they start the next playthrough, 2003:21) stay the host's.
+# m28_00 12800430 is the mummy at the end of Yahar'gul's hall (the action button on its warp
+# object 2801500, then 2003:49 to the Lecture Building, m32's 3202959): only the host could
+# inspect it and only the host travelled (Provi's day 4, v1.3.1). It is each player's own trip
+# (LOCAL_EVENTS).
 CLIENT_EVENTS = {
     'common.emevd.dcx': {9350, 9400, 9404, 9421, 9422},
     'm21_00_00_00.emevd.dcx': {9401, 12105043, 12107100},
     'm24_00_00_00.emevd.dcx': {12401803},
     'm25_00_00_00.emevd.dcx': {12500000},
     'm26_00_00_00.emevd.dcx': {12601854},
+    'm28_00_00_00.emevd.dcx': {12800430},
 }
 INSIGHT_EVENT = 9350
 INITIALIZE_EVENT = (2000, 0)
@@ -541,9 +546,12 @@ def let_guests_wake_ambushes(emevd: bytes, wanted: set[int],
 # (5090 Bone Ash, 5091 Madman) once the layer 2 boss is dead; the shop flags are each player's
 # own, so kept in step the first game to run it ended it in the other's, which never set its own
 # (seixas 2026-10-27: no Bone Ash set after the Keeper of the Old Lords).
+# m28_00 12800430 (Yahar'gul's mummy, see CLIENT_EVENTS) warps to the Lecture Building: kept in
+# step, one player's inspection would take every teammate in Yahar'gul along.
 LOCAL_EVENTS = {
     'm21_00_00_00.emevd.dcx': {12101000, 12101020, 12101021, 12101022, 12101024, 12101026,
                                12101028, 12105040, 12107100, 12107200},
+    'm28_00_00_00.emevd.dcx': {12800430},
     'm29.emevd.dcx': {12906824},
 }
 for _name, _events in ACTION_PICKUP_EVENTS.items():
