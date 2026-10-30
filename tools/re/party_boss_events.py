@@ -142,8 +142,7 @@ def patch_events(emevd: bytes, edits: list | None = None) -> tuple[bytes, int]:
 # Story cutscenes that ended for a client before they played (audit 2026-10-25, Kaniel: "everyone
 # is moved but only the host sees the cutscene"): common 9422 the Hypogean Gaol's arrival after a
 # kidnapping (and its point of insight), m25_00 12500000 Cainhurst's arrival, m26_00 12601854 the
-# one after the Nightmare of Mensis' boss. The Dream's endings (m21_00 12100000, 12100002,
-# 12100180: they start the next playthrough, 2003:21) stay the host's.
+# one after the Nightmare of Mensis' boss. The Dream's endings are ENDING_EVENTS.
 CLIENT_EVENTS = {
     'common.emevd.dcx': {9350, 9400, 9404, 9421, 9422},
     'm21_00_00_00.emevd.dcx': {9401, 12105043, 12107100},
@@ -386,6 +385,45 @@ def patch_client_events(emevd: bytes, wanted: set[int],
             if bank == 1003 and ident == 6 and length >= 2 and data[at + 1] == 1:
                 data[at + 1] = NEVER
                 note(edits, event, k, bank, ident, 'client end never matches')
+                patched += 1
+    return bytes(data), patched
+
+
+# The Dream's endings (m21_00 12100000 after Gehrman, 12100002 after the Moon Presence, 12100180
+# Gehrman's offer taken): the cutscene, the ending's trophy, then the next playthrough (2003:21).
+# Each ended for a client (1003:6 state 1), 12100000 also unless the local player is alive (4:3
+# player 10000 type 0, a white phantom is type 1): the guests saw nothing, their session ended
+# under them as the host's game left for the next playthrough, and they stayed in the old one
+# (Kaniel's players 2026-10-28/29). Patched, a guest's game plays the ending too and starts its
+# own next playthrough; the runtime keeps each save's new world (PlaythroughWatch).
+ENDING_EVENTS = {'m21_00_00_00.emevd.dcx': {12100000, 12100002, 12100180}}
+
+
+def let_guests_see_the_endings(emevd: bytes, wanted: set[int],
+                               edits: list | None = None) -> tuple[bytes, int]:
+    data = bytearray(emevd)
+    fields = struct.unpack_from('<16q', data, 16)
+    event_count, event_offset, instruction_offset = fields[0], fields[1], fields[3]
+    args_offset = fields[13]
+    patched = 0
+    for index in range(event_count):
+        event, count, first, _, _, _, _ = struct.unpack_from('<qqqqqii', data,
+                                                             event_offset + index * 48)
+        if event not in wanted:
+            continue
+        for k in range(count):
+            bank, ident, length, offset, _ = struct.unpack_from(
+                '<iiqqq', data, instruction_offset + first + k * 32)
+            at = args_offset + offset
+            if bank == 1003 and ident == 6 and length >= 2 and data[at + 1] == 1:
+                data[at + 1] = NEVER
+                note(edits, event, k, bank, ident, 'client end never matches')
+                patched += 1
+            if (bank == 4 and ident == 3 and length >= 9 and data[at] != UNUSED_GROUP and
+                    struct.unpack_from('<i', data, at + 4)[0] == LOCAL_PLAYER and
+                    data[at + 8] == ALIVE):
+                data[at] = UNUSED_GROUP
+                note(edits, event, k, bank, ident, 'alive check no longer waited on')
                 patched += 1
     return bytes(data), patched
 
@@ -914,7 +952,7 @@ def patch_file(name: str, original: bytes) -> tuple[bytes | None, list, dict]:
     counts = {'boss event checks': 0, 'boss fog checks': 0, 'insight event checks': 0,
               'client event ends': 0, 'local events': 0, 'chalice wall checks': 0,
               'item pickup checks': 0, 'host door effects': 0, 'ambush checks': 0,
-              'chalice reward checks': 0, 'one-time enemy checks': 0}
+              'chalice reward checks': 0, 'one-time enemy checks': 0, 'ending checks': 0}
     try:
         if name.startswith('m'):
             emevd, counts['boss event checks'] = patch_events(emevd, edits)
@@ -924,6 +962,9 @@ def patch_file(name: str, original: bytes) -> tuple[bytes | None, list, dict]:
         if name in CLIENT_EVENTS:
             emevd, counts['client event ends'] = patch_client_events(emevd, CLIENT_EVENTS[name],
                                                                      edits)
+        if name in ENDING_EVENTS:
+            emevd, counts['ending checks'] = let_guests_see_the_endings(emevd,
+                                                                        ENDING_EVENTS[name], edits)
         if name in ACTION_PICKUP_EVENTS:
             emevd, counts['item pickup checks'] = let_guests_pick_up_items(
                 emevd, ACTION_PICKUP_EVENTS[name], edits)

@@ -118,6 +118,10 @@ bool team_host = false;
 // see TeamHostTookOver.
 std::atomic<bool> took_over{false};
 bool personal_world_due = false;
+// The clear counts this game's loads saw per save slot, and a load found to be the next
+// playthrough's not yet handled (ApplyTeamWorldOnLoad keeps that save's new world).
+PlaythroughWatch playthroughs;
+bool next_playthrough_due = false;
 WorldFlags team_world_reported;
 s64 team_world_reported_ms = 0;
 // A guest: the team world its game last took or followed (TeamStoryToFollow's `before`).
@@ -2376,6 +2380,15 @@ size_t SetWorldFlags(const WorldStore& world, const WorldFlags& target) {
 
 } // namespace
 
+// This save's clear count (GameDataMan +0x68, as the GetClearCount event function reads it).
+std::optional<s32> SaveClearCount() {
+    const u64 data = ReadValue<u64>(image_base + GameDataManPointerOffset, 0);
+    if (data < 0x10000) {
+        return std::nullopt;
+    }
+    return TryRead<s32>(data, 0x68);
+}
+
 void ApplyTeamWorldOnLoad(bool trip) {
     if (!team_switch) {
         return;
@@ -2384,6 +2397,55 @@ void ApplyTeamWorldOnLoad(bool trip) {
     // mid-visit) comes back first; an invader takes no team's world into its save.
     RestoreInvasionHomeOnLoad();
     if (Invading()) {
+        return;
+    }
+    // An ending's next playthrough (PlaythroughWatch): this load's save has the new game's world.
+    // It stays: the host's next report makes it the team's, a guest's trips take the team's
+    // again once the host's is in, and this save's own world kept aside (from before its
+    // playthrough ended) never comes back over it (Lisara's group: a guest's solo NG+ load got
+    // its old own world back, the Dream on fire and every lamp out).
+    // Read once the load's flags are (the save's, never the last character's still).
+    if (const int slot = character_slot.load(); slot >= 0 && ReadFlagStore().whole) {
+        if (const auto clear_count = SaveClearCount()) {
+            std::scoped_lock lock{team_mutex};
+            if (playthroughs.NextPlaythrough(slot, *clear_count)) {
+                next_playthrough_due = true;
+                LOG_INFO(Debug, "Co-op team world: slot {} starts its next playthrough (clear "
+                                "count {})",
+                         slot, *clear_count);
+            }
+        }
+    }
+    bool next_playthrough = false;
+    {
+        std::scoped_lock lock{team_mutex};
+        next_playthrough = next_playthrough_due;
+    }
+    if (next_playthrough) {
+        const int slot = character_slot.load();
+        std::optional<WorldStore> store = ReadWorldStore();
+        if (!store || slot < 0) {
+            return; // the next call (the flags readable, the slot known)
+        }
+        std::error_code error;
+        std::filesystem::remove(PersonalWorldFile(slot), error);
+        std::scoped_lock lock{team_mutex};
+        next_playthrough_due = false;
+        personal_world_due = false;
+        if (team_world_due) {
+            for (const FlagBlockBits& block : store->blocks) {
+                team_world_blocks.insert(block.id);
+            }
+            team_world_taken = true;
+            team_world_reported = {};
+        }
+        LOG_INFO(Debug,
+                 "Co-op team world: slot {}'s next playthrough keeps its new world ({} blocks; "
+                 "{}; its own world kept aside dropped)",
+                 slot, store->blocks.size(),
+                 !team_world_due ? "no team"
+                 : team_host     ? "the team's from this host's next report"
+                                 : "the team's again at its trips");
         return;
     }
     std::optional<bbcoop::TeamWorld> world;

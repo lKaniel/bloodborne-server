@@ -276,6 +276,21 @@ TEST(TeamWorld, ALoadTakesNewBlocksOnceAndAGuestsTripTakesEveryBlockAgain) {
     EXPECT_FALSE(TakesTeamWorldBlock(12411, {}, covered, false));
 }
 
+// Kaniel's players 2026-10-28/29: an ending's next playthrough reloads the save with its clear
+// count one up, and the team's world from before it went over the new game's world (every lamp
+// back, the Dream's ending again at the next visit). Only a slot's own count going up is one.
+TEST(TeamWorld, AClearCountPastTheSlotsLastLoadIsTheNextPlaythrough) {
+    PlaythroughWatch watch;
+    EXPECT_FALSE(watch.NextPlaythrough(0, 1)) << "the first load this game saw";
+    EXPECT_FALSE(watch.NextPlaythrough(0, 1)) << "a trip, a death, the title and back";
+    EXPECT_TRUE(watch.NextPlaythrough(0, 2)) << "the ending's reload";
+    EXPECT_FALSE(watch.NextPlaythrough(0, 2)) << "once";
+    EXPECT_FALSE(watch.NextPlaythrough(1, 5)) << "another slot's character";
+    EXPECT_FALSE(watch.NextPlaythrough(0, 2)) << "back to the first slot";
+    EXPECT_FALSE(watch.NextPlaythrough(1, 3)) << "never a lower count";
+    EXPECT_TRUE(watch.NextPlaythrough(1, 4));
+}
+
 // Kaniel's play test 2026-10-18: krolebord joined the team and his lamps listed only Cathedral
 // Ward. A lamp stays lit only for a character whose lamp list holds it, so the team world's lit
 // lamps in the blocks a load took go on the guest's list too (an active flag, 10007810 + map *
