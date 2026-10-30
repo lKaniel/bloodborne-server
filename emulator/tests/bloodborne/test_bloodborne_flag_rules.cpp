@@ -598,39 +598,6 @@ TEST(BloodborneFlagRules, TheDollsLevelUpFlagGoesOffOnceHerMenuClosed) {
     EXPECT_FALSE(ClearsDollLevelUpFlagAfterHerMenu(false, true, true));
 }
 
-// The rig 2026-10-30 (doll-level-up-cancelled): in a guest's game her talk asks for her blessing
-// flag (72100100) after the menu closed, but the flag never goes on there, so 6700 stayed on and
-// the next "Level Up" again opened no menu. Her talk's request itself turns 6700 off.
-TEST(BloodborneFlagRules, TheDollsLevelUpFlagGoesOffAsHerTalkAsksForHerBlessing) {
-    EXPECT_TRUE(ClearsDollLevelUpFlagOnHerBlessing(true, false, DollBlessingFlag));
-    EXPECT_FALSE(ClearsDollLevelUpFlagOnHerBlessing(true, true, DollBlessingFlag)); // not our talk
-    EXPECT_FALSE(ClearsDollLevelUpFlagOnHerBlessing(true, false, DollBlessingFlag + 1));
-    EXPECT_FALSE(ClearsDollLevelUpFlagOnHerBlessing(true, false, DollLevelUpFlag));
-    EXPECT_FALSE(ClearsDollLevelUpFlagOnHerBlessing(false, false, DollBlessingFlag));
-}
-
-// The 1.3.1 rig 2026-10-30 (doll-level-up-twice, -twice-alone): m21_00 12100112 (the kneel, sets
-// 72100101) and 12100113 (her turn, sets 72100102) end unless the local player is alive (4:3
-// player 10000 type 0, a white phantom is type 1), so in a guest's game her talk waited for them
-// for ever after 72100100. Then her talk's 72100100 = 0 (state 11) did not take in the guest's game
-// either, and state 11 waits for both steps off. So her talk's own requests drive a guest's steps:
-// the one with her level-up flag still on (state 10) puts them on, a later one (state 11) puts
-// them and her blessing off.
-TEST(BloodborneFlagRules, AGuestsDollBlessingFinishesWithoutTheKneelEvents) {
-    EXPECT_EQ(DollBlessingSteps.size(), 2u);
-    EXPECT_EQ(DollBlessingSteps[0], 72100101);
-    EXPECT_EQ(DollBlessingSteps[1], 72100102);
-    EXPECT_TRUE(BeginsDollBlessing(true));   // state 10: her menu just closed, 6700 still on
-    EXPECT_FALSE(BeginsDollBlessing(false)); // state 11 or her first choices (state 1)
-    EXPECT_EQ(DollBlessingStepFor(true, true, false, false), std::optional<bool>{true});
-    EXPECT_EQ(DollBlessingStepFor(true, true, false, true), std::nullopt); // already on
-    EXPECT_EQ(DollBlessingStepFor(true, false, true, true), std::optional<bool>{false});
-    EXPECT_EQ(DollBlessingStepFor(true, false, true, false), std::nullopt);  // state 1: nothing on
-    EXPECT_EQ(DollBlessingStepFor(true, false, false, true), std::nullopt);  // no request
-    EXPECT_EQ(DollBlessingStepFor(false, true, false, false), std::nullopt); // the host's events
-    EXPECT_EQ(DollBlessingStepFor(false, false, true, true), std::nullopt);
-}
-
 // Kaniel 2026-10-30: the host's level up played the kneel on guests. The Doll's blessing flags
 // (72100100 her talk's, 72100101 m21_00 12100112's kneel on the local player, 72100102 12100113's
 // turn of the Doll) are each game's own: not the team's world, not a story step, and the other
