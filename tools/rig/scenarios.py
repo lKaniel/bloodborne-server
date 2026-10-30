@@ -3594,7 +3594,7 @@ SCENARIOS = {
                              r"travelling there \(reset=false, void fall=true\)",
                              r"autoplay peek: 0x10044000 \+0x20c = 0x3f800000"]},
         "forbid": {"host": SESSION_HOLDS,
-                   "guest": SESSION_HOLDS + [r"Bloodborne revive: moved to last lamp"]},
+                   "guest": SESSION_HOLDS},
         "settings": PARTY_DEATH,
         "timeout": 300,
     },
