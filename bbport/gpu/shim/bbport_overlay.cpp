@@ -3198,18 +3198,22 @@ void CloseSettings() {
     focus.page_switched = true;
 }
 
-/// The settings button: the game's square slot (gold-framed with the focus) and a cog in it.
+/// The settings button: Kaniel's silver cog (CoopArt::Piece::Settings, 2026-10-29: the drawn one in the game's
+/// slot "looks really bad"), dimmed until it has the focus, a faint ring behind it then; drawn without the art.
 bool SettingsButton(ImDrawList* draw, ImVec2 at, float side) {
     bool focused = false;
     const bool pressed = Press("settings", at, ImVec2(side, side), true, focused);
-    const ImVec2 end(at.x + side, at.y + side);
-    if (!MenuArt::Draw(draw, focused ? MenuArt::SlotSelected : MenuArt::Slot, at, end, 1.0f)) {
-        draw->AddRectFilled(at, end, focused ? Gold(0.20f) : Gold(0.05f), S(2.0f));
-        draw->AddRect(at, end, focused ? Gold(0.95f) : Gold(0.45f), S(2.0f), 0, S(1.2f));
+    const ImVec2 mid(at.x + side * 0.5f, at.y + side * 0.5f);
+    if (focused) {
+        draw->AddCircleFilled(mid, side * 0.56f, Gold(0.12f), 40);
+        draw->AddCircle(mid, side * 0.56f, Gold(0.7f), 40, S(1.5f));
     }
-    const ImVec2 mid((at.x + end.x) * 0.5f, (at.y + end.y) * 0.5f);
-    const ImU32 ink = focused ? Bright() : Plain(0.9f);
-    const float outer = side * 0.30f, inner = side * 0.22f, hole = side * 0.09f;
+    if (CoopArt::Has()) {
+        CoopArt::Centred(draw, CoopArt::Piece::Settings, mid, side * (focused ? 0.96f : 0.9f), focused ? 1.0f : 0.72f);
+        return pressed;
+    }
+    const ImU32 ink = focused ? Bright() : Plain(0.8f);
+    const float outer = side * 0.42f, inner = side * 0.32f, hole = side * 0.13f;
     constexpr int teeth = 8;
     for (int i = 0; i < teeth; ++i) {
         const float a = float(i) * 6.2831853f / teeth, w = 0.22f;
