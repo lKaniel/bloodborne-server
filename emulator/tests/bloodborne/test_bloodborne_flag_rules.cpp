@@ -612,18 +612,23 @@ TEST(BloodborneFlagRules, TheDollsLevelUpFlagGoesOffAsHerTalkAsksForHerBlessing)
 // The 1.3.1 rig 2026-10-30 (doll-level-up-twice, -twice-alone): m21_00 12100112 (the kneel, sets
 // 72100101) and 12100113 (her turn, sets 72100102) end unless the local player is alive (4:3
 // player 10000 type 0, a white phantom is type 1), so in a guest's game her talk waited for them
-// for ever after 72100100: no second "Level Up", and the guest could not walk away. A guest's game
-// puts their flags on itself while her blessing is on, and off again once it is over.
+// for ever after 72100100. Then her talk's 72100100 = 0 (state 11) did not take in the guest's game
+// either, and state 11 waits for both steps off. So her talk's own requests drive a guest's steps:
+// the one with her level-up flag still on (state 10) puts them on, a later one (state 11) puts
+// them and her blessing off.
 TEST(BloodborneFlagRules, AGuestsDollBlessingFinishesWithoutTheKneelEvents) {
     EXPECT_EQ(DollBlessingSteps.size(), 2u);
     EXPECT_EQ(DollBlessingSteps[0], 72100101);
     EXPECT_EQ(DollBlessingSteps[1], 72100102);
-    EXPECT_EQ(DollBlessingStepFor(true, true, false), std::optional<bool>{true});
-    EXPECT_EQ(DollBlessingStepFor(true, true, true), std::nullopt); // already on
-    EXPECT_EQ(DollBlessingStepFor(true, false, true), std::optional<bool>{false});
-    EXPECT_EQ(DollBlessingStepFor(true, false, false), std::nullopt); // nothing to do
-    EXPECT_EQ(DollBlessingStepFor(false, true, false), std::nullopt); // the host's events run
-    EXPECT_EQ(DollBlessingStepFor(false, false, true), std::nullopt);
+    EXPECT_TRUE(BeginsDollBlessing(true));   // state 10: her menu just closed, 6700 still on
+    EXPECT_FALSE(BeginsDollBlessing(false)); // state 11 or her first choices (state 1)
+    EXPECT_EQ(DollBlessingStepFor(true, true, false, false), std::optional<bool>{true});
+    EXPECT_EQ(DollBlessingStepFor(true, true, false, true), std::nullopt); // already on
+    EXPECT_EQ(DollBlessingStepFor(true, false, true, true), std::optional<bool>{false});
+    EXPECT_EQ(DollBlessingStepFor(true, false, true, false), std::nullopt);  // state 1: nothing on
+    EXPECT_EQ(DollBlessingStepFor(true, false, false, true), std::nullopt);  // no request
+    EXPECT_EQ(DollBlessingStepFor(false, true, false, false), std::nullopt); // the host's events
+    EXPECT_EQ(DollBlessingStepFor(false, false, true, true), std::nullopt);
 }
 
 // Kaniel 2026-10-30: the host's level up played the kneel on guests. The Doll's blessing flags

@@ -164,8 +164,10 @@ alignas(16) std::array<u8, 0x100> no_talk_flag_range{}; // +0xA0 = +0xA4 = 0
 // talk at the dispatcher, +0x18 its talker, as ESD function 14 reads it): its commands run right
 // after, so RestInsteadOfLampTravel knows whose talk sets a flag.
 thread_local u64 esd_talker = 0;
-// This player's talk asked for the Doll's blessing (see ClearsDollLevelUpFlagOnHerBlessing).
+// This player's talk asked for the Doll's blessing (see ClearsDollLevelUpFlagOnHerBlessing): with
+// her level-up flag on (her blessing begins) or off (it ends, DollBlessingStepFor).
 std::atomic<bool> doll_blessing_asked{};
+std::atomic<bool> doll_blessing_end_asked{};
 
 } // namespace
 
@@ -390,7 +392,9 @@ void PS4_SYSV_ABI RestInsteadOfLampTravel(u64, GuestRegisterSnapshot* registers)
     if (ClearsDollLevelUpFlagOnHerBlessing(party_controller.has_value(),
                                            esd_talker >= 0x10000 && esd_talker != GetLocalPlayer(),
                                            flag)) {
-        doll_blessing_asked.store(true);
+        (BeginsDollBlessing(EventFlagOn(DollLevelUpFlag)) ? doll_blessing_asked
+                                                          : doll_blessing_end_asked)
+            .store(true);
     }
     // An NPC's gift (common event 9100 ends for a phantom): the guest's own talk earns it.
     if (GivesGuestNpcGift(InPartySession(), guest, flag)) {
@@ -1735,8 +1739,7 @@ void KeepHeadstoneFlagsOwn() {
 
 // See ClearsDollLevelUpFlagAfterHerMenu: every frame in a party (her blessing can be over within a
 // second), the Doll's level-up flag off once her level-up menu has closed.
-void ClearDollLevelUpFlagAfterHerMenu() {
-    const bool asked = doll_blessing_asked.exchange(false);
+void ClearDollLevelUpFlagAfterHerMenu(bool asked) {
     if (!party_controller || GetLocalPlayer() < 0x10000 ||
         !ClearsDollLevelUpFlagAfterHerMenu(true, EventFlagOn(DollLevelUpFlag),
                                            asked || EventFlagOn(DollBlessingFlag))) {
@@ -1748,20 +1751,28 @@ void ClearDollLevelUpFlagAfterHerMenu() {
              DollLevelUpFlag, asked ? " (her talk asked for her blessing)" : "");
 }
 
-// See DollBlessingStepFor: every frame, a party guest's own steps of her blessing.
-void FinishGuestDollBlessing() {
+// See DollBlessingStepFor: every frame, a party guest's own steps of her blessing (and her blessing
+// off with them, as her talk asked).
+void FinishGuestDollBlessing(bool begin_asked, bool end_asked) {
     if (!party_controller || GetLocalPlayer() < 0x10000) {
         return;
     }
     const bool guest = IsPartyGuestRole();
-    const bool blessing_on = EventFlagOn(DollBlessingFlag);
+    using SetFlag = bool PS4_SYSV_ABI (*)(u64, s32, bool);
+    bool ended = false;
     for (const s32 step : DollBlessingSteps) {
-        if (const auto on = DollBlessingStepFor(guest, blessing_on, EventFlagOn(step))) {
-            reinterpret_cast<bool PS4_SYSV_ABI (*)(u64, s32, bool)>(
-                image_base + PartyGhostSetEventFlagOffset)(0, step, *on);
+        if (const auto on = DollBlessingStepFor(guest, begin_asked, end_asked, EventFlagOn(step))) {
+            reinterpret_cast<SetFlag>(image_base + PartyGhostSetEventFlagOffset)(0, step, *on);
+            ended = ended || !*on;
             LOG_INFO(Debug, "Bloodborne party: the Doll's blessing step {} {} in a guest's game",
                      step, *on ? "set" : "cleared");
         }
+    }
+    if (ended && EventFlagOn(DollBlessingFlag)) {
+        reinterpret_cast<SetFlag>(image_base + PartyGhostSetEventFlagOffset)(0, DollBlessingFlag,
+                                                                             false);
+        LOG_INFO(Debug, "Bloodborne party: the Doll's blessing {} cleared in a guest's game",
+                 DollBlessingFlag);
     }
 }
 
@@ -2014,8 +2025,9 @@ void TickPlayersOnThisMap() {
     KeepGiftTalkFlagsOwn();
     KeepOwnedWeaponFlagsOwn();
     KeepHeadstoneFlagsOwn();
-    ClearDollLevelUpFlagAfterHerMenu();
-    FinishGuestDollBlessing();
+    const bool blessing_begun = doll_blessing_asked.exchange(false);
+    ClearDollLevelUpFlagAfterHerMenu(blessing_begun);
+    FinishGuestDollBlessing(blessing_begun, doll_blessing_end_asked.exchange(false));
     static RecreateAfterJoin recreate_after_join;
     if (recreate_after_join.Tick(IsPartyGuestRole(), in_session,
                                  in_session ? OtherSessionMembers().size() : 0,
