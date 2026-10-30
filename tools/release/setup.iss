@@ -7,6 +7,9 @@
 ; player's own where it is), and on uninstall lets the launcher remove the game view it made (links to the
 ; player's game, removed as links) before the files go (Kaniel 2026-10-13: one setup file, no bat
 ; files). The saves, settings and logs in user\ stay after an uninstall.
+; The portable zip (make-release.ps1, Provi 2026-10-30) is the same folder with portable.txt in it: its launcher
+; updates it with this setup and /PORTABLE=1, which writes the files and nothing else (no uninstaller, no
+; Programs and Features entry, no shortcuts).
 ;
 ;   ISCC /DAppVersion=0.1.3 /DSourceDir=<staged release> /DOutputDir=<dir> /DIconFile=<ico> [/DStyleFile=<vsf>] setup.iss
 
@@ -40,6 +43,8 @@ OutputBaseFilename=YharnamTogether-v{#AppVersion}-setup
 SetupIconFile={#IconFile}
 UninstallDisplayIcon={app}\BLauncher.exe
 UninstallDisplayName={#AppName}
+Uninstallable=not PortableUpdate
+CreateUninstallRegKey=not PortableUpdate
 Compression=lzma2
 SolidCompression=yes
 ; Several threads, each on its own block of the solid stream (make-release.ps1 waited over a minute on
@@ -163,11 +168,11 @@ Type: files; Name: "{autoprograms}\Bloodborne Seamless Co-op.lnk"
 Type: files; Name: "{autoprograms}\Bloodborne Seamless Co-op - read me.lnk"
 
 [Icons]
-Name: "{autoprograms}\{#ShortName}"; Filename: "{app}\BLauncher.exe"; WorkingDir: "{app}"
-Name: "{autoprograms}\{#ShortName} - read me"; Filename: "{app}\READ ME FIRST.txt"
+Name: "{autoprograms}\{#ShortName}"; Filename: "{app}\BLauncher.exe"; WorkingDir: "{app}"; Check: not PortableUpdate
+Name: "{autoprograms}\{#ShortName} - read me"; Filename: "{app}\READ ME FIRST.txt"; Check: not PortableUpdate
 ; The desktop shortcut only when none leads to this install: a new one would land at the end of the
 ; desktop and lose the spot the player dragged it to (Kaniel 2026-10-20), and a renamed one counts too.
-Name: "{autodesktop}\{#ShortName}"; Filename: "{app}\BLauncher.exe"; WorkingDir: "{app}"; Tasks: desktopicon; Check: NoDesktopShortcut
+Name: "{autodesktop}\{#ShortName}"; Filename: "{app}\BLauncher.exe"; WorkingDir: "{app}"; Tasks: desktopicon; Check: NoDesktopShortcut and not PortableUpdate
 
 [Run]
 Filename: "{app}\BLauncher.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
@@ -257,6 +262,12 @@ begin
   Title(L, 17);
   Grown := WizardForm.AdjustLabelHeight(L);
   Below.Top := Below.Top + Grown;
+end;
+
+// The launcher of a portable folder updates it with /PORTABLE=1 (bbport_coop.setup_command).
+function PortableUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:PORTABLE|0}') = '1';
 end;
 
 // --- Where it installs, and the desktop shortcut (Kaniel 2026-10-20) ---------------------------

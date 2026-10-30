@@ -453,6 +453,120 @@ class GameViewTests(unittest.TestCase):
             self.assertTrue((game / 'eboot.bin').is_file())
 
 
+class UninstallTests(unittest.TestCase):
+    """Provi 2026-10-30: the uninstall left files behind (a new install elsewhere still met the old one) and
+    game files may have gone with it. Folder links are symbolic links off Windows: the same rules hold."""
+
+    def game_and_view(self, root):
+        game = make_game(root / 'Games' / 'CUSA03173', version='01.00')
+        (game / 'dvdroot_ps4' / 'map').mkdir()
+        (game / 'dvdroot_ps4' / 'map' / 'm.dcx').write_bytes(b'map')
+        update = make_game(root / 'Games' / 'CUSA03173-patch')
+        install = root / 'Games' / 'Yharnam Together'
+        view = install / 'coop-game' / 'CUSA03173'
+        coop.build_game_view(game, update, view)
+        return game, update, install, view
+
+    def assert_game_whole(self, game, update):
+        self.assertEqual((game / 'eboot.bin').read_bytes(), b'eboot 01.00')
+        self.assertEqual((game / 'dvdroot_ps4' / 'map' / 'm.dcx').read_bytes(), b'map')
+        self.assertEqual((game / 'dvdroot_ps4' / 'event' / 'common.emevd.dcx').read_bytes(), b'events 01.00')
+        self.assertEqual((update / 'eboot.bin').read_bytes(), b'eboot 01.09')
+
+    def test_a_view_is_marked_and_goes_without_the_game(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game, update, _install, view = self.game_and_view(Path(folder))
+            self.assertTrue((view / coop.VIEW_MARK).is_file())
+            self.assertEqual((view / 'dvdroot_ps4' / 'map' / 'm.dcx').read_bytes(), b'map')
+            coop.remove_view(view)
+            self.assertFalse(view.exists())
+            self.assert_game_whole(game, update)
+
+    def test_a_real_game_where_a_view_goes_keeps_its_files(self):
+        # a folder with neither the mark nor any link is not the launcher's: its only copies stay
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            real = make_game(root / 'coop-game' / 'CUSA03173')
+            other = make_game(root / 'elsewhere')
+            os.link(other / 'eboot.bin', real / 'linked.bin')
+            coop.remove_view(real)
+            self.assertEqual((real / 'eboot.bin').read_bytes(), b'eboot 01.09')
+            self.assertTrue((real / 'dvdroot_ps4' / 'event' / 'common.emevd.dcx').is_file())
+            self.assertFalse((real / 'linked.bin').exists(), 'a hard link goes: its data stays in the other')
+            self.assertTrue((other / 'eboot.bin').is_file())
+            with self.assertRaises(RuntimeError):
+                coop.build_game_view(other, None, real)
+            self.assertEqual((real / 'eboot.bin').read_bytes(), b'eboot 01.09')
+
+    def test_a_view_from_before_the_mark_still_goes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game, update, _install, view = self.game_and_view(Path(folder))
+            (view / coop.VIEW_MARK).unlink()
+            (view / 'sce_sys' / 'copied.sfo').write_bytes(b'a copy across drives')
+            coop.remove_view(view)
+            self.assertFalse(view.exists())
+            self.assert_game_whole(game, update)
+
+    def test_the_game_folder_cannot_be_the_view(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game, update, _install, view = self.game_and_view(Path(folder))
+            for source in (view, view.parent, view / 'dvdroot_ps4'):
+                with self.assertRaises(RuntimeError):
+                    coop.build_game_view(source, None, view)
+            self.assertTrue((view / 'eboot.bin').is_file(), 'a refused build leaves the view as it was')
+            self.assert_game_whole(game, update)
+
+    def test_the_uninstall_takes_what_the_launcher_made_and_nothing_of_the_game(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game, update, install, view = self.game_and_view(Path(folder))
+            (install / 'event-patch').mkdir(parents=True)
+            (install / 'event-patch' / 'm10.emevd.dcx').write_bytes(b'patched')
+            coop.copy_events(install, view.parent)
+            # a mods view a killed launch left in out\: links to the game view's folders and files
+            overlay = install / 'out' / 'mod-game-x'
+            overlay.mkdir(parents=True)
+            coop.make_junction(overlay / 'dvdroot_ps4', game / 'dvdroot_ps4')
+            os.link(game / 'eboot.bin', overlay / 'eboot.bin')
+            (install / 'out' / 'boot-linked.bin').write_bytes(b'made')
+            (install / 'user' / 'savedata').mkdir(parents=True)
+            (install / 'user' / 'savedata' / 'userdata0000').write_bytes(b'save')
+            (install / 'bbport.ini').write_text('fov=43\n', encoding='utf-8')
+            with mock.patch.object(coop, 'stop_servers', return_value=0), \
+                    mock.patch.dict(os.environ, {'LOCALAPPDATA': str(Path(folder) / 'local')}):
+                self.assertEqual(coop.uninstall(install), [])
+            self.assertEqual(sorted(p.name for p in install.iterdir()), ['bbport.ini', 'user'])
+            self.assertEqual((install / 'user' / 'savedata' / 'userdata0000').read_bytes(), b'save')
+            self.assert_game_whole(game, update)
+
+    def test_an_old_mods_folder_loses_its_event_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            install = Path(folder) / 'install'
+            (install / 'event-patch').mkdir(parents=True)
+            (install / 'event-patch' / 'm10.emevd.dcx').write_bytes(b'patched')
+            event = install / 'coop-game' / 'CUSA03173-mods' / 'dvdroot_ps4' / 'event'
+            event.mkdir(parents=True)
+            (event / 'm10.emevd.dcx').write_bytes(b'patched')
+            with mock.patch.object(coop, 'stop_servers', return_value=0), \
+                    mock.patch.dict(os.environ, {'LOCALAPPDATA': str(Path(folder) / 'local')}):
+                coop.uninstall(install)
+            self.assertFalse((install / 'coop-game').exists())
+
+    def test_no_game_view_in_onedrive(self):
+        # Provi's install was in OneDrive\\Documents: links to the game go to %LOCALAPPDATA% instead
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            install = root / 'OneDrive' / 'Documents' / 'Yharnam Together'
+            install.mkdir(parents=True)
+            with mock.patch.dict(os.environ, {'OneDrive': str(root / 'OneDrive'), 'LOCALAPPDATA': str(root / 'local')}), \
+                    mock.patch.object(coop, 'junctions_work', return_value=True):
+                self.assertTrue(coop.in_onedrive(install))
+                self.assertEqual(coop.view_root(install), root / 'local' / 'BloodborneSeamlessCoop' / 'coop-game')
+            with mock.patch.dict(os.environ, {'OneDrive': str(root / 'elsewhere')}), \
+                    mock.patch.object(coop, 'junctions_work', return_value=True):
+                self.assertFalse(coop.in_onedrive(install))
+                self.assertEqual(coop.view_root(install), install / 'coop-game')
+
+
 class EventFilesTests(unittest.TestCase):
     def test_made_files_are_compared_with_the_tested_ones(self):
         reference = {'files': {'a.emevd.dcx': {'output_sha256': '1'}, 'b.emevd.dcx': {'output_sha256': '2'}}}
@@ -869,6 +983,17 @@ class UpdateTests(unittest.TestCase):
         command = coop.setup_command(Path('C:/Temp/Setup.exe'), Path('C:/Games/Co-op'))
         self.assertIn('/CLOSEAPPLICATIONS', command)
         self.assertIn(f'/DIR={Path("C:/Games/Co-op")}', command)
+
+    def test_a_portable_folder_stays_portable(self):
+        # Provi 2026-10-30: the portable zip updates with the setup, which then makes no uninstaller or shortcuts
+        with tempfile.TemporaryDirectory() as folder:
+            install = Path(folder)
+            self.assertNotIn('/PORTABLE=1', coop.setup_command(Path('Setup.exe'), install))
+            (install / coop.PORTABLE_MARK).write_text('portable\n', encoding='utf-8')
+            self.assertIn('/PORTABLE=1', coop.setup_command(Path('Setup.exe'), install))
+        code = (Path(__file__).resolve().parents[2] / 'tools' / 'release' / 'setup.iss').read_text(encoding='utf-8-sig')
+        self.assertIn('Uninstallable=not PortableUpdate', code)
+        self.assertIn("{param:PORTABLE|0}", code)
 
     def test_the_update_keeps_a_window_on_screen(self):
         # Kaniel 2026-10-20: with /VERYSILENT the launcher seemed gone; /SILENT shows the progress, and the
