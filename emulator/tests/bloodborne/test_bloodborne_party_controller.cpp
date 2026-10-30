@@ -1908,6 +1908,27 @@ TEST(BloodborneSharedKills, AKillTakenBackStaysOutUntilTheLogDropsIt) {
         << "never longer than HoldMs";
 }
 
+// Provi's report (v1.3.0, Nightmare Frontier, log 2026-10-29): each time the host died and woke
+// at its lamp, the reload brought back the party's kills near it and the kill step put 6 of them
+// down with the game's kill; each death ran the game's kill reward (+1134, +831, +831, +2285,
+// +2492, +2492), posted to the guest too, about 10k free echoes per death. A copy the step puts
+// down pays nothing; every other kill reward still pays.
+TEST(BloodborneSharedKills, APartyKillPutDownAgainPaysNoEchoes) {
+    constexpr u64 Beast = 0x1'1024A6'9100;
+    constexpr u64 Other = 0x1'1024A6'9200;
+    QuietKills quiet;
+    EXPECT_FALSE(quiet.Takes(Beast, 1'000)) << "a kill of the player's own pays";
+    quiet.Killed(Beast, 1'000);
+    EXPECT_FALSE(quiet.Takes(Other, 1'200)) << "another enemy's kill reward pays";
+    EXPECT_TRUE(quiet.Takes(Beast, 1'200)) << "the step's kill of a party kill";
+    EXPECT_FALSE(quiet.Takes(Beast, 1'300)) << "taken once: a later death of it pays";
+    quiet.Killed(Beast, 2'000);
+    EXPECT_TRUE(quiet.Takes(Beast, 2'000)) << "the reward may run inside the game's kill";
+    quiet.Killed(Other, 3'000);
+    EXPECT_FALSE(quiet.Takes(Other, 3'000 + QuietKills::QuietMs))
+        << "long after: the object is another character now";
+}
+
 // Rig smoke 2026-10-12 (run 143240): Father Gascoigne (0x1001409c/0x1001409e), dead in the
 // guests' saves, was put down by their worlds 5.7 s after the join's load, past the settling
 // time, and both guests posted him; every other game then hid his body, and the second guest

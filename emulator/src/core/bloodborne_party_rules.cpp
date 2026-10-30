@@ -1021,9 +1021,18 @@ constexpr u64 FullEchoRateOffset = 0x04927EBC;
 constexpr std::array<u8, 11> AddSoulsPrologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x56,
                                               0x53, 0x48, 0x83, 0xEC, 0x10};
 
-void PS4_SYSV_ABI NoteAddSouls(u64, const GuestRegisterSnapshot* registers) {
+void PS4_SYSV_ABI NoteAddSouls(u64, GuestRegisterSnapshot* registers) {
     const u64 caller = ReadValue<u64>(registers->rsp, 0);
     const s32 amount = static_cast<s32>(registers->rsi);
+    // The enemy kill reward keeps the dying character in r14 (see QuietKills): a party kill the
+    // kill step put down again pays nothing, to this member or the party.
+    if (amount > 0 && caller == image_base + EnemyKillRewardOffset &&
+        TakesQuietKillReward(registers->r14)) {
+        registers->rsi &= ~u64{0xFFFFFFFF};
+        LOG_INFO(Debug, "Bloodborne echoes: +{} for {:#x} not paid: a party kill put down again",
+                 amount, ReadValue<u32>(registers->r14, 0x08));
+        return;
+    }
     LOG_INFO(Debug, "Bloodborne echoes: +{} (rates {}) from {:#x}", amount, registers->rcx & 0xFF,
              caller >= image_base ? caller - image_base : caller);
     // A kill reward: the game paid this member (a post of the same kill is not owed here).

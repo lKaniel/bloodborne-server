@@ -1120,6 +1120,9 @@ void SendPeerHello();
 void TickPortraits();
 bool ShowPartyPortrait(int slot, std::string_view member);
 void KeepEnemyDeathsInStep(bool sharing);
+// Whether the kill reward paid now for `character` is one the kill step's own kill of a party kill
+// caused (see QuietKills): it pays nothing.
+bool TakesQuietKillReward(u64 character);
 void SnapshotHostMapState(bool sharing);
 void TeleportLocalPlayer(const LampPosition& at, float heading = 0.0f);
 // Has every camera jump to where it should be on its next update (see PlacementCalls).
