@@ -238,14 +238,19 @@ AltarRepair RepairAltarRecord(std::span<const u8> record) {
     }
     repair.action = AltarRepair::Action::Clear;
     repair.record = EmptyAltarRecord();
-    // The ritual took the chalice the record names (FormData's goods, byte 16).
-    if (record.size() >= 20) {
-        const u32 goods = BigEndianWord(record, 4);
-        if (goods >= 6100 && goods <= 6599) {
-            repair.chalice = goods;
-        }
-    }
+    repair.chalice = AltarRecordChalice(record);
     return repair;
+}
+
+std::optional<u32> AltarRecordChalice(std::span<const u8> record) {
+    if (record.size() < 20) {
+        return std::nullopt;
+    }
+    const u32 goods = BigEndianWord(record, 4);
+    if (goods < 6100 || goods > 6599) {
+        return std::nullopt;
+    }
+    return goods;
 }
 
 std::optional<AltarRecord> StandardAltarRecord(u8 key, std::span<const u8> state) {

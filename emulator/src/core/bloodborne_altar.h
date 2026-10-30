@@ -126,6 +126,10 @@ struct AltarRepair {
 };
 AltarRepair RepairAltarRecord(std::span<const u8> record);
 
+// The chalice a record names (FormData's goods, byte 16; 6100-6599): the ritual took it from the
+// player, so it goes back when the dungeon ends without that player taking it off.
+std::optional<u32> AltarRecordChalice(std::span<const u8> record);
+
 // The record of the story chalice dungeon of standard key `key` as a ritual writes it, its state
 // (flags 5000-5999) taken from `state` when that is a whole record, and an altar's with no
 // dungeon.

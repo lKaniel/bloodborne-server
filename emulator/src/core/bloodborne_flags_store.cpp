@@ -174,6 +174,8 @@ std::optional<u32> EventFlagBits(s32 flag, u32 bits) {
 constexpr u64 RitualAltarsPointerOffset = 0x0553E9E8;
 constexpr u64 ReloadRitualAltarOffset = 0x01AA40E0;
 constexpr std::array<u8, 7> ReloadRitualAltarBytes{0x55, 0x48, 0x89, 0xE5, 0x41, 0x56, 0x53};
+// 0x01AA54D0 on that state, for a status 2-5: its dungeon goes (request 7), to status 1.
+constexpr u64 RemoveRitualAltarOffset = 0x01AA54D0;
 
 void ReloadRitualAltar(s32 altar) {
     if (altar < 0 || altar >= 7) {
@@ -206,15 +208,34 @@ void ReloadRitualAltar(s32 altar) {
              altar, asked ? "done" : "busy", ReadValue<s32>(state, 0x25C));
 }
 
-// A teammate took the chalice off altar `altar` and the flags here are empty now: the altar's
-// object still holds the dungeon it loaded (status 5) until the next load reads the flags again.
-void EmptyRitualAltar(s32 altar) {
+namespace {
+
+// Altar `altar`'s state, 0 when its object is not there.
+u64 RitualAltarState(s32 altar) {
     const u64 altars = ReadValue<u64>(image_base + RitualAltarsPointerOffset, 0);
     const u64 table = altars >= 0x10000 ? ReadValue<u64>(altars, 8) : 0;
     const u64 object =
         table >= 0x10000 && altar >= 0 && altar < 7 ? ReadValue<u64>(table, altar * 8) : 0;
     const u64 state = object >= 0x10000 ? object + 0x108 : 0;
-    if (state == 0 || !HasMemoryAccess(state, 0x270, MemoryProt::CpuRead)) {
+    return state != 0 && HasMemoryAccess(state, 0x270, MemoryProt::CpuRead) ? state : 0;
+}
+
+} // namespace
+
+std::optional<s32> RitualAltarStatus(s32 altar) {
+    const u64 state = RitualAltarState(altar);
+    if (state == 0) {
+        return std::nullopt;
+    }
+    return ReadValue<s32>(state, 0x25C);
+}
+
+// A teammate took the chalice off altar `altar` and the flags here are empty now, but the altar's
+// object still holds the dungeon it loaded (status 5): its menu would warp into a dungeon that is
+// gone and the load never ends (rig 2026-10-30), so the object lets it go too.
+void EmptyRitualAltar(s32 altar) {
+    const u64 state = RitualAltarState(altar);
+    if (state == 0) {
         LOG_WARNING(Debug,
                     "Bloodborne party: ritual altar {} not found; it shows no chalice "
                     "after the next load",
@@ -222,13 +243,19 @@ void EmptyRitualAltar(s32 altar) {
         return;
     }
     const s32 status = ReadValue<s32>(state, 0x25C);
-    if (status == 0 || status == 1) {
+    if (status < 2 || status > 5) {
         return;
     }
-    LOG_INFO(Debug,
-             "Bloodborne party: ritual altar {} still shows its dungeon (status {}) until the "
-             "next load",
-             altar, status);
+    if (std::memcmp(reinterpret_cast<const void*>(image_base + RemoveRitualAltarOffset),
+                    ReloadRitualAltarBytes.data(), ReloadRitualAltarBytes.size()) != 0) {
+        LOG_WARNING(Debug, "Bloodborne party: ritual altar {} keeps its dungeon: code differs",
+                    altar);
+        return;
+    }
+    using Remove = bool PS4_SYSV_ABI (*)(u64 state);
+    const bool asked = reinterpret_cast<Remove>(image_base + RemoveRitualAltarOffset)(state);
+    LOG_INFO(Debug, "Bloodborne party: ritual altar {} emptied ({}, status {} now {})", altar,
+             asked ? "done" : "busy", status, ReadValue<s32>(state, 0x25C));
 }
 
 // Kaniel 2026-10-18: a teammate who holds no chalice is given the chalice of the dungeon that came
@@ -387,6 +414,9 @@ size_t ClearAltarDungeon(s32 altar) {
 // This player took the chalice off altar `altar`: the altar goes to the team empty, and its
 // dungeon ends here too.
 void ShareAltarRemovals(s64 now_ms) {
+    if (std::getenv("BB_RIG_NO_ALTAR_WATCH") != nullptr) {
+        return;
+    }
     const Place place = CurrentPlace();
     const AltarShareFrame frame{.playing = place.state == PlaceState::Playing,
                                 .map = place.map,
@@ -1917,6 +1947,11 @@ void SetPartyWorldChanges(bool sharing) {
             }
             WriteAltarFlags(base, news.record);
             if (take == TeamAltarTake::Clear) {
+                // The ritual took this player's chalice and the taker got its own back.
+                if (const auto chalice = AltarRecordChalice(*mine)) {
+                    std::scoped_lock lock{altar_chalices_mutex};
+                    altar_chalices_owed.push_back(*chalice);
+                }
                 LOG_INFO(Debug,
                          "Bloodborne team altar: {} took the chalice off altar {}: emptied here "
                          "too, its dungeon's {} flags cleared",

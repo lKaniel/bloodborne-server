@@ -1107,6 +1107,33 @@ bool AutoplayAltarRecord(const AutoplayStep& step) {
     return true;
 }
 
+// flag-list <first> <last>: every event flag on in the range, logged in full (the session's own
+// log of flags is cut at 48).
+bool AutoplayFlagList(const AutoplayStep& step) {
+    const s32 first = static_cast<s32>(step.Number(0, 0));
+    const s32 last = static_cast<s32>(step.Number(1, first));
+    std::string list;
+    size_t count = 0;
+    for (s32 flag = first; flag <= last; ++flag) {
+        if (EventFlagOn(flag)) {
+            list += fmt::format(" {}", flag);
+            ++count;
+        }
+    }
+    LOG_INFO(Debug, "Bloodborne autoplay flag-list {}-{} (map {:#x}): {} on:{}", first, last,
+             GetCurrentPackedMap(), count, list);
+    return true;
+}
+
+// altar-state <altar 0-6>: the ritual altar object's status (+0x25C of its state).
+bool AutoplayAltarState(const AutoplayStep& step) {
+    const s32 altar = static_cast<s32>(step.Number(0, -1));
+    const auto status = RitualAltarStatus(altar);
+    LOG_INFO(Debug, "Bloodborne autoplay altar-state {} (map {:#x}): {}", altar,
+             GetCurrentPackedMap(), status ? fmt::format("status {}", *status) : "no object");
+    return true;
+}
+
 // godmode [off]: the player's HP back to its max on every party tick (tests that stand
 // around near enemies), until switched off.
 bool AutoplayGodmode(const AutoplayStep& step) {
@@ -2248,6 +2275,17 @@ bool AutoplayTradeAnswer(const AutoplayStep& step) {
     return true;
 }
 
+// held <item>: logs what the player holds of it.
+bool AutoplayHeld(const AutoplayStep& step) {
+    const auto item = ParseTradeItem(step.Arg(0), "1");
+    if (!item) {
+        step.failure = "no such item";
+        return false;
+    }
+    LOG_INFO(Debug, "Bloodborne autoplay held {}: {}", step.Arg(0), TradeHeld(*item));
+    return true;
+}
+
 // expect-held <item> <count> [<timeout>]: what the player holds of it, within the time given.
 bool AutoplayExpectHeld(const AutoplayStep& step) {
     const auto item = ParseTradeItem(step.Arg(0), step.Arg(1));
@@ -2437,6 +2475,8 @@ constexpr auto AutoplayVerbs = std::to_array<std::pair<std::string_view, Autopla
     {"wait-flag", AutoplayExpectOrWaitFlag},
     {"flags", AutoplayLogFlags},
     {"altar-record", AutoplayAltarRecord},
+    {"altar-state", AutoplayAltarState},
+    {"flag-list", AutoplayFlagList},
     {"godmode", AutoplayGodmode},
     {"snapshot", AutoplaySnapshot},
     {"census", AutoplayCensus},
@@ -2507,6 +2547,7 @@ constexpr auto AutoplayVerbs = std::to_array<std::pair<std::string_view, Autopla
     {"expect-socketed", AutoplayExpectSocketed},
     {"trade-offer", AutoplayTradeOffer},
     {"trade-answer", AutoplayTradeAnswer},
+    {"held", AutoplayHeld},
     {"expect-held", AutoplayExpectHeld},
     {"wait-trade", AutoplayWaitTrade},
     {"cut-link", AutoplayCutLink},

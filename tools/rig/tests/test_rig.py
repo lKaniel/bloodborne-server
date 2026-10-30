@@ -27,7 +27,7 @@ VERBS = {
     "mark", "approach", "attack", "teleport", "press", "cutscene-options", "stick", "set-flag",
     "expect-walks", "place",  # playtest 2026-10-18: a player kept in a talk never walks
     "expect-flag",
-    "wait-flag", "flags", "altar-record", "godmode", "snapshot", "log", "expect-hp", "wait-hp", "expect-session", "expect-map", "done",
+    "wait-flag", "flags", "altar-record", "altar-state", "flag-list", "held", "godmode", "snapshot", "log", "expect-hp", "wait-hp", "expect-session", "expect-map", "done",
     "wait-solo", "note-max-hp", "expect-max-hp", "expect-effect", "expect-others-near", "expect-others-shown",
     "expect-compass",  # Kaniel 2026-10-17: the teammate compass
     "expect-stains", "pickup-stain",  # Kaniel 2026-10-20: bloodstains on the compass and map
