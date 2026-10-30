@@ -80,6 +80,23 @@ u32 LampsLit(std::span<const s32> on) {
     }));
 }
 
+bool LampResetClears(s32 flag) {
+    constexpr s32 ActiveFlagBase = 10007810;
+    constexpr s32 LightRequestBase = 70000200;
+    const auto lamp_of = [](s32 offset) {
+        const s32 map = offset / 10000;
+        const s32 within = offset % 10000;
+        return offset >= 0 && map >= 211 && map < 400 && within < 400;
+    };
+    for (const s32 active : {flag, flag - 1}) {
+        if (const s32 offset = active - ActiveFlagBase; lamp_of(offset) && offset % 20 == 0) {
+            return true;
+        }
+    }
+    const s32 request = flag - LightRequestBase;
+    return lamp_of(request) && request % 10000 < 20;
+}
+
 TeamLobby::TeamLobby(std::function<std::string()> make_id_)
     : make_id{std::move(make_id_)}, make_code{RandomCode} {}
 
@@ -888,6 +905,22 @@ TeamLobby::Outcome TeamLobby::Request(const std::string& member, const bbcoop::T
             }
         }
         return {.changed = true, .forgotten = {request.world()}, .forgotten_lines = {line}};
+    }
+    case Action::RESET_LAMPS: {
+        // Provi 2026-10-29: a world's own fix, as forgetting it is (the leader's, never in play).
+        if (mine && mine->leader() != member) {
+            return refuse("only a team's leader resets a world's lamps"); // or one in no team
+        }
+        bbcoop::TeamWorldInfo* const world = FindWorld(request.world());
+        if (!world || (hosted && std::ranges::find(world->members(), member) ==
+                                     world->members().end())) {
+            return refuse("the server has no such world");
+        }
+        if (PlayedBy(request.world(), nullptr)) {
+            return refuse("a team plays that world now");
+        }
+        world->set_lamps(0);
+        return {.changed = true, .worlds_changed = true, .lamps_reset = {request.world()}};
     }
     case Action::INVADERS: {
         // Invasions (docs/INVASIONS.md): the leader's to allow; off ends a running invasion

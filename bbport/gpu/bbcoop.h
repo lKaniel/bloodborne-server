@@ -409,7 +409,9 @@ enum { BBCOOP_TEAM_CREATE = 1, BBCOOP_TEAM_INVITE = 2, BBCOOP_TEAM_ACCEPT = 3,
         * "1" ask, "2" open); ASK_JOIN (an open team: joins it) and ASK_CANCEL name a team,
         * ASK_ACCEPT and ASK_DECLINE the one who asked. */
        BBCOOP_TEAM_OPEN = 23, BBCOOP_TEAM_ASK_JOIN = 24, BBCOOP_TEAM_ASK_CANCEL = 25,
-       BBCOOP_TEAM_ASK_ACCEPT = 26, BBCOOP_TEAM_ASK_DECLINE = 27 };
+       BBCOOP_TEAM_ASK_ACCEPT = 26, BBCOOP_TEAM_ASK_DECLINE = 27,
+       /* Provi 2026-10-29: the leader puts out every lamp of a world (`id`) not played now. */
+       BBCOOP_TEAM_RESET_LAMPS = 28 };
 enum { BBCOOP_JOIN_INVITE_ONLY = 0, BBCOOP_JOIN_ASK = 1, BBCOOP_JOIN_OPEN = 2 };
 void bbcoop_lobby_request(int action, const char *id);
 /* The title holds a save's load for the team: the team screen is up (bbport_overlay.cpp). */

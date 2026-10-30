@@ -548,6 +548,9 @@ private:
     // (forgotten/<folder>-<when>) with their lines (kept_world.pb, for Restore), nothing deleted.
     void PutAside(const std::vector<bbcoop::TeamWorldInfo>& lines, const QString& why,
                   Result& result);
+    // Provi 2026-10-29: a world's team world without its lamps (RESET_LAMPS), a version up; the
+    // one before stays among team_world.pb's backups.
+    void ResetLamps(const std::string& id, Result& result);
 
     QString folder;
     std::unique_ptr<WorldWriter> writer; // with a folder

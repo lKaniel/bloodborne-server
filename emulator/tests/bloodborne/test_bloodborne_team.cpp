@@ -1305,6 +1305,7 @@ TEST(TeamMenuRequest, EachActionNamesItsField) {
     EXPECT_EQ(TeamMenuRequest(Action::INVITE, "00ab").member(), "00ab");
     EXPECT_EQ(TeamMenuRequest(Action::ACCEPT, "t1").team(), "t1");
     EXPECT_EQ(TeamMenuRequest(Action::FORGET_WORLD, "w1").world(), "w1");
+    EXPECT_EQ(TeamMenuRequest(Action::RESET_LAMPS, "w1").world(), "w1");
     const bbcoop::TeamRequest fresh = TeamMenuRequest(Action::NEW_CODE, "");
     EXPECT_EQ(fresh.action(), Action::NEW_CODE);
     EXPECT_TRUE(fresh.member().empty() && fresh.code().empty());

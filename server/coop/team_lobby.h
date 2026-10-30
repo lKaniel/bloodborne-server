@@ -51,6 +51,10 @@ constexpr u32 MaxDeathMode = 1;
 // How far a world is, for the players: its lamps lit, from its world flags on (a lamp's active
 // flag, 10007810 + map * 10000 + lamp * 20, maps 210-399, lamps 0-19: the game's FlagTable).
 u32 LampsLit(std::span<const s32> on);
+// The flags a world's lamp reset clears (RESET_LAMPS): each lamp's active flag (LampsLit's), the
+// one after it, and its light request (70000000 + map * 10000 + 200 + lamp), on maps 211-399 (the
+// Hunter's Dream's lamp is always there).
+bool LampResetClears(s32 flag);
 
 class TeamLobby {
 public:
@@ -111,6 +115,8 @@ public:
         std::vector<bbcoop::TeamWorldInfo> forgotten_lines; // their lines, as they were
         // Kaniel 2026-10-17: a world's line changed (a character played in it): the list to disk.
         bool worlds_changed = false;
+        // Worlds whose lamps the leader put out (RESET_LAMPS): their team worlds lose the lamps.
+        std::vector<std::string> lamps_reset;
         std::vector<Move> moves;
         std::vector<RemoteInvite> remote_invites;
     };

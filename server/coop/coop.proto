@@ -683,6 +683,10 @@ message TeamRequest {
         ASK_CANCEL = 25;
         ASK_ACCEPT = 26;
         ASK_DECLINE = 27;
+        // Provi 2026-10-29: the leader puts out every lamp of one of the server's worlds (`world`),
+        // the way to mend a world whose new playthrough kept the old one's lamps (asked for twice
+        // in the picker). Not while a team plays it.
+        RESET_LAMPS = 28;
     }
     Action action = 1;
     string member = 2;

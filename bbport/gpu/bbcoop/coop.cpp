@@ -852,7 +852,8 @@ static_assert(BBCOOP_TEAM_WORLD == bbcoop::TeamRequest::WORLD &&
               BBCOOP_TEAM_ASK_JOIN == bbcoop::TeamRequest::ASK_JOIN &&
               BBCOOP_TEAM_ASK_CANCEL == bbcoop::TeamRequest::ASK_CANCEL &&
               BBCOOP_TEAM_ASK_ACCEPT == bbcoop::TeamRequest::ASK_ACCEPT &&
-              BBCOOP_TEAM_ASK_DECLINE == bbcoop::TeamRequest::ASK_DECLINE);
+              BBCOOP_TEAM_ASK_DECLINE == bbcoop::TeamRequest::ASK_DECLINE &&
+              BBCOOP_TEAM_RESET_LAMPS == bbcoop::TeamRequest::RESET_LAMPS);
 static_assert(BBCOOP_JOIN_INVITE_ONLY == bbcoop::Team::INVITE_ONLY &&
               BBCOOP_JOIN_ASK == bbcoop::Team::ASK && BBCOOP_JOIN_OPEN == bbcoop::Team::OPEN);
 

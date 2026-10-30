@@ -808,6 +808,48 @@ int AWorldsLampsAreCounted() {
   return 0;
 }
 
+// Provi 2026-10-29: a world's lamp reset clears each lamp's active flag, the
+// flag after it and its light request, never the Dream's or other flags.
+int ALampResetClearsOnlyLampFlags() {
+  for (const s32 flag : {12117810, 12117811, 12117830, 13997810, 13997811,
+                         72110200, 72110219, 73990200}) {
+    CHECK(LampResetClears(flag));
+  }
+  for (const s32 flag : {1000, 12107810, 12107811, 12117812, 12117800,
+                         12401800, 14007810, 72100200, 72110220, 72110199,
+                         70000200}) {
+    CHECK(!LampResetClears(flag));
+  }
+  return 0;
+}
+
+// Provi 2026-10-29: the leader resets a world's lamps in the picker, as it
+// forgets one: never another member, a world the server lacks or one played now.
+int TheLeaderResetsAWorldsLamps() {
+  TwoHunters t;
+  TeamLobby &lobby = t.lobby;
+  t.Start();
+  const std::string world = lobby.Worlds()[0].id();
+  bbcoop::TeamWorldInfo note;
+  note.set_id(world);
+  note.set_lamps(5);
+  lobby.NoteWorld(note);
+  bbcoop::TeamRequest reset = Request(Action::RESET_LAMPS);
+  reset.set_world(world);
+  CHECK(!lobby.Request("a", reset).notice.empty()); // played now
+  t.Stop();
+  CHECK(!lobby.Request("b", reset).notice.empty()); // not the leader
+  bbcoop::TeamRequest none = reset;
+  none.set_world("nope");
+  CHECK(!lobby.Request("a", none).notice.empty());
+  const TeamLobby::Outcome done = lobby.Request("a", reset);
+  CHECK(done.notice.empty() && done.changed && done.worlds_changed);
+  CHECK(done.lamps_reset == std::vector<std::string>{world});
+  CHECK(lobby.Worlds()[0].lamps() == 0);
+  CHECK(lobby.Worlds().size() == 1); // still listed
+  return 0;
+}
+
 // Hosted (docs/HOSTED_SERVER.md): a world is its players'; a lobby lists few
 // others.
 static std::string PlayAWorld(TeamLobby &lobby, const std::string &leader,
@@ -1376,6 +1418,8 @@ int main() {
   failed |= TheLeaderForgetsAWorld();
   failed |= TheServerKeepsItsLastWorlds();
   failed |= AWorldsLampsAreCounted();
+  failed |= ALampResetClearsOnlyLampFlags();
+  failed |= TheLeaderResetsAWorldsLamps();
   failed |= AWorldsLineSaysWhoPlayedItAndWhenItWasMade();
   failed |= AWorldPlayedNowSaysByWhichTeam();
   failed |= APickBeforeATeamGoesIntoTheTeam();
