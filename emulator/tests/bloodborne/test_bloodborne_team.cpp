@@ -410,6 +410,23 @@ TEST(TeamWorld, AGuestKeepsItsOwnGestureFlags) {
     EXPECT_EQ(TeamStoryToFollow(after, before), (std::vector<std::pair<s32, bool>>{{6748, false}}));
 }
 
+// Kaniel 2026-10-30: when the host levelled up in the Dream, guests knelt too. The Doll's talk sets
+// 72100100 after her level-up menu closes, and m21_00 12100112 then plays the kneel on the local
+// player; the host's 72100100-72100102 came to the guests as story steps (krolebord's log
+// 2026-10-28: "the host's story steps followed here: 72100100 72100101 72100102"). They are each
+// game's own: never followed; the flags beside them stay story steps.
+TEST(TeamWorld, AGuestKeepsItsOwnDollBlessingFlags) {
+    WorldFlags before;
+    before.blocks = {72100};
+    before.on = {72100110};
+    WorldFlags after = before;
+    after.on = {72100099, 72100100, 72100101, 72100102, 72100103, 72100110};
+    EXPECT_EQ(TeamStoryToFollow(before, after),
+              (std::vector<std::pair<s32, bool>>{{72100099, true}, {72100103, true}}));
+    EXPECT_EQ(TeamStoryToFollow(after, before),
+              (std::vector<std::pair<s32, bool>>{{72100099, false}, {72100103, false}}));
+}
+
 // Kaniel's playtest 2026-10-22: a guest alone on a map saw NPCs the team's world has gone past (or
 // not reached). Each trip's load put its own game's story steps of the session over the team's
 // world while the map placed its characters; the arrival set the team's back only after. A kept

@@ -1724,6 +1724,20 @@ void KeepHeadstoneFlagsOwn() {
     }
 }
 
+// See ClearsDollLevelUpFlagAfterHerMenu: every frame in a party (her blessing can be over within a
+// second), the Doll's level-up flag off once her level-up menu has closed.
+void ClearDollLevelUpFlagAfterHerMenu() {
+    if (!party_controller || GetLocalPlayer() < 0x10000 ||
+        !ClearsDollLevelUpFlagAfterHerMenu(true, EventFlagOn(DollLevelUpFlag),
+                                           EventFlagOn(DollBlessingFlag))) {
+        return;
+    }
+    reinterpret_cast<bool PS4_SYSV_ABI (*)(u64, s32, bool)>(
+        image_base + PartyGhostSetEventFlagOffset)(0, DollLevelUpFlag, false);
+    LOG_INFO(Debug, "Bloodborne party: the Doll's level-up flag {} cleared after her menu closed",
+             DollLevelUpFlag);
+}
+
 // See ImpurityBonusChange: every second, the Impurity rune's HP bonus put on (through the
 // player's own add-effect virtual, as event 9035's 2004:8) or taken off.
 void KeepImpurityBonus(bool in_session) {
@@ -1973,6 +1987,7 @@ void TickPlayersOnThisMap() {
     KeepGiftTalkFlagsOwn();
     KeepOwnedWeaponFlagsOwn();
     KeepHeadstoneFlagsOwn();
+    ClearDollLevelUpFlagAfterHerMenu();
     static RecreateAfterJoin recreate_after_join;
     if (recreate_after_join.Tick(IsPartyGuestRole(), in_session,
                                  in_session ? OtherSessionMembers().size() : 0,
