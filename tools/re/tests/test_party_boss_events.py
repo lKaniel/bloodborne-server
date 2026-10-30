@@ -303,6 +303,37 @@ class GuestsEnterChaliceDungeons(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class GuestsUseTheYahargulMummy(unittest.TestCase):
+    """Provi's day 4 (v1.3.1): after The One Reborn, the mummy at the end of Yahar'gul's hall
+    could be inspected only by the host, and only the host was taken to the Lecture Building.
+    m28_00 event 12800430 (the action button 2800020 on its warp object 2801500, the pose, then
+    2003:49 to m32's 3202959) ends for a client (1003:6 state 1). For a guest it runs too, and
+    only in the guest's own game: each player inspects it and travels on its own."""
+
+    YAHARGUL = 'm28_00_00_00.emevd.dcx'
+    MUMMY = [(1003, 6, struct.pack('<BBxx', 0, 1)),
+             (3, 24, struct.pack('<bxxxii', 0, 2800020, 2801500)),
+             (2004, 41, struct.pack('<iiii', 10000, 0, 2801500, 220)),
+             (2003, 18, struct.pack('<iii', 10000, 101169, 0)),
+             (1001, 1, struct.pack('<i', 180)),
+             (2003, 49, struct.pack('<i', 3202959))]
+
+    def test_a_guest_can_inspect_the_mummy(self):
+        original = build_emevd({12800430: self.MUMMY})
+        patched, count = tool.patch_client_events(original,
+                                                  tool.CLIENT_EVENTS.get(self.YAHARGUL, set()))
+        events, before = read_events(patched)[12800430], read_events(original)[12800430]
+        self.assertEqual(events[0][2][:2], bytes([0, tool.NEVER]))
+        self.assertEqual(events[1:], before[1:])
+        self.assertEqual(count, 1)
+
+    def test_each_player_travels_on_its_own(self):
+        patched, count = tool.make_events_local(build_emevd({12800430: self.MUMMY}),
+                                                tool.LOCAL_EVENTS.get(self.YAHARGUL, set()))
+        self.assertEqual(read_events(patched)[12800430][0], (2000, 2, bytes(4)))
+        self.assertEqual(count, 1)
+
+
 class ChaliceBossesUnlockEachPlayersShop(unittest.TestCase):
     """seixas 2026-10-27: a team beat the Keeper of the Old Lords in the Central Pthumeru Chalice
     twice, but the Bath shop never sold the Bone Ash set. The story layouts start m29 event
