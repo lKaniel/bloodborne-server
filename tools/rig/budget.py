@@ -41,6 +41,7 @@ RECENT = {
     "host-progress3": "10-23 the host's own progress with a lone guest about (#356)",
     "team-story-trip": "10-23 a guest's own story steps over the team world at a trip (#356)",
     "void-fall-respawn": "10-22 a player fallen into the void stayed invisible (#341, #372)",
+    "downed-void-fall": "10-29 a downed player pushed off a cliff stayed invisible",
     "bloodstain": "10-20 bloodstains on the compass and the map (#299)",
     "bloodstain-alone": "10-22 a guest dying apart from the host (#343)",
     "bloodstain-far-lamp": "10-22 a guest's stain by a far lamp (#343)",

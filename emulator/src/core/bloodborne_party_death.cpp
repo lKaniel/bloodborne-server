@@ -1474,6 +1474,19 @@ std::optional<DownedMember> SwingTargetByBody(PartyDeathRun& run, const DeathTic
     return std::nullopt;
 }
 
+// A fall into the void kills the player without the lethal check (rig 2026-10-22: the Forbidden
+// Woods' cliff west of the lamp; the void bit is clear by then) and fades it out for good unless
+// the map reloads: its respawn makes the trip (ChooseDeathRespawn). Asked at a real death, standing
+// or down (Provi's day 4, v1.3.0: a downed body pushed off a cliff got up invisible at its lamp).
+void NoteVoidFallDeath(u64 player) {
+    const float fade = ReadValue<float>(player, CharacterFadeOffset);
+    if (DeathWasAVoidFall(CharacterInTheVoid(player), fade)) {
+        party_death_void_fall.store(true, std::memory_order_relaxed);
+        LOG_INFO(Debug, "Bloodborne party death: the death was a fall into the void (fade {})",
+                 fade);
+    }
+}
+
 // Standing (or not in party death): a caught lethal hit puts the player down, a death is real, and
 // an attack near a downed member is a revive hit.
 void TickStanding(PartyDeathRun& run, const DeathTick& tick) {
@@ -1498,15 +1511,7 @@ void TickStanding(PartyDeathRun& run, const DeathTick& tick) {
         const bool reset = DiesWithReset(tick.in_session && DeathResetsMap(false, tick.armed));
         LOG_INFO(Debug, "Bloodborne party death: died for real on map {:#x} (reset={})", tick.map,
                  reset);
-        // A fall into the void kills the player without the lethal check (rig 2026-10-22: the
-        // Forbidden Woods' cliff west of the lamp; the void bit is clear by then) and fades it out
-        // for good unless the map reloads: its respawn makes the trip (ChooseDeathRespawn).
-        const float fade = ReadValue<float>(tick.player, CharacterFadeOffset);
-        if (DeathWasAVoidFall(CharacterInTheVoid(tick.player), fade)) {
-            party_death_void_fall.store(true, std::memory_order_relaxed);
-            LOG_INFO(Debug, "Bloodborne party death: the death was a fall into the void (fade {})",
-                     fade);
-        }
+        NoteVoidFallDeath(tick.player);
         return;
     }
     const u32 attacks = party_attack_presses.load();
@@ -1565,6 +1570,7 @@ void TickDown(PartyDeathRun& run, const DeathTick& tick) {
         const bool reset = DiesWithReset(tick.in_session && DeathResetsMap(false, tick.armed));
         LOG_INFO(Debug, "Bloodborne party death: killed while down {} (reset={})",
                  run.downed.DownId(), reset);
+        NoteVoidFallDeath(tick.player);
         return;
     }
     const auto wipe = tick.view.Fresh() ? WipeFor(tick.view.board, tick.view.member) : std::nullopt;

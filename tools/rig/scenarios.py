@@ -3553,6 +3553,39 @@ SCENARIOS = {
         "settings": PARTY_DEATH,
         "timeout": 300,
     },
+    # Provi's report (day 4, v1.3.0): going down and then pushed off a cliff left the player
+    # invisible, woken at the lamp with no loading screen. His log: "killed while down" and then
+    # "moved to last lamp" in place: only a death while standing asked whether it was a fall into
+    # the void. Here the guest goes down on the Forbidden Woods' ledge west of the lamp (the cliff
+    # of void-fall-respawn) and its downed body is put out over the void beyond it.
+    "downed-void-fall": {
+        "about": "in a session the guest goes down on a Forbidden Woods ledge and its downed body "
+                 "falls into the void while the host stands at the lamp; it wakes at the lamp "
+                 "after a load, shown to itself and to the host",
+        "roles": {
+            "host": [START, "godmode", f"set-flag {FORBIDDEN_WOODS_LAMP_LIT} 1",
+                     "wait-session 2 300", "travel 2702950", "wait-members 2 120", "wait 10",
+                     "expect-others-shown 1", "wait-member-vital down 60",
+                     "wait-member-vital dead 60", "wait-member-vital up 60", "wait 15", "snapshot",
+                     "expect-others-shown 1", "expect-others-near 1 40", "expect-session 2"],
+            "guest": [START, f"set-flag {FORBIDDEN_WOODS_LAMP_LIT} 1", "wait-session 2 300",
+                      "travel 2702950", "wait-members 2 120", "wait 10",
+                      "teleport -211.0 -76.5 250.4 1.5708", "wait 2", *LETHAL_FALL,
+                      "wait-vital down 30", "wait 3", "teleport -217.0 -76.5 250.4 1.5708",
+                      "wait-vital dead 45", "wait-vital up 60", "wait 15", "snapshot",
+                      "peek self 20c", "expect-others-shown 1", "expect-others-near 1 40",
+                      "expect-session 2"],
+        },
+        "expect": {"guest": [r"party death: down \d+ on map 0x1b000000",
+                             r"party death: killed while down \d+",
+                             r"party death: the death was a fall into the void",
+                             r"travelling there \(reset=false, void fall=true\)",
+                             r"autoplay peek: 0x10044000 \+0x20c = 0x3f800000"]},
+        "forbid": {"host": SESSION_HOLDS,
+                   "guest": SESSION_HOLDS + [r"Bloodborne revive: moved to last lamp"]},
+        "settings": PARTY_DEATH,
+        "timeout": 300,
+    },
     # Provi's report (v1.2.0): in Yahar'gul a fall down the lift's shaft put a party member down at
     # its foot, and the lift's first-use event (m28_00 12800607: 3:2, the local player inside area
     # 2802100, a box at 243.71 -97.97 3.56) set 12800612 and unlocked its call lever. On the rig that
