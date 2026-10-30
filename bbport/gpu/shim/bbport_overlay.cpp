@@ -5025,15 +5025,10 @@ void OwnDown(ImDrawList* draw, float pulse) {
     const ImVec2 centre(mid, DownRingY(game, base_scale));
     ReviveRing(draw, centre, S(DownRingRadius), panel.landed, panel.needed,
                0.85f + 0.15f * pulse);
-    // The party HUD's YOU ARE DOWN banner says it in the game's own letters (BB_PARTY_HUD=0: here).
-    static const bool hud_banner = [] {
-        const char* setting = std::getenv("BB_PARTY_HUD");
-        return setting == nullptr || std::string_view{setting} != "0";
-    }();
-    if (!hud_banner) {
-        Text(draw, serif_font, S(30.0f), ImVec2(mid, centre.y + S(DownTitleBelow)), Bone(),
-             T("You are down", "Вы повержены"), 0.5f);
-    }
+    // Said here, never in a game banner: the one the party HUD once took (TextEffect_Draw) is the
+    // game's NIGHTMARE SLAIN, and the Wet Nurse's kill read YOU ARE DOWN (player report 2026-10-29).
+    Text(draw, serif_font, S(30.0f), ImVec2(mid, centre.y + S(DownTitleBelow)), Bone(),
+         T("You are down", "Вы повержены"), 0.5f);
     if (panel.native_prompt) { // the game's own prompt says it (CoopPrompt): only the hold's bar here
         GiveUpBar(draw, mid, centre.y);
         return;

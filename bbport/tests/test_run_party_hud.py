@@ -44,7 +44,7 @@ class PartyHudTests(unittest.TestCase):
                                      *run.party_hud_args({'SHADPS4_BLOODBORNE_PARTY_DEATH': '0'})],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn(b'YOU ARE DOWN', (Path(result.stdout.strip()) / self.FE).read_bytes())
+            self.assertIn(b'CoopParty0', (Path(result.stdout.strip()) / self.FE).read_bytes())
 
 
 if __name__ == '__main__':

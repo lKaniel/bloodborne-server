@@ -80,18 +80,25 @@ class GfxTests(unittest.TestCase):
         data = fe_movie()
         self.assertEqual(hud_patch.write_movie(hud_patch.read_movie(data)), data)
 
-    def test_the_downed_banner_replaces_the_draw_banner(self):
-        patched = hud_patch.patch_fe(fe_movie())
+    def test_the_game_banners_stay_the_games(self):
+        # Player report 2026-10-29: killing Mergo's Wet Nurse said YOU ARE DOWN. TextEffect_Draw is the game's
+        # NIGHTMARE SLAIN (text 522007, SetTextEffect 17), not an unused PvP banner: no banner is changed.
+        data = fe_movie()
+        patched = hud_patch.patch_fe(data)
         self.assertEqual(struct.unpack_from('<I', patched, 4)[0], len(patched))
-        self.assertIn(b'<b>YOU ARE DOWN</b>', patched)
-        self.assertIn(b'color="#' + hud_patch.DOWNED_COLOR.encode() + b'"', patched)
-        self.assertEqual(patched.count(b'YOU ARE DOWN'), 2)  # both layers of the Draw banner
-        # The game fills fields named StaticText_<id> from its text tables: the banner's fields are renamed.
-        self.assertNotIn(b'StaticText_522007', patched)
-        self.assertEqual(patched.count(hud_patch.DOWNED_FIELD.encode()), 2)
-        # Only the Draw banner changes: YOU DIED and its field stay as they were.
+        self.assertNotIn(b'YOU ARE DOWN', patched)
+        self.assertNotIn(b'CoopDownedText', patched)
+        self.assertEqual(patched.count(b'StaticText_522007'), 2)
+        self.assertEqual(patched.count(DRAW_HTML.encode()), 2)
         self.assertIn(b'<b>YOU DIED</b>', patched)
         self.assertIn(b'StaticText_522001', patched)
+        _, original = hud_patch.read_movie(data)
+        _, tags = hud_patch.read_movie(patched)
+        # The banner's sprites and text fields, byte for byte.
+        def banner_tags(tags):
+            return {struct.unpack_from('<H', t.body)[0]: t.encode() for t in tags
+                    if t.code in (hud_patch.SPRITE, hud_patch.EDIT_TEXT) and struct.unpack_from('<H', t.body)[0] <= 14}
+        self.assertEqual(banner_tags(tags), banner_tags(original))
         self.assertEqual(hud_patch.write_movie(hud_patch.read_movie(patched)), patched)
 
     def test_the_party_list_is_three_more_nameplate_tags_on_top(self):
@@ -346,18 +353,13 @@ class GfxTests(unittest.TestCase):
         bits.put(-1, 3, True)
         self.assertEqual(bits.data(), bytes([0b11100000]))
 
-    def test_a_hud_without_remote_tags_gets_the_banner_but_no_list(self):
-        patched = hud_patch.patch_fe(fe_movie().replace(b'RemotePCTag0', b'RemotePCTagX'))
-        self.assertIn(b'YOU ARE DOWN', patched)
-        self.assertNotIn(b'CoopParty0', patched)
+    def test_a_hud_without_remote_tags_gets_no_list(self):
+        data = fe_movie().replace(b'RemotePCTag0', b'RemotePCTagX')
+        self.assertEqual(hud_patch.patch_fe(data), data)
 
     def test_the_patch_is_idempotent(self):
         once = hud_patch.patch_fe(fe_movie())
         self.assertEqual(hud_patch.patch_fe(once), once)
-
-    def test_a_movie_without_the_draw_banner_is_refused(self):
-        with self.assertRaises(ValueError):
-            hud_patch.patch_fe(movie(sprite(14, tag(1, b''))))
 
     def test_other_files_are_refused(self):
         with self.assertRaises(ValueError):
@@ -368,9 +370,8 @@ class GfxTests(unittest.TestCase):
         data = Path(GAME_FE).read_bytes()
         self.assertEqual(hud_patch.write_movie(hud_patch.read_movie(data)), data)
         patched = hud_patch.patch_fe(data)
-        self.assertEqual(patched.count(b'YOU ARE DOWN'), 2)  # its two text fields (one shown twice)
-        self.assertNotIn(b'StaticText_522007', patched)
-        self.assertIn(b'StaticText_522001', patched)
+        self.assertEqual(patched.count(b'StaticText_522007'), data.count(b'StaticText_522007'))  # NIGHTMARE SLAIN
+        self.assertNotIn(b'YOU ARE DOWN', patched)
         for name in hud_patch.PARTY_LIST:
             self.assertEqual(patched.count(name.encode() + b'\0'), 1)
         with_icons = hud_patch.patch_fe(data, hud_patch.HUD_ICONS.read_bytes())
@@ -399,7 +400,7 @@ class LayerTests(unittest.TestCase):
         self.assertEqual(notes, [])
         self.assertEqual([name for name, _ in layers], [hud_patch.LAYER])
         overlay = mods.build_overlay(self.game, self.out, layers)
-        self.assertIn(b'YOU ARE DOWN', (overlay / self.FE).read_bytes())
+        self.assertIn(b'CoopParty0', (overlay / self.FE).read_bytes())
         self.assertEqual((self.game / self.FE).read_bytes(), fe_movie())
 
     def test_a_mod_hud_is_the_one_patched(self):
@@ -411,7 +412,7 @@ class LayerTests(unittest.TestCase):
         self.assertEqual([name for name, _ in layers], ['Compact HUD', hud_patch.LAYER])
         patched = (mods.build_overlay(self.game, self.out, layers) / self.FE).read_bytes()
         self.assertIn(b'YOU DEAD', patched)
-        self.assertIn(b'YOU ARE DOWN', patched)
+        self.assertIn(b'CoopParty0', patched)
         self.assertEqual((compact / 'fe.gfx').read_bytes(), fe_movie().replace(b'YOU DIED', b'YOU DEAD'))
 
     def test_a_hud_that_cannot_be_patched_leaves_the_layers_and_says_why(self):
@@ -450,7 +451,7 @@ class LayerTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         overlay = Path(result.stdout.strip())
-        self.assertIn(b'YOU ARE DOWN', (overlay / self.FE).read_bytes())
+        self.assertIn(b'CoopParty0', (overlay / self.FE).read_bytes())
 
 
 if __name__ == '__main__':

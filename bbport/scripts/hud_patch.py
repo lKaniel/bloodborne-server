@@ -4,9 +4,10 @@
 from the player's copy (or the mod that replaces it, such as Compact HUD) and put over the mods as the last
 layer. Nothing of the game's is kept in the port: the movie is read and patched where it is.
 
-The banner is the game's TextEffect_Draw (a PvP result, never shown in co-op; SetTextEffect id 17): its text
-fields are renamed, so that the game no longer fills them from its text tables (fields named StaticText_<id>),
-and get our words in the game's font, in yellow. The game's fade-in and blur trail stay as they are.
+The game's banners stay as they are. Party death once showed its downed banner in TextEffect_Draw (taken for an
+unused PvP result), but that movie is the game's NIGHTMARE SLAIN (text 522007, SetTextEffect id 17: Mergo's Wet
+Nurse, Gehrman, the Orphan of Kos), so those kills read YOU ARE DOWN (player report 2026-10-29); every one of the
+HUD's eight banner movies is the game's own, and the overlay says it instead (bbport_overlay.cpp OwnDown).
 
 The party list is three more of the game's own nameplate tags (the sprite RemotePCTag0 shows), placed at the
 top level as CoopParty0-2: party death fills and places them each frame through the game's own tag code
@@ -30,12 +31,7 @@ FE = 'dvdroot_ps4/menu/fe.gfx'
 LAYER = 'party HUD'
 # Part of the generated file's name: a patcher that patches differently makes its file anew (the old
 # one is not reused). Bump it with every change to what patch_fe writes.
-PATCH_VERSION = b'party-hud 14'
-DRAW_BANNER = 'Fe_fla._TextEffect_Draw_195'
-DRAW_FIELD = 'StaticText_522007'
-DOWNED_FIELD = 'CoopDownedText'
-DOWNED_TEXT = 'YOU ARE DOWN'
-DOWNED_COLOR = 'd8b03c'
+PATCH_VERSION = b'party-hud 15'
 
 PARTY_TAG = 'RemotePCTag0'
 PARTY_LIST = ('CoopParty0', 'CoopParty1', 'CoopParty2')
@@ -233,49 +229,6 @@ def place_parts(tag):
         return character, None, None
     end = body.index(b'\0', offset)
     return character, body[offset:end].decode('latin-1'), (offset, end)
-
-
-def rename(tag, name):
-    _, _, (start, end) = place_parts(tag)
-    tag.body = tag.body[:start] + name.encode('latin-1') + tag.body[end:]
-
-
-def edit_text_parts(tag):
-    """{field: (start, end)} of a DefineEditText's colour and initial text."""
-    body = tag.body
-    offset = 2
-    offset += rect_size(body, offset)
-    first, second = body[offset], body[offset + 1]
-    offset += 2
-    parts = {}
-    if first & 0x01:
-        offset += 2  # font id
-    if second & 0x80:
-        offset = body.index(b'\0', offset) + 1  # font class
-    if first & 0x01 or second & 0x80:
-        offset += 2  # height
-    if first & 0x04:
-        parts['color'] = (offset, offset + 4)
-        offset += 4
-    if first & 0x02:
-        offset += 2
-    if second & 0x20:
-        offset += 9
-    offset = body.index(b'\0', offset) + 1  # variable name
-    if first & 0x80:
-        parts['text'] = (offset, body.index(b'\0', offset))
-    return parts
-
-
-def downed_html(html):
-    """The banner's html with our words and colour, its layout kept."""
-    head, bold, rest = html.partition('<b>')
-    _, close, tail = rest.partition('</b>')
-    if not bold or not close or 'color="#' not in head:
-        raise ValueError('the Draw banner\'s text is not the html it should be')
-    color = head.index('color="#') + len('color="#')
-    head = head[:color] + DOWNED_COLOR + head[color + 6:]
-    return f'{head}<b>{DOWNED_TEXT}</b>{tail}'
 
 
 class BitWriter:
@@ -662,52 +615,9 @@ def add_party_list(tags, strip=None, portraits=True):
 
 
 def patch_fe(data, strip=None, portraits=True):
-    """The game's HUD movie with the downed banner in place of the Draw banner and the party list (see the
-    module's note); `strip` is the list's icons (party_hud_icons.bin), none without it (and no portraits)."""
+    """The game's HUD movie with the party list (see the module's note); `strip` is the list's icons
+    (party_hud_icons.bin), none without it (and no portraits)."""
     header, tags = read_movie(data)
-    defined = {struct.unpack_from('<H', tag.body)[0]: tag for tag in tags if tag.code in (SPRITE, EDIT_TEXT)}
-    banner = None
-    for tag in tags:
-        if tag.code == SYMBOL_CLASS:
-            count, = struct.unpack_from('<H', tag.body)
-            offset = 2
-            for _ in range(count):
-                character, = struct.unpack_from('<H', tag.body, offset)
-                end = tag.body.index(b'\0', offset + 2)
-                if tag.body[offset + 2:end] == DRAW_BANNER.encode():
-                    banner = character
-                offset = end + 1
-    if banner not in defined or defined[banner].code != SPRITE:
-        raise ValueError(f'no {DRAW_BANNER} in this HUD')
-    fields = []
-    for layer in defined[banner].children:
-        if layer.code not in (PLACE_OBJECT2, PLACE_OBJECT3):
-            continue
-        character, _, _ = place_parts(layer)
-        holder = defined.get(character)
-        if holder is None or holder.code != SPRITE:
-            continue
-        for place in holder.children:
-            if place.code not in (PLACE_OBJECT2, PLACE_OBJECT3):
-                continue
-            field, name, _ = place_parts(place)
-            if name in (DRAW_FIELD, DOWNED_FIELD) and field in defined and defined[field].code == EDIT_TEXT:
-                fields.append((place, defined[field]))
-    if not fields:
-        raise ValueError(f'the Draw banner has no {DRAW_FIELD} text')
-    for place, text in fields:
-        if place_parts(place)[1] != DOWNED_FIELD:
-            rename(place, DOWNED_FIELD)
-        parts = edit_text_parts(text)
-        if 'text' not in parts or 'color' not in parts:
-            raise ValueError('the Draw banner\'s text field has no text or colour')
-        if text.body[slice(*parts['color'])] == bytes.fromhex(DOWNED_COLOR) + b'\xff':
-            continue  # done before
-        start, end = parts['text']
-        html = downed_html(text.body[start:end].decode('latin-1')).encode('latin-1')
-        body = text.body[:start] + html + text.body[end:]
-        c0, c1 = parts['color']
-        text.body = body[:c0] + bytes.fromhex(DOWNED_COLOR) + b'\xff' + body[c1:]
     add_party_list(tags, strip, portraits)
     return write_movie((header, tags))
 

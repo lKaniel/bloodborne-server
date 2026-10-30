@@ -3406,11 +3406,13 @@ s32 DownedAnimation(const char* setting);
 // nameplate bar the others see over it (RemotePCTag, fed by the synced HP) fill with the revive.
 s32 DownedHp(s32 max, u32 landed, u32 needed);
 // The game's SetTextEffect (event binding; this, id): queues one of the HUD's big banners, ids 1
-// to 17 (1 NIGHTMARE SLAIN, 2 YOU DIED, 5 PREY SLAUGHTERED, 17 the PvP Draw). The party HUD
-// (bbport/scripts/hud_patch.py) makes the Draw banner the yellow YOU ARE DOWN.
+// to 17 (its TE_* list; slot = id): 1 PREY SLAUGHTERED (a boss's kill, fe.gfx TextEffect_KillDemon),
+// 2 YOU DIED, 4 BLOOD ECHOES RETRIEVED, 5 PREY SLAUGHTERED again (TextEffect_KillTarget),
+// 7 ADVERSARY EXPUNGED, 15 UNLOCKED, 16 a wordless one, 17 NIGHTMARE SLAIN (TE_Draw's slot:
+// TextEffect_Draw, text 522007; Mergo's Wet Nurse, Gehrman, the Orphan of Kos). Every banner the
+// HUD has is the game's own, so party death shows none (the overlay says YOU ARE DOWN).
 constexpr u64 SetTextEffectOffset = 0x013360B0;
 constexpr std::array<u8, 6> SetTextEffectStart{0x8D, 0x46, 0xFF, 0x83, 0xF8, 0x10};
-constexpr s32 DownedBannerTextEffect = 17;
 
 // The party HUD's nameplates: the game's tag over each remote player (fe.gfx RemotePCTag0-6). The
 // HUD tick updates each tag from a TagData (0x01B59E20: rdi the tag, rsi its data), and its one
