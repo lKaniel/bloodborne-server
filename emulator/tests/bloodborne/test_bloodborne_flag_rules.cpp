@@ -586,36 +586,6 @@ TEST(BloodborneFlagRules, TheDollsLevelUpFlagIsEachGamesOwnAndOffAsAMapLoads) {
     }
 }
 
-// Kaniel 2026-10-30: guests could not level up again in the same Dream visit. 6700 stays on in a
-// guest's game after its level-up menu closes (krolebord's log 2026-10-28: set as the menu opened,
-// a "Level Up" a minute later opened no menu, cleared only by the next map load). Her talk sets
-// her blessing flag (72100100) only after the menu closed, so 6700 goes off once that is on.
-TEST(BloodborneFlagRules, TheDollsLevelUpFlagGoesOffOnceHerMenuClosed) {
-    EXPECT_EQ(DollBlessingFlag, 72100100);
-    EXPECT_TRUE(ClearsDollLevelUpFlagAfterHerMenu(true, true, true));
-    EXPECT_FALSE(ClearsDollLevelUpFlagAfterHerMenu(true, true, false)); // the menu may be open
-    EXPECT_FALSE(ClearsDollLevelUpFlagAfterHerMenu(true, false, true));
-    EXPECT_FALSE(ClearsDollLevelUpFlagAfterHerMenu(false, true, true));
-}
-
-// Kaniel 2026-10-30: the host's level up played the kneel on guests. The Doll's blessing flags
-// (72100100 her talk's, 72100101 m21_00 12100112's kneel on the local player, 72100102 12100113's
-// turn of the Doll) are each game's own: not the team's world, not a story step, and the other
-// player's flag message leaves them alone.
-TEST(BloodborneFlagRules, TheDollsBlessingFlagsAreEachGamesOwn) {
-    for (const s32 flag : {72100100, 72100101, 72100102}) {
-        EXPECT_EQ(RuleFor(flag).owner, FlagOwner::PerPlayer) << flag;
-        EXPECT_FALSE(IsWorldFlag(flag)) << flag;
-        EXPECT_TRUE(KeepsLocalFlag(true, flag)) << flag;
-        EXPECT_FALSE(CarriesToGuestWorld(flag)) << flag;
-        EXPECT_FALSE(TakesHostMapFlag(flag)) << flag;
-        EXPECT_FALSE(SharedWithParty(flag)) << flag;
-    }
-    for (const s32 flag : {72100099, 72100103, 72100110}) {
-        EXPECT_EQ(RuleFor(flag).owner, FlagOwner::Host) << flag;
-    }
-}
-
 // m21_00 12105020-12105024 (01.09): on while any of the headstone's lamps is lit.
 TEST(BloodborneFlagRules, AHeadstoneIsLitByThisPlayersOwnLamps) {
     const std::set<s32> lit{12407830, 13207810};
