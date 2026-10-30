@@ -198,7 +198,8 @@ YAHARGUL_BELL_GUEST = "258.5 -38.5 116.5"  # (at 256.0 -38.5 112.0 a guest died,
 # a rise from 10.7 m off its middle (254.8 -38.5 127.4) was still inside it (it is 23 m high).
 YAHARGUL_BY_THE_BELL = "268.0 -46.5 89.0"
 # The mummy at the end of the Yahar'gul Chapel's hall (m28_00 event 12800430: action button
-# 2800020 on its warp object 2801500 at 460.06 -111.97 -293.97, heading 135 degrees, then 2003:49
+# 6031, the game's 2800020 until PLAIN_ACTION_BUTTONS, on its warp object 2801500 at 460.06
+# -111.97 -293.97, heading 135 degrees, then 2003:49
 # to the Lecture Building's 3202959): in front of it, facing it. The One Reborn's defeat
 # (12801800) as after Provi's fight (day 4, v1.3.1).
 YAHARGUL_CHAPEL_LAMP = 2802951  # 418.8 -123.66 -253.4

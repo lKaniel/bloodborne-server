@@ -150,7 +150,7 @@ def patch_events(emevd: bytes, edits: list | None = None) -> tuple[bytes, int]:
 # m28_00 12800430 is the mummy at the end of Yahar'gul's hall (the action button on its warp
 # object 2801500, then 2003:49 to the Lecture Building, m32's 3202959): only the host could
 # inspect it and only the host travelled (Provi's day 4, v1.3.1). It is each player's own trip
-# (LOCAL_EVENTS).
+# (LOCAL_EVENTS), with a button a guest can press (PLAIN_ACTION_BUTTONS).
 CLIENT_EVENTS = {
     'common.emevd.dcx': {9350, 9400, 9404, 9421, 9422},
     'm21_00_00_00.emevd.dcx': {9401, 12105043, 12107100},
@@ -159,6 +159,14 @@ CLIENT_EVENTS = {
     'm26_00_00_00.emevd.dcx': {12601854},
     'm28_00_00_00.emevd.dcx': {12800430},
 }
+# Action buttons a guest's press never counts on, per file: event -> (the game's row, the row used).
+# m28_00 12800430: the mummy's row 2800020 ("Inspect Mummy") is a 1.8 m, 60 degree sector around
+# dummy poly 200 of the invisible warp object 2801500. A guest's game acts as if the poly were not
+# there (the same miss as the host's game with the row's poly taken out, rig 2026-10-30), and the
+# sector from the object's own facing misses the hall. Row 6031 ("Inspect") is 2 m on any side of
+# the object, facing it, for the host too; no row has both the mummy's text and no poly.
+PLAIN_ACTION_BUTTONS = {'m28_00_00_00.emevd.dcx': {12800430: (2800020, 6031)}}
+IF_ACTION_BUTTON = (3, 24)
 INSIGHT_EVENT = 9350
 INITIALIZE_EVENT = (2000, 0)
 
@@ -395,6 +403,34 @@ def patch_client_events(emevd: bytes, wanted: set[int],
                 data[at + 1] = NEVER
                 note(edits, event, k, bank, ident, 'client end never matches')
                 patched += 1
+    return bytes(data), patched
+
+
+def use_plain_action_buttons(emevd: bytes, wanted: dict[int, tuple[int, int]],
+                             edits: list | None = None) -> tuple[bytes, int]:
+    data = bytearray(emevd)
+    fields = struct.unpack_from('<16q', data, 16)
+    event_count, event_offset, instruction_offset, args_offset = (fields[0], fields[1], fields[3],
+                                                                  fields[13])
+    patched = 0
+    for index in range(event_count):
+        event, count, first, _, _, _, _ = struct.unpack_from('<qqqqqii', data,
+                                                             event_offset + index * 48)
+        if event not in wanted:
+            continue
+        game_row, row = wanted[event]
+        for k in range(count):
+            bank, ident, length, offset, _ = struct.unpack_from(
+                '<iiqqq', data, instruction_offset + first + k * INSTRUCTION_SIZE)
+            if (bank, ident) != IF_ACTION_BUTTON or length < 8:
+                continue
+            at = args_offset + offset + 4  # group byte, padding, then the row
+            found = struct.unpack_from('<i', data, at)[0]
+            if found != game_row:
+                raise EventPatchError(f'event {event} uses button {found}, not {game_row}')
+            struct.pack_into('<i', data, at, row)
+            note(edits, event, k, bank, ident, 'plain action button')
+            patched += 1
     return bytes(data), patched
 
 
@@ -1030,7 +1066,7 @@ def patch_file(name: str, original: bytes) -> tuple[bytes | None, list, dict]:
               'client event ends': 0, 'local events': 0, 'chalice wall checks': 0,
               'item pickup checks': 0, 'host door effects': 0, 'ambush checks': 0,
               'chalice reward checks': 0, 'one-time enemy checks': 0, 'lake dive checks': 0,
-              'ending checks': 0}
+              'ending checks': 0, 'plain action buttons': 0}
     try:
         if name.startswith('m'):
             emevd, counts['boss event checks'] = patch_events(emevd, edits)
@@ -1040,6 +1076,9 @@ def patch_file(name: str, original: bytes) -> tuple[bytes | None, list, dict]:
         if name in CLIENT_EVENTS:
             emevd, counts['client event ends'] = patch_client_events(emevd, CLIENT_EVENTS[name],
                                                                      edits)
+        if name in PLAIN_ACTION_BUTTONS:
+            emevd, counts['plain action buttons'] = use_plain_action_buttons(
+                emevd, PLAIN_ACTION_BUTTONS[name], edits)
         if name in ENDING_EVENTS:
             emevd, counts['ending checks'] = let_guests_see_the_endings(emevd,
                                                                         ENDING_EVENTS[name], edits)
