@@ -1060,6 +1060,22 @@ bool ClearsDollLevelUpFlag(bool party_configured, bool flag_on);
 // on with it on is off at once (in a party).
 constexpr s32 DollBlessingFlag = 72100100;
 bool ClearsDollLevelUpFlagAfterHerMenu(bool party_configured, bool level_up_on, bool blessing_on);
+// The rig 2026-10-30: in a guest's game her talk's request for 72100100 never turns it on, so 6700
+// is off as soon as this player's own talk asks for her blessing (her menu closed by then).
+bool ClearsDollLevelUpFlagOnHerBlessing(bool party_configured, bool others_talk,
+                                        s32 requested_flag);
+// The 1.3.1 rig 2026-10-30: after 72100100 her talk (state 10) waits for 72100101 (the kneel,
+// m21_00 12100112) or 72100102 (her turn, 12100113), and both events end unless the local player
+// is alive (4:3 player 10000 type 0; a white phantom is type 1). Then state 11 asks for 72100100 =
+// 0, which did not take in a guest's game either, and waits for both steps off. In a guest's game
+// her talk waited for ever: no second "Level Up", and the guest could not walk away. Her talk's
+// own requests for 72100100 drive a party guest's steps: the one asked with her level-up flag
+// still on begins her blessing (state 10, BeginsDollBlessing), a later one ends it (state 11); the
+// new value of a step, or nullopt.
+constexpr std::array<s32, 2> DollBlessingSteps{72100101, 72100102};
+bool BeginsDollBlessing(bool level_up_on);
+std::optional<bool> DollBlessingStepFor(bool party_guest, bool begin_asked, bool end_asked,
+                                        bool step_on);
 // The other player's "set this event flag" (0x017C0570) and "event ended" (0x017C0901) messages
 // leave these flags and events alone in a party: what one player received is not given to the
 // other (the Hunter's Dream messengers' gift events and flags, 12101020-12101029, and the

@@ -1521,6 +1521,29 @@ bool ClearsDollLevelUpFlagAfterHerMenu(bool party_configured, bool level_up_on, 
     return party_configured && level_up_on && blessing_on;
 }
 
+bool ClearsDollLevelUpFlagOnHerBlessing(bool party_configured, bool others_talk,
+                                        s32 requested_flag) {
+    return party_configured && !others_talk && requested_flag == DollBlessingFlag;
+}
+
+bool BeginsDollBlessing(bool level_up_on) {
+    return level_up_on;
+}
+
+std::optional<bool> DollBlessingStepFor(bool party_guest, bool begin_asked, bool end_asked,
+                                        bool step_on) {
+    if (!party_guest) {
+        return std::nullopt;
+    }
+    if (begin_asked && !step_on) {
+        return true;
+    }
+    if (end_asked && step_on) {
+        return false;
+    }
+    return std::nullopt;
+}
+
 std::vector<s32> LightRequestsToClear(u32 packed_map, const std::function<bool(s32)>& on) {
     const s32 map = static_cast<s32>((packed_map >> 24) & 0xFF) * 10 +
                     static_cast<s32>((packed_map >> 16) & 0xFF);
