@@ -430,6 +430,14 @@ session stays up across maps. Kaniel chose option A (stretch the native session)
   its own world (4:3 type 0) in one group. `party_boss_events.py` (AMBUSH_EVENTS) moves that
   check to an unused group in m22_00 12204000 (Hemwick woods), m24_01 12414000, m25_00
   12504000, m26_00 12604000 and m29 12905406, so a guest's approach wakes them too.
+- **Rom's lake** (Kaniel 2026-10-29 play, not yet rig-tested): the drop into the lake is a 96 m
+  fall. m32_00 13204820 gives an alive player (the host) walking into the drop area 3202800 5 s of
+  no death (2004:15) and then sets 13204800, which starts Rom; 13204821 gives anyone else the same
+  only once 13204800 is on, and the white phantom's fog by the edge (13204831) opens only after
+  13201802 and 13204800. So only the host passed the fog the first time, and a guest going over
+  first fell to their death (the party then wiped). `party_boss_events.py`
+  (LAKE_DIVE_EVENTS, let_guests_dive_first) drops those waits and makes 13204821 set
+  13204800..13204801; 13204800 is a BossFogEntryFlags entry, shared with the party.
 - **One-time enemies** (rig nightmare-flags 2026-10-24): the Wandering Nightmares and the like
   (m24_00 12400200, m23 12300220, m28 12800500 and 9 more templates, a slot per enemy with its
   drop's flag) go for good once their event ends: the slot flag switches them off (2004:5) or hides
