@@ -48,6 +48,8 @@ DATA_DIR = Path(os.environ.get('BB_DATA_DIR', PORT_DIR))
 # This repository's build carries the seamless co-op, which upstream releases don't.
 COOP_TEST = True
 CONFIG_DIR = Path(os.environ.get('APPDATA', Path.home())) / ('bbport-launcher-coop' if COOP_TEST else 'bbport-launcher')
+if (PORT_DIR / 'portable.txt').is_file():  # the portable zip keeps everything in its folder (bbport_coop.PORTABLE_MARK)
+    CONFIG_DIR = DATA_DIR / 'user' / 'launcher'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 PATCH_VERSION = '01.09'
 MAX_LOG_LINES = 6000
@@ -7217,15 +7219,13 @@ def start_launcher():
     if FROZEN and not args and redirection_guarded() and restart_without_redirection_guard():
         sys.exit(0)
     if args[:1] == ['--coop-uninstall']:
-        # The uninstaller: the game view goes as links, never the game behind them; the host's
-        # servers stop.
-        for root in {PORT_DIR / 'coop-game', bbport_coop.view_root(PORT_DIR)}:
-            for name in ('CUSA03173', 'CUSA03173-mods'):
-                try:
-                    bbport_coop.remove_view(root / name)
-                except OSError:
-                    pass
-        bbport_coop.stop_servers(PORT_DIR)
+        # The uninstaller: the host's servers stop, the game view goes as links, never the game behind
+        # them, and what the launcher made goes with it (bbport_coop.uninstall).
+        try:
+            bbport_coop.uninstall(PORT_DIR)
+        except Exception:  # an uninstall never stops for it: Inno removes its own files after this
+            import traceback
+            record_startup_failure(traceback.format_exc())
         sys.exit(0)
     settings = load_app_settings()
     LANG = settings.get('ui_language') or windows_language()

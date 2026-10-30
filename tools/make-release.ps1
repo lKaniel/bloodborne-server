@@ -14,7 +14,8 @@
 #      event files are made by each player's launcher from their own game: the release holds only
 #      their expected hashes (event-reference.json, from -GameDir)
 #   4. checks it (tools\release\check_release.py: everything there, no game or player files, no
-#      bat files), builds the setup .exe from it (tools\release\setup.iss) and writes its SHA-256
+#      bat files), builds the setup .exe from it (tools\release\setup.iss) and writes its SHA-256,
+#      and the portable zip: the same folder with portable.txt, played without a setup (Provi 2026-10-30)
 #   5. with -Publish: creates a draft release v<Version> on GitHub at the build's commit with the
 #      setup attached (gh when installed, else the REST API with GITHUB_TOKEN or git's credential)
 #
@@ -56,6 +57,7 @@ if (-not $Out) { $Out = Join-Path $env:BB_ROOT "release" }
 $name = "BloodborneSeamlessCoop"
 $tag = "v$Version"
 $setupName = "YharnamTogether-$tag-setup.exe"  # setup.iss OutputBaseFilename
+$portableName = "YharnamTogether-$tag-portable.zip"
 function Step([string]$Text) { Write-Host ""; Write-Host "== $Text" -ForegroundColor Cyan }
 function Write-Utf8([string]$Path, [string]$Text) { [IO.File]::WriteAllText($Path, $Text, (New-Object Text.UTF8Encoding $false)) }
 
@@ -308,6 +310,33 @@ $sha = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant()
 Write-Utf8 "$setup.sha256" "$sha *$setupName`n"
 Write-Host "  $setup ($([math]::Round((Get-Item $setup).Length / 1MB)) MB, sha256 $sha)"
 
+Step "Portable zip"
+# The folder the setup installs, under "Yharnam Together\", with portable.txt beside BLauncher.exe: the
+# launcher then keeps its settings in user\launcher and updates the folder with the setup's /PORTABLE=1
+# (no uninstaller, no shortcuts; bbport_coop.PORTABLE_MARK). The staged folder itself stays as checked.
+$portable = Join-Path $Out $portableName
+if (Test-Path $portable) { Remove-Item -Force $portable }
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::Open($portable, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    $top = "Yharnam Together/"
+    $from = (Resolve-Path -LiteralPath $release).Path
+    foreach ($file in Get-ChildItem -LiteralPath $from -Recurse -File -Force) {
+        $relative = $file.FullName.Substring($from.Length).TrimStart('\').Replace('\', '/')
+        [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $top + $relative,
+                                                                      [IO.Compression.CompressionLevel]::Optimal)
+    }
+    $entry = $zip.CreateEntry($top + "portable.txt")
+    $writer = New-Object IO.StreamWriter($entry.Open(), (New-Object Text.UTF8Encoding $false))
+    $writer.Write("Portable Yharnam Together: play from BLauncher.exe in this folder, no setup needed.`r`n" +
+                  "Everything stays in this folder (your saves, settings and logs in user\). To remove it, delete the folder.`r`n" +
+                  "Updates from the launcher keep it portable. Delete this file and the launcher works as an installed one.`r`n")
+    $writer.Dispose()
+} finally { $zip.Dispose() }
+$portableSha = (Get-FileHash -Algorithm SHA256 $portable).Hash.ToLowerInvariant()
+Write-Utf8 "$portable.sha256" "$portableSha *$portableName`n"
+Write-Host "  $portable ($([math]::Round((Get-Item $portable).Length / 1MB)) MB, sha256 $portableSha)"
+
 # --- 5. publish --------------------------------------------------------------------------------
 if (-not $Publish) { Write-Host ""; Write-Host "Release built (not published: pass -Publish for a draft on GitHub)."; exit 0 }
 Step "Publish (draft)"
@@ -320,7 +349,7 @@ Seamless co-op for Bloodborne on Bloodborne PC (the native Windows port).
 
 **New players:**
 
-1. Download ``$setupName`` and run it (it installs for your Windows user; keep "Create a desktop shortcut" ticked).
+1. Download ``$setupName`` and run it (it installs for your Windows user; keep "Create a desktop shortcut" ticked). No installer wanted? Unpack ``$portableName`` anywhere and start ``BLauncher.exe`` in its Yharnam Together folder.
 2. Open **Yharnam Together**. It finds your game; fill in the Co-op card: your game folder, the host's IP and the enemies (**How to connect** explains Radmin VPN).
 3. The host presses **Start server**, then everyone presses **PLAY**. Windows asks once to let co-op through its firewall. Guests must reach the host's TCP ports 31315 and 20443 and UDP port 31314.
 4. Continue, Load Game or New Game opens the team screen: make a team of up to four (guests are ready on their own) and the leader begins the hunt.
@@ -329,14 +358,14 @@ The full setup guide, with pictures: https://bloodborne.seamlesscoop.dev/docs/in
 
 Everyone in a team must use this same release. Co-op runs at 60 FPS; a higher frame rate (Unlocked or 90 FPS) is still in testing.
 
-Built from $commit. SHA-256 of the setup: ``$sha``
+Built from $commit. SHA-256 of the setup: ``$sha``, of the portable zip: ``$portableSha``
 "@
 if (Get-Command gh -ErrorAction SilentlyContinue) {
     $notesFile = Join-Path $Out "notes.md"
     Write-Utf8 $notesFile $notes
     $flags = @("--draft", "--target", $commit, "--title", "Yharnam Together: Bloodborne Seamless Co-op $tag", "--notes-file", $notesFile)
     if ($Prerelease) { $flags += "--prerelease" }
-    gh release create $tag $setup "$setup.sha256" --repo $Repo @flags
+    gh release create $tag $setup "$setup.sha256" $portable "$portable.sha256" --repo $Repo @flags
     if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
 } else {
     $token = $env:GITHUB_TOKEN
@@ -350,7 +379,8 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
                draft = $true; prerelease = [bool]$Prerelease } | ConvertTo-Json
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $created = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$Repo/releases" -Headers $headers -Body $body -ContentType "application/json"
-    foreach ($asset in @(@{ Path = $setup; Type = "application/octet-stream" }, @{ Path = "$setup.sha256"; Type = "text/plain" })) {
+    foreach ($asset in @(@{ Path = $setup; Type = "application/octet-stream" }, @{ Path = "$setup.sha256"; Type = "text/plain" },
+                         @{ Path = $portable; Type = "application/zip" }, @{ Path = "$portable.sha256"; Type = "text/plain" })) {
         $assetName = [Uri]::EscapeDataString((Split-Path -Leaf $asset.Path))
         Invoke-RestMethod -Method Post -Uri "https://uploads.github.com/repos/$Repo/releases/$($created.id)/assets?name=$assetName" `
             -Headers $headers -InFile $asset.Path -ContentType $asset.Type -TimeoutSec 3600 | Out-Null

@@ -755,22 +755,58 @@ def make_junction(link, target):
         os.symlink(target, link, target_is_directory=True)
 
 
+# A view the launcher made says so in its own top folder: only there are plain files its own (copies
+# of the game's files when hard links cannot reach them). A view from before the mark is known by its
+# folder links (a dumped game has none). Any other folder at a view's place (a real game someone put
+# there) loses its links and hard links only, never a file that may be the last of its kind (Provi
+# 2026-10-30: game files gone after an uninstall).
+VIEW_MARK = '.yharnam-view'
+
+
+def is_link(path):
+    return is_junction(path) or Path(path).is_symlink()
+
+
+def remove_link(path):
+    """A link goes as a link (a junction as a folder link, a symbolic link as itself), never what it
+    points at."""
+    os.rmdir(path) if is_junction(path) else Path(path).unlink()
+
+
 def remove_view(path):
-    """Removes a folder made of links: a link goes as a link, never what it points at."""
+    """Removes a folder made of links: a link goes as a link, never what it points at. Plain files go
+    only in a view the launcher marked; elsewhere a file goes only when another hard link keeps its
+    data, and a folder that still holds something stays."""
     path = Path(path)
-    if is_junction(path) or path.is_symlink():
-        os.rmdir(path) if is_junction(path) else path.unlink()
+    if is_link(path):
+        remove_link(path)
         return
     if not path.exists():
         return
+    _remove_view(path, (path / VIEW_MARK).is_file() or holds_links(path))
+
+
+def holds_links(folder):
+    """Whether a folder holds a folder link or a symbolic link anywhere (links are not followed)."""
+    for directory, folders, files in os.walk(folder):
+        if any(is_link(Path(directory) / name) for name in folders + files):
+            return True
+    return False
+
+
+def _remove_view(path, ours):
     for entry in list(path.iterdir()):
-        if is_junction(entry) or entry.is_symlink():
-            os.rmdir(entry) if is_junction(entry) else entry.unlink()
+        if is_link(entry):
+            remove_link(entry)
         elif entry.is_dir():
-            remove_view(entry)
-        else:
+            _remove_view(entry, ours)
+        elif ours or entry.stat().st_nlink > 1:
             entry.unlink()
-    path.rmdir()
+    try:
+        path.rmdir()
+    except OSError:
+        if ours or not any(path.iterdir()):
+            raise
 
 
 def link_file(link, target):
@@ -784,10 +820,28 @@ def build_game_view(game, update, view):
     """`view`: the game with `update` over it. A folder only one of them has is a link to it, a folder
     both have is merged, a file is the update's when it has one. The player's folders stay as
     they are."""
-    view = Path(view)
+    view, game = Path(view), Path(game)
+    update = Path(update) if update else None
+    for source in (game, update):
+        if source and overlaps(source, view):
+            raise RuntimeError(f'The game folder {source} is inside the co-op game folder {view} (or holds it): '
+                               'choose your own game folder, not the one the launcher makes.')
     if view.exists() or is_junction(view):
         remove_view(view)
-    _merge(Path(game), Path(update) if update else None, view)
+    if view.exists():
+        raise RuntimeError(f'{view} holds files that are not links to your game: move them away and press PLAY again.')
+    _merge(game, update, view)
+    (view / VIEW_MARK).write_text('Made by the launcher from links to your game; it removes it again.\n',
+                                  encoding='utf-8')
+
+
+def overlaps(one, other):
+    """Whether either folder is the other or inside it (links followed)."""
+    try:
+        one, other = Path(one).resolve(), Path(other).resolve()
+    except OSError:
+        return False
+    return one == other or one.is_relative_to(other) or other.is_relative_to(one)
 
 
 def _merge(game, update, view):
@@ -811,11 +865,34 @@ def _merge(game, update, view):
 
 def view_root(install):
     """Where coop-game goes: beside BLauncher.exe, or under %LOCALAPPDATA% when that drive cannot
-    hold folder links (exFAT, FAT32)."""
+    hold folder links (exFAT, FAT32) or the install is in a OneDrive folder: OneDrive is no place for
+    links to the game (it syncs and frees up space by file, and a hard link is the game's own file;
+    Provi's install was in OneDrive\\Documents when game files went missing, 2026-10-30)."""
     here = Path(install) / 'coop-game'
-    if junctions_work(here):
+    if not in_onedrive(install) and junctions_work(here):
         return here
+    return fallback_view_root()
+
+
+def fallback_view_root():
     return Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'BloodborneSeamlessCoop' / 'coop-game'
+
+
+def in_onedrive(folder):
+    """Whether a folder is inside one of the player's OneDrive folders (personal or work)."""
+    try:
+        folder = Path(folder).resolve()
+    except OSError:
+        return False
+    for name in ('OneDrive', 'OneDriveConsumer', 'OneDriveCommercial'):
+        root = os.environ.get(name)
+        if root:
+            try:
+                if folder.is_relative_to(Path(root).resolve()):
+                    return True
+            except OSError:
+                continue
+    return False
 
 
 def junctions_work(folder):
@@ -915,6 +992,8 @@ def copy_events(install, root):
     2 - PLAY did: a newer release brings newer ones)."""
     target = Path(root) / 'CUSA03173-mods' / 'dvdroot_ps4' / 'event'
     target.mkdir(parents=True, exist_ok=True)
+    (Path(root) / 'CUSA03173-mods' / VIEW_MARK).write_text('The co-op event files, made by the launcher.\n',
+                                                          encoding='utf-8')
     for file in (Path(install) / 'event-patch').glob('*'):
         if file.is_file():
             shutil.copy2(file, target / file.name)
@@ -1341,6 +1420,102 @@ def stop_servers(install):
     return stopped
 
 
+# --- the uninstall (setup.iss [UninstallRun]: BLauncher.exe --coop-uninstall) --------------------
+# Provi 2026-10-30: after an uninstall a new install in another folder must start clean, and nothing of
+# the player's game may go with the old one. What the launcher made goes, links as links: the game views
+# and the event files, and out\\ and event-patch\\ (made again from the game at the next PLAY). The
+# player's own files stay: user\\ (saves, settings, logs), bbport.ini, mods and patches.
+MADE_FOLDERS = ('out', 'event-patch')
+
+
+def uninstall(install):
+    """Removes what the launcher made in `install` and its game views; returns the paths that could not
+    be removed (a file in use)."""
+    install = Path(install)
+    left = []
+    stop_servers(install)
+    for root in view_roots(install):
+        for name in ('CUSA03173', 'CUSA03173-mods'):
+            try:
+                remove_view(root / name)
+            except OSError:
+                left.append(root / name)
+        if (root / 'CUSA03173-mods').exists():
+            remove_old_events(install, root / 'CUSA03173-mods')
+        try:
+            if is_junction(root / '.junction-probe'):
+                os.rmdir(root / '.junction-probe')
+            root.rmdir()
+        except OSError:
+            pass
+    for name in MADE_FOLDERS:
+        left += remove_tree(install / name)
+    return left
+
+
+def view_roots(install):
+    """The coop-game folders this install may have played from, found without making one: beside it, and
+    %LOCALAPPDATA%'s when it plays from there (OneDrive, a drive without folder links)."""
+    here = Path(install) / 'coop-game'
+    if in_onedrive(install) or not (here / 'CUSA03173').exists():
+        return [here, fallback_view_root()]
+    return [here]
+
+
+def remove_old_events(install, mods):
+    """A mods folder from before its mark: the event files this install made, then the folders left empty."""
+    event = mods / 'dvdroot_ps4' / 'event'
+    for file in (Path(install) / 'event-patch').glob('*'):
+        try:
+            (event / file.name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    for folder in (event, event.parent, mods):
+        try:
+            folder.rmdir()
+        except OSError:
+            break
+
+
+def remove_tree(folder):
+    """shutil.rmtree that never goes through a link: a folder link or a symbolic link goes as itself. A
+    hard link to a read-only game file loses the attribute for its deletion (Windows refuses it
+    otherwise, WinError 5). Returns what could not be removed."""
+    import stat
+    folder = Path(folder)
+    left = []
+    if is_link(folder):
+        try:
+            remove_link(folder)
+        except OSError:
+            left.append(folder)
+        return left
+    if not folder.is_dir():
+        return left
+    for entry in list(folder.iterdir()):
+        try:
+            if is_link(entry):
+                remove_link(entry)
+            elif entry.is_dir():
+                left += remove_tree(entry)
+            else:
+                try:
+                    entry.unlink()
+                except PermissionError:
+                    if os.name != 'nt':
+                        raise
+                    os.chmod(entry, entry.stat().st_mode | stat.S_IWRITE)
+                    entry.unlink()
+        except OSError:
+            left.append(entry)
+    try:
+        folder.rmdir()
+    except OSError:
+        if not left:
+            left.append(folder)
+    return left
+
+
 # --- Windows Firewall ---------------------------------------------------------------------------
 
 RULE_GAME, RULE_HOST_TCP, RULE_HOST_UDP = 'BB coop port', 'BB coop host TCP', 'BB coop host UDP'
@@ -1538,6 +1713,16 @@ def download_update(release, folder, progress=None, timeout=30):
 def setup_command(setup, install):
     """The setup run that updates this install in place and starts the launcher again: no questions, but
     its progress window stays on screen with a note not to close anything (/SILENT, and /NOCANCEL takes
-    its Cancel button away), so the update does not look like the launcher vanished (Kaniel 2026-10-20)."""
+    its Cancel button away), so the update does not look like the launcher vanished (Kaniel 2026-10-20).
+    A portable folder stays portable: /PORTABLE=1 writes the files and nothing else (setup.iss)."""
     return [str(setup), '/SILENT', '/NOCANCEL', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS',
-            f'/DIR={Path(install)}']
+            f'/DIR={Path(install)}', *(['/PORTABLE=1'] if is_portable(install) else [])]
+
+
+# The portable zip (make-release.ps1, Provi 2026-10-30): the release's folder with this file in it, played
+# from wherever it is unpacked, with no setup run and nothing kept outside it.
+PORTABLE_MARK = 'portable.txt'
+
+
+def is_portable(install):
+    return (Path(install) / PORTABLE_MARK).is_file()
