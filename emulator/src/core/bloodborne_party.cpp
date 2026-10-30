@@ -1530,6 +1530,10 @@ bool BeginsDollBlessing(bool level_up_on) {
     return level_up_on;
 }
 
+bool EndsDollBlessing(s32 talk_command) {
+    return talk_command == 71;
+}
+
 std::optional<bool> DollBlessingStepFor(bool party_guest, bool begin_asked, bool end_asked,
                                         bool step_on) {
     if (!party_guest) {

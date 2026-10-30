@@ -622,6 +622,11 @@ TEST(BloodborneFlagRules, AGuestsDollBlessingFinishesWithoutTheKneelEvents) {
     EXPECT_EQ(DollBlessingSteps[1], 72100102);
     EXPECT_TRUE(BeginsDollBlessing(true));   // state 10: her menu just closed, 6700 still on
     EXPECT_FALSE(BeginsDollBlessing(false)); // state 11 or her first choices (state 1)
+    // The rig on a64214d: her state 11 request never reached the flag hook; state 6 runs talk
+    // command 71 ("talk ended") right before it.
+    EXPECT_TRUE(EndsDollBlessing(71));
+    EXPECT_FALSE(EndsDollBlessing(68)); // her menu
+    EXPECT_FALSE(EndsDollBlessing(31));
     EXPECT_EQ(DollBlessingStepFor(true, true, false, false), std::optional<bool>{true});
     EXPECT_EQ(DollBlessingStepFor(true, true, false, true), std::nullopt); // already on
     EXPECT_EQ(DollBlessingStepFor(true, false, true, true), std::optional<bool>{false});
