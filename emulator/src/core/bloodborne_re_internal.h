@@ -326,6 +326,9 @@ std::optional<u32> EventFlagBits(s32 flag, u32 bits);
 std::optional<s32> CurrentRitualAltar();
 // Ritual altar `altar` (0-6) loads its dungeon again from its flags.
 void ReloadRitualAltar(s32 altar);
+void EmptyRitualAltar(s32 altar);
+// The altar object's status (+0x25C of its state: 0 not loaded yet, 1 no dungeon, 5 a dungeon).
+std::optional<s32> RitualAltarStatus(s32 altar);
 // Team altars (bloodborne_altar.h): the current altar's view changed (`changed` flags); a ritual's
 // or a join's record goes to the team whole (SharesAltarRecord), anything else stays here.
 void ShareRitualAltarRecord(size_t changed);

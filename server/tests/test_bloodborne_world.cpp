@@ -1397,6 +1397,57 @@ int AnAltarRecordReachesTheOthersWhole() {
   return 0;
 }
 
+// Kaniel 2026-10-30: a chalice taken off an altar goes to the others as an
+// empty record, and the chalice dungeons' log starts over: the same chalice
+// placed again built the dungeon with the old kills standing.
+int AChaliceTakenOffStartsTheDungeonsOver() {
+  Service service{{}};
+  Game host{1000, "host", 11};
+  Game guest{1001, "guest", 12};
+  const std::vector<Game *> games{&host, &guest};
+  qint64 now = 1'000'000;
+  for (Game *game : games) {
+    game->Hello(now);
+  }
+  Pump(service, games, now);
+  constexpr u32 Chalice = 0x1d000000;
+  now += 100;
+  guest.Propose({{Chalice, {0x10014066}}, {0x18000000, {0x10014067}}}, now);
+  Pump(service, games, now);
+  CHECK(Killed(host, 0x10014066));
+  // A ritual's or a join's record changes nothing of the log.
+  std::string bits(750, '\xff');
+  bits[0] = '\x1d';
+  bits[1] = '\x0a';
+  bits[2] = '\x5a';
+  bits[3] = '\x00';
+  bbcoop::Envelope ritual;
+  ritual.mutable_altar_record()->set_altar(5);
+  ritual.mutable_altar_record()->set_bits(bits);
+  now += 100;
+  host.Send(ritual, now);
+  Pump(service, games, now);
+  CHECK(Killed(host, 0x10014066));
+  bbcoop::Envelope removal;
+  removal.mutable_altar_record()->set_altar(5);
+  removal.mutable_altar_record()->set_bits(std::string(750, '\xff'));
+  now += 100;
+  host.Send(removal, now);
+  Pump(service, games, now);
+  CHECK(guest.altar_records.size() == 2);
+  CHECK(guest.altar_records.back().bits() == std::string(750, '\xff'));
+  for (Game *game : games) {
+    CHECK(!Killed(*game, 0x10014066));
+    CHECK(Killed(*game, 0x10014067)); // another map's stand
+  }
+  // The guest's proposal that still holds the old kill does not stand it again.
+  now += 100;
+  guest.Propose({{Chalice, {0x10014066}}, {0x18000000, {0x10014067}}}, now);
+  Pump(service, games, now);
+  CHECK(!Killed(host, 0x10014066));
+  return 0;
+}
+
 // Kaniel 2026-10-25 (travel together): a member's team trip goes to the
 // party's other members at once, under the sender's name; not to another
 // party, and nothing is kept.
@@ -4270,6 +4321,8 @@ int main() {
       {"AHitReachesTheOthersAtOnce", AHitReachesTheOthersAtOnce},
       {"AnAltarRecordReachesTheOthersWhole",
        AnAltarRecordReachesTheOthersWhole},
+      {"AChaliceTakenOffStartsTheDungeonsOver",
+       AChaliceTakenOffStartsTheDungeonsOver},
       {"APingReachesTheTeamAtOnce", APingReachesTheTeamAtOnce},
       {"ATeamTripReachesThePartyAtOnce", ATeamTripReachesThePartyAtOnce},
       {"ADuelIsTheServers", ADuelIsTheServers},

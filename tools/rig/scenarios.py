@@ -3964,6 +3964,109 @@ SCENARIOS["chalice-enter-broken"] = {
     "timeout": 300,
 }
 
+def ALTAR_LOOK(when: str, altar: int = 1) -> list[str]:
+    """Everything of a ritual altar's dungeon as flags (a chalice taken off, team altars)."""
+    base = 94000000 + altar * 100000
+    own = (11 + altar) * 100000
+    return [f"log altar look {when}", f"altar-state {altar}", f"altar-record {altar}", "altar-record view",
+            f"flag-list {base + 5000} {base + 5999}", "flag-list 92905000 92905999", "flag-list 9020 9026",
+            f"flag-list {12900000 + own} {12909999 + own}", f"flag-list {52900000 + own} {52909999 + own}",
+            "flag-list 12900000 12909999", "flag-list 52900000 52909999", "flag-list 70000220 70000231",
+            "flag-list 72100300 72100309", "flag-list 72100420 72100429"]
+
+
+# The altar's page with a dungeon on it: Layer One (one row per layer reached), Remove Chalice.
+CHALICE_REMOVE = ["press cross 200", "wait 8", "press down 200", "wait 3", "press cross 200", "wait 5",
+                  "press left 200", "wait 2", "press cross 200", "wait 10"]
+RITUAL_AGAIN = [*[step for _ in range(5) for step in ("press cross 200", "wait 7")],
+                "press left 200", "wait 1", "press cross 200", "wait 20"]
+
+SCENARIOS["chalice-remove-record"] = {
+    "about": "what the game itself changes when a chalice is taken off, after a trip inside (the team's watch off)",
+    "roles": {"host": [START, "godmode", f"travel {HUNTERS_DREAM}", "wait 3", *ALTAR_LOOK("start"),
+                       *CHALICE_ENTER("host"), *ALTAR_LOOK("in the dungeon"), "census 200",
+                       "set-flag 12907810 1", "set-flag 12907811 1", "set-flag 52900010 1",
+                       "wait 3", *ALTAR_LOOK("inside, flags set"),
+                       f"travel {HUNTERS_DREAM}", "wait 15", "expect-map 0x15000000",
+                       *ALTAR_LOOK("back in the Dream"), f"teleport {ALTAR_SPOT}", "wait 2",
+                       *CHALICE_REMOVE, *ALTAR_LOOK("removed"), "wait 8", "press circle 200", "wait 3",
+                       "press circle 200", "wait 3", *ALTAR_LOOK("removed later"),
+                       f"trade-stock {PTHUMERU_CHALICE} 1", f"trade-stock {RITUAL_BLOOD_1} 10",
+                       "trade-stock echoes 20000", f"teleport {ALTAR_SPOT}", "wait 2", *RITUAL_AGAIN,
+                       *ALTAR_LOOK("second ritual"),
+                       *[step for _ in range(3) for step in ("press cross 200", "wait 10")],
+                       f"wait-map {CHALICE_DUNGEON} 180", "wait 10", *ALTAR_LOOK("second dungeon")]},
+    "expect": {"host": [r"altar look second dungeon"]},
+    "settings": {"BB_GAME_MENU_TRACE_IDS": "262000-267999,70002900-70002909",
+                 "BB_RIG_NO_ALTAR_WATCH": "1"},
+    "timeout": 420,
+}
+
+# Kaniel 2026-10-30: a chalice taken off an altar stayed on the teammates' altars, and the same
+# chalice placed again did not start the dungeon over. The host's ritual, both inside; the host
+# kills an enemy and lights a lamp; both back in the Dream; `remover` takes the chalice off; the
+# other's altar empties and its talk stays safe; `remover` places the same chalice again and both
+# enter a fresh dungeon. A chalice taken off clears the altar's flags 94k, 14k0xxxx and 54k0xxxx
+# and takes its object from status 5 to 1 (the game's own, recorded 2026-10-30).
+REMOVE_ENEMY = "0x1002c00d"
+REMOVE_LAMP = 12907810
+# Two players sent to one spot push each other out of the altar's reach (its press goes nowhere):
+# one at the altar at a time, the other here.
+ALTAR_ASIDE = "-17.27 -5.23 -19.38 1.571"
+
+
+def CHALICE_TAKEN_OFF(role: str, remover: str) -> list[str]:
+    other = "host" if remover == "guest" else "guest"
+    inside = ([f"kill {REMOVE_ENEMY}", f"set-flag {REMOVE_LAMP} 1", "wait 5"] if role == "host"
+              else ["wait 5"])
+    trip = [*CHALICE_INSIDE_FIRST(role), *inside, "sync inside", f"travel {HUNTERS_DREAM}", "wait 20",
+            "expect-map 0x15000000", "wait-session 2 120", *ALTAR_LOOK(f"{role} back"), "sync in-dream",
+            f"teleport {ALTAR_SPOT if role == remover else ALTAR_ASIDE}", "wait 2"]
+    if role == remover:
+        again = [f"trade-stock {PTHUMERU_CHALICE} 1", f"trade-stock {RITUAL_BLOOD_1} 10",
+                 "trade-stock echoes 20000", f"teleport {ALTAR_SPOT}", "wait 2", *RITUAL_AGAIN]
+        return [*trip, *CHALICE_REMOVE, "wait 3", f"teleport {ALTAR_ASIDE}", "wait 2", "sync removed",
+                *ALTAR_LOOK(f"{role} took it off"), f"held {PTHUMERU_CHALICE}",
+                "press circle 200", "wait 3", "press circle 200", "wait 3", "sync talked", *again,
+                "log placed again", *ALTAR_LOOK(f"{role} placed it again"), "sync placed",
+                *[step for _ in range(3) for step in ("press cross 200", "wait 10")],
+                f"wait-map {CHALICE_DUNGEON} 180", "wait 10", "wait-members 2 300", "wait 20",
+                *ALTAR_LOOK(f"{role} fresh"), "census 200", f"expect-flag {REMOVE_LAMP} 0",
+                "expect-session 2", "log fresh dungeon"]
+    return [*trip, "sync removed", "wait 5", "expect-flag 94105001 0", *ALTAR_LOOK(f"{role} emptied"),
+            f"expect-held {PTHUMERU_CHALICE} 1 30", "altar-state 1", f"teleport {ALTAR_SPOT}", "wait 2",
+            "log talking to the emptied altar", "press cross 200", "wait 8", "press cross 200", "wait 8",
+            "press cross 200", "wait 10", *ALTAR_LOOK(f"{role} talked"), "press circle 200", "wait 3",
+            "press circle 200", "wait 3", "expect-map 0x15000000", "log the emptied altar is safe",
+            f"teleport {ALTAR_ASIDE}", "wait 2", "sync talked", "sync placed", "wait 10",
+            *ALTAR_LOOK(f"{role} sees it again"), "wait 30", "wait 10",
+            *CHALICE_FROM_OWN_ALTAR(role, hold=False), "wait-members 2 300", "wait 20",
+            *ALTAR_LOOK(f"{role} fresh"), "census 200", f"expect-flag {REMOVE_LAMP} 0",
+            "expect-session 2", "log fresh dungeon"]
+
+
+for _remover in ("host", "guest"):
+    _other = "guest" if _remover == "host" else "host"
+    SCENARIOS[f"chalice-remove-team-{_remover}"] = {
+        "about": f"the {_remover} takes the chalice off a team altar: empty for the {_other} too, "
+                 "and the same chalice placed again starts a fresh dungeon for both",
+        "roles": {role: CHALICE_TAKEN_OFF(role, _remover) for role in ("host", "guest")},
+        "syncs": {name: {"chapter": f"chalice-remove-team-{_remover}", "roles": ["host", "guest"]}
+                  for name in ("inside", "in-dream", "removed", "talked", "placed")},
+        "expect": {
+            _remover: [r"the chalice was taken off altar 1: the altar goes to the team empty",
+                       r"fresh dungeon", rf"census: {REMOVE_ENEMY} hp [1-9]"],
+            _other: [r"took the chalice off altar 1: emptied here too", r"ritual altar 1 emptied \(done",
+                     r"the emptied altar is safe",
+                     r"altar 1 has \w+'s record", r"fresh dungeon",
+                     rf"census: {REMOVE_ENEMY} hp [1-9]"],
+        },
+        "forbid": {role: [r"named no dungeon"] for role in ("host", "guest")},
+        "allow": CRASH_CLEANUP,
+        "settings": {"BB_GAME_MENU_TRACE_IDS": "262000-267999,70002900-70002909"},
+        "timeout": 1500,
+    }
+
 SCENARIOS["chalice-altar-same"] = {
     "about": "the host's ritual, both enter, then twice both go back to the Dream and enter "
              "again; every altar record stays the ritual's in both games",

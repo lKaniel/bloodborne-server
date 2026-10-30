@@ -238,14 +238,19 @@ AltarRepair RepairAltarRecord(std::span<const u8> record) {
     }
     repair.action = AltarRepair::Action::Clear;
     repair.record = EmptyAltarRecord();
-    // The ritual took the chalice the record names (FormData's goods, byte 16).
-    if (record.size() >= 20) {
-        const u32 goods = BigEndianWord(record, 4);
-        if (goods >= 6100 && goods <= 6599) {
-            repair.chalice = goods;
-        }
-    }
+    repair.chalice = AltarRecordChalice(record);
     return repair;
+}
+
+std::optional<u32> AltarRecordChalice(std::span<const u8> record) {
+    if (record.size() < 20) {
+        return std::nullopt;
+    }
+    const u32 goods = BigEndianWord(record, 4);
+    if (goods < 6100 || goods > 6599) {
+        return std::nullopt;
+    }
+    return goods;
 }
 
 std::optional<AltarRecord> StandardAltarRecord(u8 key, std::span<const u8> state) {
@@ -349,6 +354,36 @@ void ChaliceAltarPick::Loaded() {
 
 void ChaliceAltarPick::Reset() {
     *this = {};
+}
+
+TeamAltarTake TakeTeamAltarRecord(std::span<const u8> mine, std::span<const u8> news) {
+    const AltarRecordKind kind = ClassifyAltarRecord(news);
+    if (kind == AltarRecordKind::Broken) {
+        return TeamAltarTake::LeftOut;
+    }
+    if (std::ranges::equal(mine, news)) {
+        return TeamAltarTake::Same;
+    }
+    return kind == AltarRecordKind::Empty ? TeamAltarTake::Clear : TeamAltarTake::Take;
+}
+
+std::vector<s32> AltarRemovals::Observe(const Kinds& kinds, bool own) {
+    std::vector<s32> emptied;
+    for (s32 altar = 0; altar < RitualAltarCount; ++altar) {
+        const auto& now = kinds[altar];
+        if (!now) {
+            continue;
+        }
+        if (own && seen[altar] == AltarRecordKind::Dungeon && now == AltarRecordKind::Empty) {
+            emptied.push_back(altar);
+        }
+        seen[altar] = now;
+    }
+    return emptied;
+}
+
+void AltarRemovals::Reset() {
+    seen = {};
 }
 
 std::optional<s32> ChaliceAltarPick::ForLoad(std::optional<s32> saved) const {

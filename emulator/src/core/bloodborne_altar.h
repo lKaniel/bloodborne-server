@@ -86,6 +86,31 @@ struct AltarShareFrame {
 };
 bool SharesAltarRecord(const AltarShareFrame& frame);
 
+// What a teammate's record for one of this game's altars (`mine` as it is) does (Kaniel
+// 2026-10-30: a chalice taken off an altar stayed on the teammates' altars, and the same chalice
+// placed again changed nothing for them, their altar had that record already): a dungeon of the
+// game's files goes in, an empty one (the chalice taken off) clears the altar, the same record
+// changes nothing, anything else is left out.
+enum class TeamAltarTake : u8 { LeftOut, Same, Take, Clear };
+TeamAltarTake TakeTeamAltarRecord(std::span<const u8> mine, std::span<const u8> news);
+
+// The altars this player took a chalice off: a record that named a dungeon is empty, seen while
+// the player stands in the Hunter's Dream (SharesAltarRecord: not a load's, not this game's own
+// write of a teammate's record). The game's flags are read each second.
+class AltarRemovals {
+public:
+    // Each altar's record as read now (none when not readable).
+    using Kinds = std::array<std::optional<AltarRecordKind>, RitualAltarCount>;
+    // The altars emptied since the last look, when `own` (the frame shares); either way the look
+    // is kept.
+    std::vector<s32> Observe(const Kinds& kinds, bool own);
+    // Another session or character.
+    void Reset();
+
+private:
+    Kinds seen{};
+};
+
 // What a loaded save's altar record needs (Kaniel 2026-10-24: repair the altars the merge broke).
 // A broken record of a standard chalice's dungeon is made again whole; any other broken one is
 // cleared (no dungeon, as the other altars), and the chalice it names (its goods, 6100-6599) goes
@@ -100,6 +125,10 @@ struct AltarRepair {
     std::optional<u32> chalice; // the goods to give back (Clear)
 };
 AltarRepair RepairAltarRecord(std::span<const u8> record);
+
+// The chalice a record names (FormData's goods, byte 16; 6100-6599): the ritual took it from the
+// player, so it goes back when the dungeon ends without that player taking it off.
+std::optional<u32> AltarRecordChalice(std::span<const u8> record);
 
 // The record of the story chalice dungeon of standard key `key` as a ritual writes it, its state
 // (flags 5000-5999) taken from `state` when that is a whole record, and an altar's with no
