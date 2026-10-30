@@ -1748,6 +1748,23 @@ void ClearDollLevelUpFlagAfterHerMenu() {
              DollLevelUpFlag, asked ? " (her talk asked for her blessing)" : "");
 }
 
+// See DollBlessingStepFor: every frame, a party guest's own steps of her blessing.
+void FinishGuestDollBlessing() {
+    if (!party_controller || GetLocalPlayer() < 0x10000) {
+        return;
+    }
+    const bool guest = IsPartyGuestRole();
+    const bool blessing_on = EventFlagOn(DollBlessingFlag);
+    for (const s32 step : DollBlessingSteps) {
+        if (const auto on = DollBlessingStepFor(guest, blessing_on, EventFlagOn(step))) {
+            reinterpret_cast<bool PS4_SYSV_ABI (*)(u64, s32, bool)>(
+                image_base + PartyGhostSetEventFlagOffset)(0, step, *on);
+            LOG_INFO(Debug, "Bloodborne party: the Doll's blessing step {} {} in a guest's game",
+                     step, *on ? "set" : "cleared");
+        }
+    }
+}
+
 // See ImpurityBonusChange: every second, the Impurity rune's HP bonus put on (through the
 // player's own add-effect virtual, as event 9035's 2004:8) or taken off.
 void KeepImpurityBonus(bool in_session) {
@@ -1998,6 +2015,7 @@ void TickPlayersOnThisMap() {
     KeepOwnedWeaponFlagsOwn();
     KeepHeadstoneFlagsOwn();
     ClearDollLevelUpFlagAfterHerMenu();
+    FinishGuestDollBlessing();
     static RecreateAfterJoin recreate_after_join;
     if (recreate_after_join.Tick(IsPartyGuestRole(), in_session,
                                  in_session ? OtherSessionMembers().size() : 0,
