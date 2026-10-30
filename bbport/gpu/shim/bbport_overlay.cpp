@@ -28,6 +28,7 @@
 #include "bbport_coop_art.h"
 #include "bbport_key_guide.h"
 #include "bbport_menu_focus.h"
+#include "bbport_overlay_input.h"
 #include "bbport_map_3d.h"
 #include "bbport_map_charts.h"
 #include "bbport_pad_rebind.h"
@@ -7314,6 +7315,17 @@ void Draw(ImVec2 display) {
 
 } // namespace TeamTravel
 
+/// What is open over the game, for where the input goes (bbport_overlay_input.h).
+BbOverlayInput::Screens OpenScreens() {
+    return {.menu = menu_open,
+            .quit = quit_open,
+            .prompt = prompt_active,
+            .team = Team::open,
+            .joining = Joining::open,
+            .map = Map::open,
+            .travel = TeamTravel::Asking()};
+}
+
 /// BB_MENU_KEYS_FILE=<file> (scripted tests): tokens toggle up down left right enter back l1 r1
 /// (map: M, the map screen; circle, square, triangle), consumed when the file appears (it is removed), one
 /// key press per frame.
@@ -7604,8 +7616,9 @@ bool HandleEvent(const SDL_Event& event) {
     }
     ImGuiIO& io = ImGui::GetIO();
     const bool menu_or_quit = menu_open || quit_open;
-    // The team screen takes the input too (it has no Circle / Escape: its buttons decide).
-    const bool is_open = menu_or_quit || Team::open || Map::open;
+    // The team screen takes the input too (it has no Circle / Escape: its buttons decide), and the
+    // travel together question (Kaniel's players 2026-10-30: it held the game but took nothing).
+    const bool is_open = BbOverlayInput::TakesEvents(OpenScreens());
     switch (event.type) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
@@ -7653,6 +7666,12 @@ bool HandleEvent(const SDL_Event& event) {
             return true;
         }
         if (!is_open) {
+            // A key let go after its screen shut (Cross answers the travel question on its press):
+            // ImGui hears the release too, or it keeps the key down and the next press never counts
+            // (it drops a release it already has).
+            if (const ImGuiKey key = KeyFromSdl(event.key.key); !down && key != ImGuiKey_None) {
+                io.AddKeyEvent(key, false);
+            }
             return false;
         }
         io.AddKeyEvent(ImGuiMod_Ctrl, (event.key.mod & SDL_KMOD_CTRL) != 0);
@@ -7687,6 +7706,9 @@ bool HandleEvent(const SDL_Event& event) {
             return true;
         }
         if (!is_open) {
+            if (const ImGuiKey key = KeyFromGamepad(button); !down && key != ImGuiKey_None) {
+                io.AddKeyEvent(key, false); // as a key's release above
+            }
             return false;
         }
         if (down && button == SDL_GAMEPAD_BUTTON_EAST && menu_or_quit) { // Circle: back to the game
@@ -7718,13 +7740,16 @@ bool HandleEvent(const SDL_Event& event) {
     }
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP: {
-        if (!is_open) {
-            return false;
-        }
         const int button = event.button.button == SDL_BUTTON_LEFT    ? 0
                            : event.button.button == SDL_BUTTON_RIGHT  ? 1
                            : event.button.button == SDL_BUTTON_MIDDLE ? 2
                                                                       : -1;
+        if (!is_open) {
+            if (button >= 0 && event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                io.AddMouseButtonEvent(button, false); // as a key's release above
+            }
+            return false;
+        }
         if (button >= 0) {
             io.AddMouseButtonEvent(button, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
         }
@@ -7787,7 +7812,11 @@ bool Visible() {
     const bool skip_vote = initialized && SkipVote::Read();
     const bool invasion = initialized && Invasion::Read();
     const bool rot = initialized && Party::ReadRot();
+    const bool was_asking = TeamTravel::Asking();
     const bool team_travel = initialized && TeamTravel::Read();
+    if (TeamTravel::Asking() && !was_asking) {
+        SyncMousePos(); // its buttons take the mouse from where it is now
+    }
     const bool was_team = Team::open;
     Team::open = initialized && bbcoop_team_screen() != 0 && bbcoop_lobby_view(&Team::lobby) != 0;
     if (!Team::open) {
@@ -7822,13 +7851,12 @@ bool Visible() {
 bool MenuOpen() {
     // Kaniel 2026-10-29: the team screen's buttons take the mouse too ("mouse hover not working
     // sometimes"): fullscreen hid the cursor over them.
-    return menu_open || quit_open || Team::open;
+    return BbOverlayInput::ShowsCursor(OpenScreens());
 }
 
 bool CapturesInput() {
     // The text dialog too: keys typed into it (Backspace is the touchpad) stay out of the game.
-    return menu_open || quit_open || prompt_active || Team::open || Joining::open || Map::open ||
-           TeamTravel::Asking();
+    return BbOverlayInput::HoldsGame(OpenScreens());
 }
 
 void Tick() {
