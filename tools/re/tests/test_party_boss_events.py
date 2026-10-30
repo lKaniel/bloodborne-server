@@ -413,6 +413,29 @@ class GuestsUseTheYahargulMummy(unittest.TestCase):
         self.assertEqual(read_events(patched)[12800430][0], (2000, 2, bytes(4)))
         self.assertEqual(count, 1)
 
+    def test_the_button_needs_no_point_on_the_object(self):
+        """Row 2800020 sits on the object's dummy poly 200 with a 60 degree sector; on a guest's
+        game the press never counts, as on the host's without the poly (rig 2026-10-30). Row 6031
+        (Inspect, 2 m, any side) has neither; the rest of the event stays."""
+        original = build_emevd({12800430: self.MUMMY})
+        edits = []
+        patched, count = tool.use_plain_action_buttons(
+            original, tool.PLAIN_ACTION_BUTTONS.get(self.YAHARGUL, {}), edits)
+        events, before = read_events(patched)[12800430], read_events(original)[12800430]
+        self.assertEqual(events[1], (3, 24, struct.pack('<bxxxii', 0, 6031, 2801500)))
+        self.assertEqual(events[0], before[0])
+        self.assertEqual(events[2:], before[2:])
+        self.assertEqual(count, 1)
+        self.assertEqual([(edit['event'], edit['instruction']) for edit in edits],
+                         [(12800430, 1)])
+
+    def test_another_row_stops_the_patch(self):
+        mummy = list(self.MUMMY)
+        mummy[1] = (3, 24, struct.pack('<bxxxii', 0, 2800021, 2801500))
+        with self.assertRaises(tool.EventPatchError):
+            tool.use_plain_action_buttons(build_emevd({12800430: mummy}),
+                                          tool.PLAIN_ACTION_BUTTONS[self.YAHARGUL])
+
 
 class ChaliceBossesUnlockEachPlayersShop(unittest.TestCase):
     """seixas 2026-10-27: a team beat the Keeper of the Old Lords in the Central Pthumeru Chalice
