@@ -351,6 +351,36 @@ void ChaliceAltarPick::Reset() {
     *this = {};
 }
 
+TeamAltarTake TakeTeamAltarRecord(std::span<const u8> mine, std::span<const u8> news) {
+    const AltarRecordKind kind = ClassifyAltarRecord(news);
+    if (kind == AltarRecordKind::Broken) {
+        return TeamAltarTake::LeftOut;
+    }
+    if (std::ranges::equal(mine, news)) {
+        return TeamAltarTake::Same;
+    }
+    return kind == AltarRecordKind::Empty ? TeamAltarTake::Clear : TeamAltarTake::Take;
+}
+
+std::vector<s32> AltarRemovals::Observe(const Kinds& kinds, bool own) {
+    std::vector<s32> emptied;
+    for (s32 altar = 0; altar < RitualAltarCount; ++altar) {
+        const auto& now = kinds[altar];
+        if (!now) {
+            continue;
+        }
+        if (own && seen[altar] == AltarRecordKind::Dungeon && now == AltarRecordKind::Empty) {
+            emptied.push_back(altar);
+        }
+        seen[altar] = now;
+    }
+    return emptied;
+}
+
+void AltarRemovals::Reset() {
+    seen = {};
+}
+
 std::optional<s32> ChaliceAltarPick::ForLoad(std::optional<s32> saved) const {
     if (!picked || picked == saved) {
         return std::nullopt;

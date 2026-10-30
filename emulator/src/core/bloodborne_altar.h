@@ -86,6 +86,31 @@ struct AltarShareFrame {
 };
 bool SharesAltarRecord(const AltarShareFrame& frame);
 
+// What a teammate's record for one of this game's altars (`mine` as it is) does (Kaniel
+// 2026-10-30: a chalice taken off an altar stayed on the teammates' altars, and the same chalice
+// placed again changed nothing for them, their altar had that record already): a dungeon of the
+// game's files goes in, an empty one (the chalice taken off) clears the altar, the same record
+// changes nothing, anything else is left out.
+enum class TeamAltarTake : u8 { LeftOut, Same, Take, Clear };
+TeamAltarTake TakeTeamAltarRecord(std::span<const u8> mine, std::span<const u8> news);
+
+// The altars this player took a chalice off: a record that named a dungeon is empty, seen while
+// the player stands in the Hunter's Dream (SharesAltarRecord: not a load's, not this game's own
+// write of a teammate's record). The game's flags are read each second.
+class AltarRemovals {
+public:
+    // Each altar's record as read now (none when not readable).
+    using Kinds = std::array<std::optional<AltarRecordKind>, RitualAltarCount>;
+    // The altars emptied since the last look, when `own` (the frame shares); either way the look
+    // is kept.
+    std::vector<s32> Observe(const Kinds& kinds, bool own);
+    // Another session or character.
+    void Reset();
+
+private:
+    Kinds seen{};
+};
+
 // What a loaded save's altar record needs (Kaniel 2026-10-24: repair the altars the merge broke).
 // A broken record of a standard chalice's dungeon is made again whole; any other broken one is
 // cleared (no dungeon, as the other altars), and the chalice it names (its goods, 6100-6599) goes

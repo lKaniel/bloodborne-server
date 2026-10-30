@@ -443,3 +443,52 @@ TEST(BloodborneAltar, ALoadsOwnAltarIsNoPick) {
     pick.Reset(); // another session or character
     EXPECT_EQ(pick.ForLoad(6), std::nullopt);
 }
+
+// Kaniel 2026-10-30: a chalice taken off an altar stayed on the teammates' altars, and the same
+// chalice placed again there changed nothing for them (their altar had that record already).
+// An emptied altar goes to the team like a ritual's dungeon.
+TEST(BloodborneAltar, ATeammatesAltarTakesADungeonOrItsRemoval) {
+    const AltarRecord empty = EmptyAltarRecord();
+    EXPECT_EQ(TakeTeamAltarRecord(empty, Pthumeru), TeamAltarTake::Take);
+    EXPECT_EQ(TakeTeamAltarRecord(Pthumeru, Pthumeru), TeamAltarTake::Same);
+    EXPECT_EQ(TakeTeamAltarRecord(Pthumeru, empty), TeamAltarTake::Clear);
+    EXPECT_EQ(TakeTeamAltarRecord(Merged, empty), TeamAltarTake::Clear) << "broken: cleared too";
+    EXPECT_EQ(TakeTeamAltarRecord(empty, empty), TeamAltarTake::Same);
+    EXPECT_EQ(TakeTeamAltarRecord(Pthumeru, Merged), TeamAltarTake::LeftOut);
+    EXPECT_EQ(TakeTeamAltarRecord(Pthumeru, RecordStarting({0x1D, 0x0F, 0x5A, 0x00})),
+              TeamAltarTake::LeftOut)
+        << "no such dungeon";
+}
+
+// The remover's own game: an altar whose record went from a dungeon to none while this player
+// stands in the Dream (SharesAltarRecord) had its chalice taken off. A load's, a repair's or a
+// teammate's record written here is no removal of this player's.
+TEST(BloodborneAltar, AnAltarEmptiedInTheDreamIsARemoval) {
+    using Kinds = AltarRemovals::Kinds;
+    Kinds before{};
+    before[5] = AltarRecordKind::Dungeon;
+    before[2] = AltarRecordKind::Empty;
+    Kinds after = before;
+    after[5] = AltarRecordKind::Empty;
+
+    AltarRemovals removals;
+    EXPECT_TRUE(removals.Observe(before, true).empty()) << "first look: nothing seen before";
+    EXPECT_TRUE(removals.Observe(before, true).empty());
+    EXPECT_EQ(removals.Observe(after, true), std::vector<s32>{5});
+    EXPECT_TRUE(removals.Observe(after, true).empty()) << "once";
+
+    AltarRemovals loading;
+    loading.Observe(before, true);
+    EXPECT_TRUE(loading.Observe(after, false).empty()) << "a load or this game's own write";
+    EXPECT_TRUE(loading.Observe(after, true).empty()) << "seen already";
+
+    AltarRemovals unreadable;
+    unreadable.Observe(before, true);
+    EXPECT_TRUE(unreadable.Observe(Kinds{}, true).empty()) << "flags not readable";
+    EXPECT_EQ(unreadable.Observe(after, true), std::vector<s32>{5}) << "the last readable kept";
+
+    AltarRemovals reset;
+    reset.Observe(before, true);
+    reset.Reset(); // another session or character
+    EXPECT_TRUE(reset.Observe(after, true).empty());
+}

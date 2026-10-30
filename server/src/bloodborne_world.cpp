@@ -1137,6 +1137,22 @@ void Service::Take(Member& member, const bbcoop::Envelope& envelope, qint64 now_
                               .arg(world.name, QString::fromStdString(member.name))
                               .arg(envelope.altar_record().altar()));
         SendToOthers(world, member, relayed, now_ms);
+        // Kaniel 2026-10-30: an empty record is a chalice taken off its altar (an altar holds
+        // one, so every new dungeon comes after one). The chalice dungeons are all map
+        // 0x1D000000 to the log: they start over, or the same chalice placed again builds its
+        // dungeon with the old kills standing.
+        const std::string& bits = envelope.altar_record().bits();
+        if (bits.size() >= 4 &&
+            std::all_of(bits.begin(), bits.begin() + 4, [](char byte) { return byte == '\xff'; })) {
+            constexpr std::uint32_t ChaliceDungeonMap = 0x1D000000;
+            ResetMap(world, ChaliceDungeonMap, now_ms);
+            result.log.append(
+                QStringLiteral("party world %1: altar %2 emptied by %3, the chalice dungeons start "
+                               "over")
+                    .arg(world.name)
+                    .arg(envelope.altar_record().altar())
+                    .arg(QString::fromStdString(member.name)));
+        }
         break;
     }
     case bbcoop::Envelope::kPing: {
