@@ -1074,6 +1074,9 @@ bool ClearsDollLevelUpFlagOnHerBlessing(bool party_configured, bool others_talk,
 // new value of a step, or nullopt.
 constexpr std::array<s32, 2> DollBlessingSteps{72100101, 72100102};
 bool BeginsDollBlessing(bool level_up_on);
+// Her state 6 runs talk command 71 (the talk-ended notice) right before state 11; the rig showed
+// state 11's request for 72100100 never reached the flag hook, so command 71 ends her blessing.
+bool EndsDollBlessing(s32 talk_command);
 std::optional<bool> DollBlessingStepFor(bool party_guest, bool begin_asked, bool end_asked,
                                         bool step_on);
 // The other player's "set this event flag" (0x017C0570) and "event ended" (0x017C0901) messages

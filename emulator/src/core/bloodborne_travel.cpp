@@ -389,9 +389,14 @@ void PS4_SYSV_ABI RestInsteadOfLampTravel(u64, GuestRegisterSnapshot* registers)
     }
     // See ClearsDollLevelUpFlagOnHerBlessing: cleared by the next tick
     // (ClearDollLevelUpFlagAfterHerMenu), not inside her talk's flag write.
-    if (ClearsDollLevelUpFlagOnHerBlessing(party_controller.has_value(),
-                                           esd_talker >= 0x10000 && esd_talker != GetLocalPlayer(),
-                                           flag)) {
+    // The talker is the Doll here, not a player: another player's talk is one of theirs.
+    if (ClearsDollLevelUpFlagOnHerBlessing(
+            party_controller.has_value(),
+            esd_talker >= 0x10000 && std::ranges::any_of(OtherPlayers(),
+                                                         [](const OtherPlayer& other) {
+                                                             return other.character == esd_talker;
+                                                         }),
+            flag)) {
         (BeginsDollBlessing(EventFlagOn(DollLevelUpFlag)) ? doll_blessing_asked
                                                           : doll_blessing_end_asked)
             .store(true);
@@ -543,6 +548,10 @@ void PS4_SYSV_ABI NoteEsdAnswer(u64, GuestRegisterSnapshot* registers) {
 }
 
 void PS4_SYSV_ABI NoteTalkCommand(u64, GuestRegisterSnapshot* registers) {
+    // See EndsDollBlessing (only a guest's own blessing steps are ever put off by it).
+    if (EndsDollBlessing(static_cast<s32>(registers->rax))) {
+        doll_blessing_end_asked.store(true);
+    }
     if (!esd_answers_wanted.load(std::memory_order_relaxed)) {
         return;
     }
