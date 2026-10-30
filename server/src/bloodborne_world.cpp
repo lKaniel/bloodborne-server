@@ -2359,6 +2359,9 @@ void Service::OnTeamRequest(Member& member, const bbcoop::TeamRequest& said, qin
         SendTo(member, envelope, now_ms);
     }
     PutAside(outcome.forgotten_lines, QStringLiteral("forgotten"), result);
+    for (const std::string& id : outcome.lamps_reset) {
+        ResetLamps(id, result);
+    }
     if (outcome.changed) {
         StoreWorldList(result);
     }
@@ -2912,6 +2915,43 @@ void Service::PutAside(const std::vector<bbcoop::TeamWorldInfo>& lines, const QS
         result.log.append(QStringLiteral("world list: world %1 %2, its folder goes to %3")
                               .arg(QString::fromStdString(id), why, aside));
     }
+}
+
+void Service::ResetLamps(const std::string& id, Result& result) {
+    const QString name = FolderOf(QByteArray::fromStdString(TeamLobby::PartyOf(id)));
+    const auto cached = worlds.find(name);
+    std::optional<bbcoop::TeamWorld> stored;
+    if (cached != worlds.end()) {
+        stored = TeamWorldOf(cached->second);
+    } else if (!folder.isEmpty()) {
+        if (writer->Moving(folder, name)) {
+            writer->Drain();
+        }
+        stored = LoadTeamWorld(QDir{QDir{folder}.filePath(name)});
+    }
+    if (!stored) {
+        result.log.append(
+            QStringLiteral("team world %1: no lamps to reset (no world yet)").arg(name));
+        return;
+    }
+    bbcoop::TeamWorld reset = *stored;
+    reset.clear_on();
+    for (const s32 flag : stored->on()) {
+        if (!LampResetClears(flag)) {
+            reset.add_on(flag);
+        }
+    }
+    reset.set_version(stored->version() + 1);
+    if (cached != worlds.end()) {
+        cached->second.team_world = reset;
+    }
+    if (writer) {
+        writer->SaveTeamWorld(QDir{folder}.filePath(name), reset);
+    }
+    result.log.append(QStringLiteral("team world %1: its lamps reset (%2 flags off, version %3)")
+                          .arg(name)
+                          .arg(stored->on_size() - reset.on_size())
+                          .arg(reset.version()));
 }
 
 namespace {

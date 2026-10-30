@@ -3143,7 +3143,7 @@ void MenuHint(ImDrawList* draw, ImVec2 win, ImVec2 size, float y, bool leader_ho
 
 /// Kaniel 2026-10-17: the world list, as the game's Load Game lists its saves: one row per world
 /// of the server's (and a new one first), the d-pad moves, Cross picks, Triangle forgets (pressed
-/// twice), Circle goes back. Only the team's leader (or a player in no team yet: the team it makes
+/// twice), Square resets its lamps (pressed twice; Provi 2026-10-29), Circle goes back. Only the team's leader (or a player in no team yet: the team it makes
 /// takes the pick) opens it.
 struct WorldPicker {
     bool open = false;
@@ -3152,6 +3152,8 @@ struct WorldPicker {
     bool moved = false; // the player moved the focus (else it follows the chosen world)
     std::string armed; // the world Triangle asked about, and when
     double armed_at = 0.0;
+    std::string reset_armed; // the world Square asked about, and when
+    double reset_armed_at = 0.0;
 };
 WorldPicker picker;
 
@@ -3401,6 +3403,7 @@ void OpenWorldPicker() {
     picker.top = 0;
     picker.moved = false;
     picker.armed.clear();
+    picker.reset_armed.clear();
 }
 
 /// The list over the whole screen (the team screen's wall behind it).
@@ -3429,6 +3432,7 @@ void DrawWorldPicker(ImDrawList* draw, ImVec2 win, ImVec2 size) {
     bool choose = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) ||
                   ImGui::IsKeyPressed(ImGuiKey_Space, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
     bool forget = ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
+    bool reset = ImGui::IsKeyPressed(ImGuiKey_R, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false);
 
     ImGui::PushFont(MenuArt::Font(), 40.0f);
     const char* title = T("Choose a World", "Выбор мира");
@@ -3543,12 +3547,14 @@ void DrawWorldPicker(ImDrawList* draw, ImVec2 win, ImVec2 size) {
     }
     ImGui::PopFont();
 
-    // Back and Forget for the mouse too; Forget asks first.
+    // Reset lamps, Forget and Back for the mouse too; Reset lamps and Forget ask first.
     const bbcoop_lobby_world* focused_world = picker.row > 0 ? &lobby.worlds[picker.row - 1] : nullptr;
     const bool armed = focused_world && picker.armed == focused_world->id && ImGui::GetTime() - picker.armed_at < 4.0;
+    const bool reset_armed = focused_world && picker.reset_armed == focused_world->id &&
+                             ImGui::GetTime() - picker.reset_armed_at < 4.0;
     ImGui::PushFont(MenuArt::Font(), 22.0f);
     const float bw = S(300.0f), bh = S(50.0f), gap = S(24.0f), by = win.y + size.y - S(176.0f);
-    float bx = win.x + (size.x - (2 * bw + gap)) * 0.5f;
+    float bx = win.x + (size.x - (3 * bw + 2 * gap)) * 0.5f;
     const auto plain_button = [&](const char* id, const char* label, ImVec2 at, bool enabled) {
         ImGui::SetCursorScreenPos(at);
         const bool hit = ImGui::InvisibleButton(id, ImVec2(bw, bh)) && enabled;
@@ -3565,6 +3571,12 @@ void DrawWorldPicker(ImDrawList* draw, ImVec2 win, ImVec2 size) {
                       label);
         return hit;
     };
+    if (plain_button("##reset", reset_armed ? T("Reset lamps? Press again", "Сбросить фонари? Нажмите ещё раз")
+                                            : T("Reset lamps", "Сбросить фонари"),
+                     ImVec2(bx, by), focused_world && !focused_world->busy)) {
+        reset = true;
+    }
+    bx += bw + gap;
     if (plain_button("##forget", armed ? T("Forget it? Press again", "Забыть? Нажмите ещё раз")
                                        : T("Forget this world", "Забыть этот мир"),
                      ImVec2(bx, by), focused_world && !focused_world->busy)) {
@@ -3579,7 +3591,9 @@ void DrawWorldPicker(ImDrawList* draw, ImVec2 win, ImVec2 size) {
     const char* line = lobby.notice[0] ? lobby.notice
                        : armed ? T("Forgotten worlds go off the list; the server keeps their files aside.",
                                    "Забытые миры исчезают из списка; сервер сохраняет их файлы отдельно.")
-                               : nullptr;
+                       : reset_armed ? T("Every lamp of this world goes out for every hunter; the rest stays.",
+                                         "Все фонари этого мира погаснут для всех охотников; остальное останется.")
+                                     : nullptr;
     if (line) {
         ts = ImGui::CalcTextSize(line);
         draw->AddText(ImVec2(win.x + (size.x - ts.x) * 0.5f, by + bh + S(20.0f)),
@@ -3587,19 +3601,30 @@ void DrawWorldPicker(ImDrawList* draw, ImVec2 win, ImVec2 size) {
     }
     const Keys::Hint keys[] = {{"UpDown", "Arrows", T("Move", "Выбор")},
                                {"Cross", "Enter", T("Choose", "Выбрать")},
+                               {"Square", "R", T("Reset lamps", "Сбросить фонари")},
                                {"Triangle", "Delete", T("Forget", "Забыть")},
                                {"Circle", "Esc", T("Back", "Назад")}};
     Keys::Guide(draw, keys, win.x + S(36.0f), win.x + size.x - S(36.0f),
                 win.y + size.y - S(BbKeyGuide::BottomClearance));
     ImGui::PopFont();
 
-    if (forget && focused_world && !focused_world->busy) {
+    if (reset && focused_world && !focused_world->busy) {
+        if (reset_armed) {
+            picker.reset_armed.clear();
+            bbcoop_lobby_request(BBCOOP_TEAM_RESET_LAMPS, focused_world->id);
+        } else {
+            picker.reset_armed = focused_world->id;
+            picker.reset_armed_at = ImGui::GetTime();
+            picker.armed.clear();
+        }
+    } else if (forget && focused_world && !focused_world->busy) {
         if (armed) {
             picker.armed.clear();
             bbcoop_lobby_request(BBCOOP_TEAM_FORGET_WORLD, focused_world->id);
         } else {
             picker.armed = focused_world->id;
             picker.armed_at = ImGui::GetTime();
+            picker.reset_armed.clear();
         }
     } else if (choose && !(focused_world && focused_world->busy)) {
         bbcoop_lobby_request(BBCOOP_TEAM_WORLD, focused_world ? focused_world->id : "");

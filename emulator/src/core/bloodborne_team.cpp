@@ -244,6 +244,7 @@ bbcoop::TeamRequest TeamMenuRequest(bbcoop::TeamRequest::Action action, const st
         break;
     case Action::WORLD:
     case Action::FORGET_WORLD:
+    case Action::RESET_LAMPS:
         request.set_world(id);
         break;
     case Action::JOIN_CODE: {

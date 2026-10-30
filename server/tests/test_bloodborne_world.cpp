@@ -2268,6 +2268,65 @@ int AForgottenWorldsFolderIsPutAside() {
   return 0;
 }
 
+// Provi 2026-10-29: a leader resets a world's lamps in the picker: its team
+// world loses every lamp's flags (a version up), the rest stays, and the one
+// before is kept among the backups.
+int AWorldsLampsAreReset() {
+  QTemporaryDir dir;
+  CHECK(dir.isValid());
+  qint64 now = 1'000'000;
+  Service service{dir.path()};
+  service.Load(now);
+  Game a{1000, "aa", 11};
+  a.claims_host = true;
+  a.LobbyHello(false, now);
+  Pump(service, {&a}, now);
+  a.Team(bbcoop::TeamRequest::CREATE, now);
+  a.Team(bbcoop::TeamRequest::READY, now, {}, {}, 1);
+  a.Team(bbcoop::TeamRequest::START, now);
+  Pump(service, {&a}, now);
+  const bbcoop::TeamStart go = a.starts.at(0);
+  a.Hello(now, QByteArray::fromStdString(go.party()));
+  a.LobbyHello(true, now);
+  Pump(service, {&a}, now);
+  bbcoop::Envelope report;
+  for (const s32 flag : {1000, 12117810, 12117811, 12401800, 72110200}) {
+    report.mutable_team_world()->add_on(flag);
+  }
+  report.mutable_team_world()->add_blocks(1);
+  now += 100;
+  a.Send(report, now);
+  Pump(service, {&a}, now);
+  CHECK(a.lobby.worlds_size() == 1 && a.lobby.worlds(0).lamps() == 1);
+  bbcoop::Envelope reset;
+  reset.mutable_team_request()->set_action(bbcoop::TeamRequest::RESET_LAMPS);
+  reset.mutable_team_request()->set_world(go.world());
+  a.Send(reset, now);
+  Pump(service, {&a}, now);
+  CHECK(!a.lobby.notice().empty()); // played now
+  service.Forget(a.endpoint);
+  Game a2{1002, "aa", 12};
+  a2.LobbyHello(false, now);
+  Pump(service, {&a2}, now);
+  a2.Team(bbcoop::TeamRequest::CREATE, now);
+  Pump(service, {&a2}, now);
+  a2.Send(reset, now);
+  Pump(service, {&a2}, now);
+  service.Drain();
+  CHECK(a2.lobby.notice().empty());
+  CHECK(a2.lobby.worlds_size() == 1 && a2.lobby.worlds(0).lamps() == 0);
+  const QString folder = FolderOfKey(dir.path(), go.party());
+  QFile file{QDir{folder}.filePath("team_world.pb")};
+  CHECK(file.open(QIODevice::ReadOnly));
+  const QByteArray bytes = file.readAll();
+  bbcoop::TeamWorld stored;
+  CHECK(stored.ParseFromArray(bytes.constData(), static_cast<int>(bytes.size())));
+  CHECK(stored.on_size() == 2 && stored.on(0) == 1000 && stored.on(1) == 12401800);
+  CHECK(stored.version() == 2);
+  CHECK(QFile::exists(QDir{folder}.filePath("team_world.pb.1")));
+  return 0;
+}
+
 // Phase 7: the link relays only inside a team, so the service says each link's
 // party.
 int EachLinksPartyIsKnownAfterItsHello() {
@@ -4157,6 +4216,7 @@ int main() {
       {"TheWorldsOfTheOldTeamsAreOnTheList",
        TheWorldsOfTheOldTeamsAreOnTheList},
       {"AForgottenWorldsFolderIsPutAside", AForgottenWorldsFolderIsPutAside},
+      {"AWorldsLampsAreReset", AWorldsLampsAreReset},
       {"EachLinksPartyIsKnownAfterItsHello",
        EachLinksPartyIsKnownAfterItsHello},
       {"AMembersNextRunResumesWhereItWas", AMembersNextRunResumesWhereItWas},
