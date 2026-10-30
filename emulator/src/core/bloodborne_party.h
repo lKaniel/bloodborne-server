@@ -1053,6 +1053,12 @@ std::vector<s32> LightRequestsToClear(u32 packed_map, const std::function<bool(s
 // open while a map loads, so a 6700 on then is stuck: cleared as the map loads (in a party).
 constexpr s32 DollLevelUpFlag = 6700;
 bool ClearsDollLevelUpFlag(bool party_configured, bool flag_on);
+// Kaniel 2026-10-30: a guest's 6700 stayed on after her level-up menu closed (only the next map
+// load cleared it), so a second "Level Up" in the same Dream visit opened no menu. Her talk sets
+// her blessing flag (72100100, the kneel of m21_00 12100112) only once the menu has closed: 6700
+// on with it on is off at once (in a party).
+constexpr s32 DollBlessingFlag = 72100100;
+bool ClearsDollLevelUpFlagAfterHerMenu(bool party_configured, bool level_up_on, bool blessing_on);
 // The other player's "set this event flag" (0x017C0570) and "event ended" (0x017C0901) messages
 // leave these flags and events alone in a party: what one player received is not given to the
 // other (the Hunter's Dream messengers' gift events and flags, 12101020-12101029, and the
