@@ -659,6 +659,7 @@ void PlayGuestAsHost(bool in_session);
 void TurnOffMultiplayerWalls(bool in_session);
 u64 FindLoadedParam(std::string_view type);
 void KeepGuestFullHp();
+void HidePhantomGlow();
 void MakeEnemiesHarder();
 // Kaniel 2026-10-25, the host rules (bloodborne_host_rules.h): this launcher's own, and the ones
 // this game plays by (its team's while in one, else its own).

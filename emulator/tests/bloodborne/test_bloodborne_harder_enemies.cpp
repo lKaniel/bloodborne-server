@@ -47,6 +47,32 @@ void Set(std::vector<u8>& param, std::size_t row, std::size_t row_size, u64 fiel
 
 } // namespace
 
+// Kaniel 2026-10-25: the phantom's glow is row 272's looped effect; the other roles' rows stay.
+TEST(BloodbornePhantomGlow, TakesOnlyTheGlowsEffectOut) {
+    constexpr std::size_t RowSize = 0x40;
+    auto param = MakeParam("SP_EFFECT_VFX_PARAM_ST", RowSize, {189, 272, 276});
+    Set<s32>(param, 0, RowSize, SpEffectVfxMidstSfxOffset, 300);
+    Set<s32>(param, 1, RowSize, SpEffectVfxMidstSfxOffset, 211);
+    Set<s32>(param, 2, RowSize, SpEffectVfxMidstSfxOffset, 212);
+    Set<s32>(param, 1, RowSize, 0x24, 203); // the dummy poly stays
+    EXPECT_EQ(RemovePhantomGlow(param), std::optional<s32>{211});
+    EXPECT_EQ(Get<s32>(param, 1, RowSize, SpEffectVfxMidstSfxOffset), -1);
+    EXPECT_EQ(Get<s32>(param, 1, RowSize, 0x24), 203);
+    EXPECT_EQ(Get<s32>(param, 0, RowSize, SpEffectVfxMidstSfxOffset), 300);
+    EXPECT_EQ(Get<s32>(param, 2, RowSize, SpEffectVfxMidstSfxOffset), 212);
+    EXPECT_EQ(RemovePhantomGlow(param), std::nullopt) << "already out";
+}
+
+TEST(BloodbornePhantomGlow, LeavesOtherTablesAlone) {
+    constexpr std::size_t RowSize = 0x40;
+    auto other = MakeParam("SP_EFFECT_PARAM_ST", RowSize, {272});
+    Set<s32>(other, 0, RowSize, SpEffectVfxMidstSfxOffset, 211);
+    EXPECT_EQ(RemovePhantomGlow(other), std::nullopt);
+    EXPECT_EQ(Get<s32>(other, 0, RowSize, SpEffectVfxMidstSfxOffset), 211);
+    auto missing = MakeParam("SP_EFFECT_VFX_PARAM_ST", RowSize, {189});
+    EXPECT_EQ(RemovePhantomGlow(missing), std::nullopt);
+}
+
 // SHADPS4_BLOODBORNE_HARDER_ENEMIES=<hp>,<damage>,<poise>: multipliers for every enemy and boss.
 TEST(BloodborneHarderEnemies, ParsesThreeMultipliers) {
     const auto harder = ParseHarderEnemies("3,1.5,3");

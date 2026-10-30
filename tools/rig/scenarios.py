@@ -32,7 +32,7 @@ expect-others-near <n> <meters> (n other players alive that close), expect-compa
 degrees right of straight ahead, and distance; 20 degrees and 1.5 m either way by default; down or
 dead: the marker shows that), expect-others-shown <n> (exactly n other players
 shown, not hidden for another map), watch-unseen <handle> <seconds> (from now on, every frame the
-character is drawn logs "watched <handle> drawn"; forbid that), godmode [off] (the player's HP kept at max), done. Targets: nearest, self or a handle in hex; kill
+character is drawn logs "watched <handle> drawn"; forbid that), godmode [off] (the player's HP kept at max), done. Targets: nearest, self, player (the nearest other player) or a handle in hex; kill
 uses the game's own kill (as an event's ForceCharacterDeath), so bosses die in one step.
 Party death (the scenario's "settings" switch it on): rise <metres> (straight up, to fall),
 approach-downed (beside the nearest downed member on the map), revive-downed [<timeout>]
@@ -113,6 +113,10 @@ PING_MAP_SPOT = "-150.0 -40.0 300.0"
 PING_MAP_XZ = "-150.0 300.0"
 # 7 m from ENEMY (-216.7, 178.1), on the lamp's side: close enough for it to notice a player.
 GUEST_ALONE_SPOT = "-210.0 -54.5 181.0"
+# phantom-glow: two ground spots by the Central Yharnam lamp 6.3 m apart, each heading towards
+# the other (heading 0 looks along +z and grows turning right).
+GLOW_HOST_SPOT = "-211.0 -54.5 190.0 -2.82"
+GLOW_GUEST_SPOT = "-213.0 -54.5 184.0 0.32"
 GUEST_PAIR_SPOT = "-213.0 -54.5 184.0"  # 3-4 m from GUEST_ALONE_SPOT
 
 
@@ -748,11 +752,51 @@ SCENARIOS = {
                  "picture; the guest's own character shows the tint",
         "roles": {
             "host": [START, "godmode", "wait-session 2 300", "wait 20", "dump self",
-                     "shot host-self", "wait 30"],
+                     "shot host-self", "dump nearest", "wait 30"],
             "guest": [START, "godmode", "wait-session 2 300", "wait 20", "dump self",
                       "shot guest-self", "dump nearest", "wait 10"],
         },
         "forbid": {"host": SESSION_HOLDS, "guest": SESSION_HOLDS},
+        "timeout": 300,
+    },
+    # Kaniel 2026-10-25: an option draws teammates without the blue phantom glow. The two stand 6 m
+    # apart facing each other (the camera behind each); each dumps the teammate it holds and takes
+    # pictures (visible games: a headless game draws nothing). The guest's own character is a
+    # phantom on its screen too.
+    "phantom-glow": {
+        "about": "host and guest face each other 6 m apart; each dumps the teammate and takes "
+                 "pictures of it (run visible: headless pictures show only the overlays)",
+        "roles": {
+            "host": [START, "godmode", "wait-session 2 300", "wait 20",
+                     "watch-effects self 8", "wait 3", "watch-effects player 4", "wait 5",
+                     f"teleport {GLOW_HOST_SPOT}", "wait 12", "dump player", "dump self",
+                     "shot host-sees-guest",
+                     "wait 4", "shot host-sees-guest-2", "wait 20"],
+            "guest": [START, "godmode", "wait-session 2 300", "wait 20",
+                      "watch-effects self 8", "wait 3", "watch-effects player 4", "wait 5",
+                      f"teleport {GLOW_GUEST_SPOT}", "wait 12", "dump player", "dump self",
+                      "shot guest-sees-host", "wait 4", "shot guest-sees-host-2", "wait 20"],
+        },
+        "settings": {"ini.output_res": "1280x720", "ini.window_mode": "windowed", "ini.preset": "0",
+                     "ini.show_fps": "0", "ini.frame_generation": "0"},
+        "forbid": {"host": SESSION_HOLDS, "guest": SESSION_HOLDS},
+        "timeout": 300,
+    },
+    # The switch on the host's side only: its table loses the glow's effect, the guest's keeps it,
+    # and the guest stays a phantom with SpEffect 9006 either way.
+    "phantom-glow-off": {
+        "about": "the no-glow option on the host only: its log says the effect went, the guest's "
+                 "does not, and the guest's SpEffect 9006 stays",
+        "roles": {
+            "host": [START, "godmode", "wait-session 2 300", "wait 20", "watch-effects player 4",
+                     "wait 6", "wait 10"],
+            "guest": [START, "godmode", "wait-session 2 300", "wait 20", "watch-effects self 4",
+                      "wait 6", "wait 10"],
+        },
+        "role_settings": {"host": {"SHADPS4_BLOODBORNE_NO_PHANTOM_GLOW": "1"}},
+        "expect": {"host": [r"phantom glow off \(SpEffectVfx 272 effect 211 -> -1\)"],
+                   "guest": [r"effects of 0xffffffff hp \d+: .*9006"]},
+        "forbid": {"host": SESSION_HOLDS, "guest": SESSION_HOLDS + ["phantom glow off"]},
         "timeout": 300,
     },
     # Kaniel 2026-10-14: with the host far away on the same map, the enemies beside a guest stood

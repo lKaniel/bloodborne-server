@@ -1909,6 +1909,7 @@ void TickPlayersOnThisMap() {
     TimeTickStep("LogItemModuleChecks", LogItemModuleChecks);
     TimeTickStep("LogItemButtonAndMapItems", LogItemButtonAndMapItems);
     TimeTickStep("KeepGuestFullHp", KeepGuestFullHp);
+    TimeTickStep("HidePhantomGlow", HidePhantomGlow);
     TimeTickStep("PolishMultiplayerUi", PolishMultiplayerUi);
     const bool in_session = InPartySession();
     // The boards go both ways in and out of a session (a guest on its own trip is out of one).

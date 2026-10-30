@@ -1467,30 +1467,44 @@ bool AutoplayObject(const AutoplayStep& step) {
 
 // peek <target> <offset>, poke <target> <offset> <value> [1] (hex): a character's u32 (or byte)
 // at an offset, logged or written (reverse engineering on the rig: a field's meaning tried in
-// play).
+// play). The offset may follow pointers: "58>2cc" is +0x2CC of what the character's +0x58 points
+// to (ParseAutoplayPath).
 bool AutoplayPeekOrPoke(const AutoplayStep& step) {
     const std::string& verb = step.command.verb;
     const auto target = ParseAutoplayTarget(step.Arg(0));
     const auto found = target ? FindAutoplayCharacter(*target) : std::nullopt;
-    u32 offset = 0;
+    const auto path = ParseAutoplayPath(step.Arg(1));
     u32 value = 0;
-    const std::string_view offset_text = step.Arg(1);
     const std::string_view value_text = step.Arg(2);
-    std::from_chars(offset_text.data(), offset_text.data() + offset_text.size(), offset, 16);
     std::from_chars(value_text.data(), value_text.data() + value_text.size(), value, 16);
-    if (!found || offset > 0x2000 ||
-        !HasMemoryAccess(found->character + offset, 4, MemoryProt::CpuRead)) {
+    if (!found || !path) {
+        step.failure = !found ? "no such character" : "no such offset";
+        return false;
+    }
+    u64 base = found->character;
+    for (size_t index = 0; index + 1 < path->size(); ++index) {
+        base = HasMemoryAccess(base + (*path)[index], 8, MemoryProt::CpuRead)
+                   ? ReadValue<u64>(base, (*path)[index])
+                   : 0;
+        if (base < 0x10000) {
+            step.failure = "no pointer on the way";
+            return false;
+        }
+    }
+    const u32 offset = path->back();
+    if (!HasMemoryAccess(base + offset, 4, MemoryProt::CpuRead)) {
         step.failure = "no such character";
         return false;
     }
-    const u32 before = ReadValue<u32>(found->character, offset);
+    const u32 before = ReadValue<u32>(base, offset);
     if (verb == "poke" && step.Arg(3) == "1") {
-        WriteValue(found->character, offset, static_cast<u8>(value)); // one byte
+        WriteValue(base, offset, static_cast<u8>(value)); // one byte
     } else if (verb == "poke") {
-        WriteValue(found->character, offset, value);
+        WriteValue(base, offset, value);
     }
-    LOG_INFO(Debug, "Bloodborne autoplay {}: {:#x} +{:#x} = {:#x}{}", verb,
-             ReadValue<u32>(found->character, 0x08), offset, before,
+    LOG_INFO(Debug, "Bloodborne autoplay {}: {:#x} +{} = {:#x}{}", verb,
+             ReadValue<u32>(found->character, 0x08),
+             path->size() == 1 ? fmt::format("{:#x}", offset) : std::string{step.Arg(1)}, before,
              verb == "poke" ? fmt::format(" -> {:#x}", value) : "");
     return true;
 }

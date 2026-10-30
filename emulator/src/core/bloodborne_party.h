@@ -2149,6 +2149,17 @@ std::vector<MultiplayerWall> MultiplayerWalls();
 // 0.7 at +0x10). A party guest keeps its full HP.
 constexpr s32 PhantomHpEffect = 9006;
 constexpr u64 SpEffectMaxHpRateOffset = 0x10;
+// Kaniel 2026-10-25: the phantom's glow, off on request (one player's own look). SpEffect 9006 has
+// stateInfo 272 and useSpEffectEffect, so the game plays SpEffectVfxParam row 272: its midstSfxId
+// (+0x00, effect 211) looped on dummy poly 203. Nothing but that look reads the row, so the
+// guest's type, team, hits and HP stay as they are. Row 272 only: 9026 and the others are other
+// roles' looks.
+constexpr s32 PhantomGlowVfxRow = 272;
+constexpr u64 SpEffectVfxMidstSfxOffset = 0x00;
+constexpr s32 NoSfx = -1;
+// Takes the glow's effect out of a loaded SpEffectVfxParam; the id that was there, or nothing when
+// this is another table, the row is missing or the glow is already out.
+std::optional<s32> RemovePhantomGlow(std::span<u8> sp_effect_vfx_param);
 // Level sync: a player whose level is above the host's band (host level * (1 + rate) + add,
 // from the online settings) gets special effect 9200 (0x01507DDC), and every character whose
 // effects include it has its max HP, stamina and attack scaled to the host's level through the
@@ -3275,6 +3286,9 @@ std::optional<u32> ParseAutoplayTarget(std::string_view text);
 // watch-effects: the SpEffects a character gained ("+id") and lost ("-id") between two looks, in
 // id order, space separated; "" when nothing changed. Each copy of an effect counts.
 std::string DescribeEffectChanges(std::vector<s32> before, std::vector<s32> after);
+// A peek/poke offset: hex offsets joined by '>', each '>' reading a pointer at the offset before
+// it ("58>2cc": the u32 at +0x2CC of what +0x58 points to); each at most 0x2000.
+std::optional<std::vector<u32>> ParseAutoplayPath(std::string_view text);
 // `value <op> limit` for op <, <=, ==, !=, >=, >; nothing for another op.
 std::optional<bool> CompareAutoplay(s64 value, std::string_view op, s64 limit);
 // attack <target>: a real hit, so the kill reward and the death run as in play (the game's own

@@ -3983,6 +3983,14 @@ class Launcher:
         # Kaniel 2026-10-25: one press makes the zip a bug report needs (bbport_support).
         self.button(row, _('Support bundle', 'Пакет для поддержки'),
                     self.make_support_bundle).pack(side='left', padx=(px(8), 0))
+        # Kaniel 2026-10-25: teammates drawn without the blue phantom glow, off by default. Each player's own
+        # look, not a team rule. The switch takes a BooleanVar; the setting is '1' or ''.
+        glow = self.cell(page, 3, 0, '', span=2)
+        stored = var('hide_glow')
+        self.coop_glow_var = tk.BooleanVar(value=stored.get() == '1')
+        self.coop_glow_var.trace_add('write', lambda *_a: stored.set('1' if self.coop_glow_var.get() else ''))
+        self.switch(glow, self.coop_glow_var, _(bbport_coop.NO_GLOW_TEXT, 'Показывать союзников без синего '
+                                                'свечения фантома (только на вашем экране)')).pack(anchor='w')
         self.button(row, _('Restore saves…', 'Восстановить сохранения…'),
                     self.open_save_backups).pack(side='left', padx=(px(8), 0))
 

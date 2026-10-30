@@ -111,6 +111,13 @@ TEST(BloodborneAutoplay, ReadsTargetsAndComparisons) {
         << "the one a mark command picked";
     EXPECT_EQ(ParseAutoplayTarget("player"), std::optional<u32>{AutoplayPlayer})
         << "the nearest other player (a duel's foe)";
+    // peek/poke offsets: hex, each '>' a pointer read at the offset before it.
+    EXPECT_EQ(ParseAutoplayPath("78"), (std::optional<std::vector<u32>>{{0x78}}));
+    EXPECT_EQ(ParseAutoplayPath("58>2cc"), (std::optional<std::vector<u32>>{{0x58, 0x2CC}}));
+    EXPECT_EQ(ParseAutoplayPath("58>2c0>c"), (std::optional<std::vector<u32>>{{0x58, 0x2C0, 0xC}}));
+    EXPECT_EQ(ParseAutoplayPath("58>"), std::nullopt);
+    EXPECT_EQ(ParseAutoplayPath("zz"), std::nullopt);
+    EXPECT_EQ(ParseAutoplayPath("3000"), std::nullopt) << "past what a character holds";
     EXPECT_EQ(ParseAutoplayTarget("0x1001409c"), std::optional<u32>{0x1001409c});
     EXPECT_EQ(ParseAutoplayTarget("1001409c"), std::optional<u32>{0x1001409c});
     EXPECT_EQ(ParseAutoplayTarget("zz"), std::nullopt);

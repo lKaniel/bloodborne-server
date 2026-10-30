@@ -105,6 +105,7 @@ MORE_KEYS = [
     'While playing',
     'Before a restore',
     'Before PLAY',
+    'Show teammates without the blue phantom glow (on your screen only)',
 ]
 
 MORE = {
@@ -211,6 +212,7 @@ MORE = {
         'Во время игры',
         'Перед восстановлением',
         'Перед PLAY',
+        'Показывать союзников без синего свечения фантома (только на вашем экране)',
     ],
     'ar': [
         'اللعب التعاوني عبر الإنترنت',
@@ -315,6 +317,7 @@ MORE = {
         'أثناء اللعب',
         'قبل استعادة',
         'قبل PLAY',
+        'إظهار رفاق الفريق بدون التوهج الأزرق للشبح (على شاشتك فقط)',
     ],
     'es': [
         'Cooperativo en línea',
@@ -419,6 +422,7 @@ MORE = {
         'Durante la partida',
         'Antes de restaurar',
         'Antes de PLAY',
+        'Mostrar a los compañeros sin el brillo azul de fantasma (solo en tu pantalla)',
     ],
     'pt': [
         'Cooperativo online',
@@ -523,6 +527,7 @@ MORE = {
         'Durante o jogo',
         'Antes de restaurar',
         'Antes do PLAY',
+        'Mostrar os companheiros sem o brilho azul de fantasma (só na sua tela)',
     ],
     'fr': [
         'Coopération en ligne',
@@ -627,6 +632,7 @@ MORE = {
         'Pendant la partie',
         'Avant une restauration',
         'Avant PLAY',
+        'Afficher les coéquipiers sans la lueur bleue de fantôme (sur votre écran seulement)',
     ],
     'de': [
         'Online-Koop',
@@ -731,6 +737,7 @@ MORE = {
         'Beim Spielen',
         'Vor einer Wiederherstellung',
         'Vor PLAY',
+        'Mitspieler ohne das blaue Phantomleuchten zeigen (nur auf deinem Bildschirm)',
     ],
     'it': [
         'Cooperativa online',
@@ -835,6 +842,7 @@ MORE = {
         'Durante il gioco',
         'Prima di un ripristino',
         'Prima di PLAY',
+        'Mostra i compagni senza il bagliore blu da fantasma (solo sul tuo schermo)',
     ],
     'pl': [
         'Kooperacja online',
@@ -939,6 +947,7 @@ MORE = {
         'Podczas gry',
         'Przed przywróceniem',
         'Przed PLAY',
+        'Pokazuj towarzyszy bez niebieskiej poświaty fantoma (tylko na twoim ekranie)',
     ],
     'tr': [
         'Çevrim içi ortak oyun',
@@ -1043,6 +1052,7 @@ MORE = {
         'Oynarken',
         'Geri yüklemeden önce',
         'PLAY öncesi',
+        'Takım arkadaşlarını mavi hayalet parıltısı olmadan göster (yalnızca senin ekranında)',
     ],
     'zh': [
         '在线合作',
@@ -1147,6 +1157,7 @@ MORE = {
         '游戏中',
         '恢复之前',
         'PLAY 之前',
+        '显示队友时去掉蓝色幽灵光晕（仅在你的屏幕上）',
     ],
     'ja': [
         'オンライン協力プレイ',
@@ -1251,6 +1262,7 @@ MORE = {
         'プレイ中',
         '復元の前',
         'PLAY の前',
+        '仲間を青い霊体の光なしで表示する（自分の画面のみ）',
     ],
     'ko': [
         '온라인 협동',
@@ -1355,5 +1367,6 @@ MORE = {
         '플레이 중',
         '복원 전',
         'PLAY 전',
+        '팀원을 푸른 유령 빛 없이 표시 (내 화면에서만)',
     ],
 }

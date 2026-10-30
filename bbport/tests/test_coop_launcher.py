@@ -509,6 +509,20 @@ class PlayTests(unittest.TestCase):
         self.assertNotIn('SHADPS4_BLOODBORNE_HARDER_ENEMIES', env)
         self.assertEqual(env['SHADPS4_P2P_PORT'], '51700')
 
+    def test_teammates_without_the_phantom_glow_is_opt_in(self):
+        # Kaniel 2026-10-25: an option that draws teammates without the blue phantom glow, off by
+        # default; each player picks it for their own screen, so it is not a team rule.
+        install = Path('C:/Co-op')
+        settings = dict(coop.DEFAULTS, host_ip='26.1.2.3', account='Lisara', password='pw')
+        self.assertEqual(coop.DEFAULTS['hide_glow'], '')
+        env = coop.game_environment({'SHADPS4_BLOODBORNE_NO_PHANTOM_GLOW': '1'}, settings, install, install)
+        self.assertNotIn('SHADPS4_BLOODBORNE_NO_PHANTOM_GLOW', env)
+        env = coop.game_environment({}, dict(settings, hide_glow='1'), install, install)
+        self.assertEqual(env['SHADPS4_BLOODBORNE_NO_PHANTOM_GLOW'], '1')
+        import bbport_lang
+        for language in ('ru', 'ar', 'es', 'pt', 'fr', 'de', 'it', 'pl', 'tr', 'zh', 'ja', 'ko'):
+            self.assertTrue(bbport_lang.table(language).get(coop.NO_GLOW_TEXT), language)
+
     def test_unlocked_frame_rate_is_opt_in(self):
         # Kaniel 2026-10-22: an opt-in unlocked frame rate in co-op. On, the launcher's mode and cap
         # stay and run.py hears of it (it caps at 120 and paces the game's packets); off, 60.
