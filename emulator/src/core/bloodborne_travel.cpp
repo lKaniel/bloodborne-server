@@ -164,6 +164,8 @@ alignas(16) std::array<u8, 0x100> no_talk_flag_range{}; // +0xA0 = +0xA4 = 0
 // talk at the dispatcher, +0x18 its talker, as ESD function 14 reads it): its commands run right
 // after, so RestInsteadOfLampTravel knows whose talk sets a flag.
 thread_local u64 esd_talker = 0;
+// This player's talk asked for the Doll's blessing (see ClearsDollLevelUpFlagOnHerBlessing).
+std::atomic<bool> doll_blessing_asked{};
 
 } // namespace
 
@@ -382,6 +384,13 @@ void PS4_SYSV_ABI RestInsteadOfLampTravel(u64, GuestRegisterSnapshot* registers)
     if (flag >= 70000000 && flag < 80000000 && guest) {
         LOG_INFO(Debug, "Bloodborne party guest talk sets flag {} (party session={})", flag,
                  InPartySession()); // diagnostics
+    }
+    // See ClearsDollLevelUpFlagOnHerBlessing: cleared by the next tick
+    // (ClearDollLevelUpFlagAfterHerMenu), not inside her talk's flag write.
+    if (ClearsDollLevelUpFlagOnHerBlessing(party_controller.has_value(),
+                                           esd_talker >= 0x10000 && esd_talker != GetLocalPlayer(),
+                                           flag)) {
+        doll_blessing_asked.store(true);
     }
     // An NPC's gift (common event 9100 ends for a phantom): the guest's own talk earns it.
     if (GivesGuestNpcGift(InPartySession(), guest, flag)) {
@@ -1727,15 +1736,16 @@ void KeepHeadstoneFlagsOwn() {
 // See ClearsDollLevelUpFlagAfterHerMenu: every frame in a party (her blessing can be over within a
 // second), the Doll's level-up flag off once her level-up menu has closed.
 void ClearDollLevelUpFlagAfterHerMenu() {
+    const bool asked = doll_blessing_asked.exchange(false);
     if (!party_controller || GetLocalPlayer() < 0x10000 ||
         !ClearsDollLevelUpFlagAfterHerMenu(true, EventFlagOn(DollLevelUpFlag),
-                                           EventFlagOn(DollBlessingFlag))) {
+                                           asked || EventFlagOn(DollBlessingFlag))) {
         return;
     }
     reinterpret_cast<bool PS4_SYSV_ABI (*)(u64, s32, bool)>(
         image_base + PartyGhostSetEventFlagOffset)(0, DollLevelUpFlag, false);
-    LOG_INFO(Debug, "Bloodborne party: the Doll's level-up flag {} cleared after her menu closed",
-             DollLevelUpFlag);
+    LOG_INFO(Debug, "Bloodborne party: the Doll's level-up flag {} cleared after her menu closed{}",
+             DollLevelUpFlag, asked ? " (her talk asked for her blessing)" : "");
 }
 
 // See ImpurityBonusChange: every second, the Impurity rune's HP bonus put on (through the

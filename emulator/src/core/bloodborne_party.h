@@ -1060,6 +1060,10 @@ bool ClearsDollLevelUpFlag(bool party_configured, bool flag_on);
 // on with it on is off at once (in a party).
 constexpr s32 DollBlessingFlag = 72100100;
 bool ClearsDollLevelUpFlagAfterHerMenu(bool party_configured, bool level_up_on, bool blessing_on);
+// The rig 2026-10-30: in a guest's game her talk's request for 72100100 never turns it on, so 6700
+// is off as soon as this player's own talk asks for her blessing (her menu closed by then).
+bool ClearsDollLevelUpFlagOnHerBlessing(bool party_configured, bool others_talk,
+                                        s32 requested_flag);
 // The other player's "set this event flag" (0x017C0570) and "event ended" (0x017C0901) messages
 // leave these flags and events alone in a party: what one player received is not given to the
 // other (the Hunter's Dream messengers' gift events and flags, 12101020-12101029, and the

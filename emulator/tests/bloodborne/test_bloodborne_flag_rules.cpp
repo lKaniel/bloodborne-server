@@ -598,6 +598,17 @@ TEST(BloodborneFlagRules, TheDollsLevelUpFlagGoesOffOnceHerMenuClosed) {
     EXPECT_FALSE(ClearsDollLevelUpFlagAfterHerMenu(false, true, true));
 }
 
+// The rig 2026-10-30 (doll-level-up-cancelled): in a guest's game her talk asks for her blessing
+// flag (72100100) after the menu closed, but the flag never goes on there, so 6700 stayed on and
+// the next "Level Up" again opened no menu. Her talk's request itself turns 6700 off.
+TEST(BloodborneFlagRules, TheDollsLevelUpFlagGoesOffAsHerTalkAsksForHerBlessing) {
+    EXPECT_TRUE(ClearsDollLevelUpFlagOnHerBlessing(true, false, DollBlessingFlag));
+    EXPECT_FALSE(ClearsDollLevelUpFlagOnHerBlessing(true, true, DollBlessingFlag)); // not our talk
+    EXPECT_FALSE(ClearsDollLevelUpFlagOnHerBlessing(true, false, DollBlessingFlag + 1));
+    EXPECT_FALSE(ClearsDollLevelUpFlagOnHerBlessing(true, false, DollLevelUpFlag));
+    EXPECT_FALSE(ClearsDollLevelUpFlagOnHerBlessing(false, false, DollBlessingFlag));
+}
+
 // Kaniel 2026-10-30: the host's level up played the kneel on guests. The Doll's blessing flags
 // (72100100 her talk's, 72100101 m21_00 12100112's kneel on the local player, 72100102 12100113's
 // turn of the Doll) are each game's own: not the team's world, not a story step, and the other
