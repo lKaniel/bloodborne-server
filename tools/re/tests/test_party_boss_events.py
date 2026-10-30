@@ -168,6 +168,86 @@ class GuestsEnterBossFogFirst(unittest.TestCase):
 
 
 
+ROM_DIVED = 13204800
+ROM_BOSS_ENTRANCE = 13201802
+
+
+def rom_phantom_fog_event() -> list[tuple[int, int, bytes]]:
+    """m32_00's 13204831: a white phantom walks through the fog by the lake edge once Rom's
+    entrance ran and the host dived."""
+    return [
+        (2000, 2, struct.pack('<i', 0)),
+        (1003, 2, struct.pack('<BBxxi', 0, 1, 13201800)),
+        (3, 0, struct.pack('<BBBxi', 1, 0, 0, 13201800)),
+        flag_condition(1, ROM_BOSS_ENTRANCE),
+        flag_condition(1, ROM_DIVED),
+        (4, 3, struct.pack('<bxxxiBxxx', 1, 10000, 1)),
+        (3, 24, struct.pack('<bxxxii', 1, 3200800, 3201800)),
+        (0, 0, bytes([0, 1, 1, 0])),
+        (2004, 14, struct.pack('<iiii', 10000, 3202800, 101130, 0)),
+    ]
+
+
+def rom_dive_event() -> list[tuple[int, int, bytes]]:
+    """m32_00's 13204821: anyone walking into the drop once the host dived gets 5 s of no death
+    (2004:15) for the fall."""
+    return [
+        (2000, 2, struct.pack('<i', 0)),
+        flag_condition(1, ROM_DIVED),
+        (3, 2, struct.pack('<bBxxii', 1, 1, 10000, 3202800)),
+        (0, 0, bytes([0, 1, 1, 0])),
+        (2004, 15, struct.pack('<iB3x', 10000, 1)),
+        (1001, 0, struct.pack('<f', 5.0)),
+        (2004, 15, struct.pack('<iB3x', 10000, 0)),
+        (2003, 2, struct.pack('<iBxxx', ROM_DIVED + 1, 1)),
+        (1000, 4, struct.pack('<i', 1)),
+    ]
+
+
+class GuestsDiveIntoRomsLakeFirst(unittest.TestCase):
+    """Kaniel 2026-10-29: by Rom's lake only the host could pass the fog the first time, and a
+    guest who went over the edge first died from the fall (the drop's no-death waited for the
+    host's dive), and the boss never started."""
+
+    def setUp(self):
+        self.original = build_emevd({13204831: rom_phantom_fog_event(),
+                                     13204821: rom_dive_event()})
+        self.patched, self.count = tool.let_guests_dive_first(
+            self.original, tool.LAKE_DIVE_EVENTS['m32_00_00_00.emevd.dcx'])
+        self.events = read_events(self.patched)
+
+    def test_the_fog_opens_for_a_guest_before_the_host_dives(self):
+        fog = self.events[13204831]
+        for k in (3, 4):
+            self.assertEqual(fog[k][2][0], tool.UNUSED_GROUP)
+        self.assertEqual(fog[2][2], read_events(self.original)[13204831][2][2],
+                         'the boss-dead check stays')
+        self.assertEqual(fog[5][2][0], 1, 'the phantom check stays')
+
+    def test_a_guest_diving_first_lives_through_the_fall(self):
+        dive = self.events[13204821]
+        self.assertEqual(dive[1][2][0], tool.UNUSED_GROUP)
+        self.assertEqual(dive[2][2][0], 1, 'the drop area check stays')
+
+    def test_a_guest_diving_first_starts_the_boss(self):
+        bank, ident, payload = self.events[13204821][7]
+        self.assertEqual((bank, ident), (2003, 22))
+        self.assertEqual(struct.unpack('<iiB', payload[:9]), (ROM_DIVED, ROM_DIVED + 1, 1))
+        self.assertEqual(self.count, 4)
+
+    def test_the_file_still_checks_out(self):
+        edits: list = []
+        tool.let_guests_dive_first(self.original, tool.LAKE_DIVE_EVENTS['m32_00_00_00.emevd.dcx'],
+                                   edits)
+        tool.validate(self.original, self.patched, edits)
+        self.assertEqual(strings_of(self.patched), strings_of(self.original))
+
+    def test_patching_twice_changes_nothing(self):
+        again, count = tool.let_guests_dive_first(
+            self.patched, tool.LAKE_DIVE_EVENTS['m32_00_00_00.emevd.dcx'])
+        self.assertEqual((again, count), (self.patched, 0))
+
+
 def init_insight(amount: int) -> tuple[int, int, bytes]:
     return 2000, 0, struct.pack('<iii', 0, tool.INSIGHT_EVENT, amount)
 

@@ -41,6 +41,10 @@ Enemies that rise out of the mist as a player comes near (AMBUSH_EVENTS: the woo
 into Hemwick and four more) woke only for an alive player in its own world, the host; a guest's
 approach wakes them too.
 
+Rom's lake (LAKE_DIVE_EVENTS, Kaniel 2026-10-29): a white phantom's fog by the edge opened only
+once the host had dived, and the drop's 5 s of no death waited for that too, so a guest going over
+first died from the fall. Neither waits now, and a guest's dive starts Rom like the host's.
+
 One-time enemies (keep_one_time_drop_checks: the Wandering Nightmares) leave for good once their
 event ends, which waits for an alive player with the enemy's drop flag; a client skipped the flag
 check, and a party guest reads alive, so the guest's game ended them all with no kill. The skip no
@@ -708,8 +712,73 @@ def open_boss_fog_for_guests(emevd: bytes, edits: list | None = None) -> tuple[b
                 patched += 1
     if not new_args:
         return bytes(data), patched
+    return with_new_arguments(data, fields, new_args), patched
+
+
+# Rom's lake (m32_00, Kaniel 2026-10-29): a white phantom's fog by the edge (13204831) waited for
+# the boss's entrance (13201802) and the host's "dived" flag (13204800), and the drop's 5 s of
+# no-death for anyone but the host (13204821) waited for that flag too. 13204820 gives it to an
+# alive player (the host) walking into the drop's area 3202800 and then sets 13204800, which
+# starts Rom. So a guest could not pass the fog before the host did, and a guest who went over
+# the edge first died from the 96 m fall.
+LAKE_DIVE_EVENTS = {'m32_00_00_00.emevd.dcx': {'fog': 13204831, 'dive': 13204821}}
+
+
+def let_guests_dive_first(emevd: bytes, wanted: dict[str, int],
+                          edits: list | None = None) -> tuple[bytes, int]:
+    """The phantom fog stops waiting for flags the host sets (its condition groups keep the
+    boss-dead check, the phantom check and the button). The dive's no-death stops waiting for
+    the host's flag H, and its "set H + 1" becomes "set H..H + 1", so a guest diving first is
+    kept alive by the fall and starts the boss like the host does (H is shared with the party,
+    IsBossFogEntryFlag)."""
+    data = bytearray(emevd)
+    fields = list(struct.unpack_from('<16q', data, 16))
+    event_count, event_offset, instruction_offset = fields[0], fields[1], fields[3]
+    args_offset = fields[13]
+    new_args = bytearray()
+    patched = 0
+    for index in range(event_count):
+        event, count, first, *_ = struct.unpack_from('<qqqqqii', data, event_offset + index * 48)
+        if event not in wanted.values():
+            continue
+        at = [instruction_offset + first + k * INSTRUCTION_SIZE for k in range(count)]
+        instructions = [struct.unpack_from('<iiqqq', data, place) for place in at]
+        args = [bytes(data[args_offset + offset:args_offset + offset + length])
+                for _, _, length, offset, _ in instructions]
+        waits = [k for k, (bank, ident, *_) in enumerate(instructions)
+                 if (bank, ident) == IF_EVENT_FLAG and args[k][1] == 1 and
+                 0 < args[k][0] < UNUSED_GROUP]
+        if not waits:
+            continue  # patched already
+        if event == wanted['dive']:
+            sets = [k for k, (bank, ident, *_) in enumerate(instructions)
+                    if (bank, ident) == SET_EVENT_FLAG and args[k][4] == 1]
+            if len(waits) != 1 or len(sets) != 1:
+                raise EventPatchError(f'event {event}: not the dive this patch knows')
+            entered = struct.unpack_from('<i', args[sets[0]], 0)[0]
+            if struct.unpack_from('<i', args[waits[0]], 4)[0] != entered - 1:
+                raise EventPatchError(f'event {event}: it does not wait for the flag before '
+                                      f'{entered}')
+            offset = fields[12] + len(new_args)
+            new_args += struct.pack('<iiBxxx', entered - 1, entered, 1)
+            struct.pack_into('<iiqqq', data, at[sets[0]], *BATCH_SET_EVENT_FLAGS, 12, offset,
+                             instructions[sets[0]][4])
+            note(edits, event, sets[0], *BATCH_SET_EVENT_FLAGS,
+                 'a guest diving sets the host flag too')
+            patched += 1
+        for k in waits:
+            data[args_offset + instructions[k][3]] = UNUSED_GROUP
+            note(edits, event, k, *IF_EVENT_FLAG, 'no longer waits for the host flag')
+            patched += 1
+    if not new_args:
+        return bytes(data), patched
+    return with_new_arguments(data, fields, new_args), patched
+
+
+def with_new_arguments(data: bytearray, fields: list, new_args: bytearray) -> bytes:
+    """Appends arguments to the argument table, moving the tables after it."""
     new_args += bytes(-(fields[12] + len(new_args)) % ARGS_ALIGNMENT)
-    args_end = args_offset + fields[12]
+    args_end = fields[13] + fields[12]
     out = data[:args_end] + new_args + data[args_end:]
     for field in SHIFTED_OFFSET_FIELDS:
         if field != 13 and fields[field] >= args_end:
@@ -717,7 +786,7 @@ def open_boss_fog_for_guests(emevd: bytes, edits: list | None = None) -> tuple[b
     fields[12] += len(new_args)
     struct.pack_into('<16q', out, 16, *fields)
     struct.pack_into('<I', out, 0x0C, struct.unpack_from('<I', out, 0x0C)[0] + len(new_args))
-    return bytes(out), patched
+    return bytes(out)
 
 
 def already_local(data: bytes, instruction_offset: int, args_offset: int, event: list) -> bool:
@@ -914,7 +983,7 @@ def patch_file(name: str, original: bytes) -> tuple[bytes | None, list, dict]:
     counts = {'boss event checks': 0, 'boss fog checks': 0, 'insight event checks': 0,
               'client event ends': 0, 'local events': 0, 'chalice wall checks': 0,
               'item pickup checks': 0, 'host door effects': 0, 'ambush checks': 0,
-              'chalice reward checks': 0, 'one-time enemy checks': 0}
+              'chalice reward checks': 0, 'one-time enemy checks': 0, 'lake dive checks': 0}
     try:
         if name.startswith('m'):
             emevd, counts['boss event checks'] = patch_events(emevd, edits)
@@ -936,6 +1005,9 @@ def patch_file(name: str, original: bytes) -> tuple[bytes | None, list, dict]:
         if name in HOST_DOOR_EFFECT:
             emevd, counts['host door effects'] = patch_host_door_effect(
                 emevd, edits, HOST_DOOR_EFFECT[name])
+        if name in LAKE_DIVE_EVENTS:
+            emevd, counts['lake dive checks'] = let_guests_dive_first(
+                emevd, LAKE_DIVE_EVENTS[name], edits)
         if name in CHALICE_REWARD_EVENTS:
             emevd, counts['chalice reward checks'] = patch_chalice_rewards(
                 emevd, edits, CHALICE_REWARD_EVENTS[name])

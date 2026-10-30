@@ -313,6 +313,17 @@ TEST(BloodborneFlagRules, AnAmbushAGuestWokeRisesForTheHost) {
     EXPECT_FALSE(SharedWithParty(12204011)); // the ambush armed: the host's Insight decides
 }
 
+// Kaniel 2026-10-29: a guest who went over Rom's lake edge first died from the fall, and Rom
+// never started for anyone. A guest's dive now sets the host's "dived" flag (party_boss_events.py
+// let_guests_dive_first), and the party shares it so the host's game starts the boss too; like a
+// fog's entry it holds for one map visit, and the flag after it stays each game's own.
+TEST(BloodborneFlagRules, AGuestsDiveIntoRomsLakeStartsTheBossForTheParty) {
+    EXPECT_TRUE(IsBossFogEntryFlag(13204800));
+    EXPECT_TRUE(SharedWithParty(13204800));
+    EXPECT_FALSE(IsWorldFlag(13204800)) << "a load puts it back off";
+    EXPECT_FALSE(SharedWithParty(13204801));
+}
+
 // Kaniel's playtest 2026-10-22: the party wiped in Darkbeast Paarl's fight; the host's reload
 // put his fight flags (a map's 4xxx and 5xxx flags: 12304700 the fog entered, 12304702 and 12304704
 // his start) off, as every load does, but the team's world and the guests' kept changes still had
