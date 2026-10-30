@@ -232,15 +232,27 @@ TEST_F(BloodborneEboot, TalkCommand66SetsTheGestureSlotsBit) {
     EXPECT_EQ(Bytes(0x014ECE3B, 3), (std::vector<u8>{0x83, 0xFB, 0x1E})) << "rows 0 to 30";
 }
 
-// The downed banner is the game's SetTextEffect (the event binding that queues the HUD's big
+// The duels' banners are the game's SetTextEffect (the event binding that queues the HUD's big
 // banners, ids 1 to 17): `lea eax, [rsi - 1]; cmp eax, 0x10`, and the Lua table registers it.
-TEST_F(BloodborneEboot, TheDownedBannerIsQueuedBySetTextEffect) {
+TEST_F(BloodborneEboot, BannersAreQueuedBySetTextEffect) {
     EXPECT_EQ(Bytes(SetTextEffectOffset, SetTextEffectStart.size()),
               std::vector<u8>(SetTextEffectStart.begin(), SetTextEffectStart.end()));
-    EXPECT_LE(DownedBannerTextEffect, 17);
     // lea rax, [rip - 0xC745] at 0x013427EE: the binding's registration takes this function.
     EXPECT_EQ(Bytes(0x013427EE, 3), (std::vector<u8>{0x48, 0x8D, 0x05}));
     EXPECT_EQ(0x013427F5 + ReadAt<s32>(*text, 0x013427F1), SetTextEffectOffset);
+}
+
+// Banner id 17 (TE_Draw) plays TextEffect_Draw, the game's NIGHTMARE SLAIN (text 522007; the Wet
+// Nurse's kill queues it, m26_00 event 12601800): no banner is free for party death (player report
+// 2026-10-29). The text effect dialog plays slot id (`imul r13, r14, 0x58`, the slots from +0x298),
+// and its setup puts the movie named "TextEffect_Draw" (0x049343C6) in slot 17's +0x20.
+TEST_F(BloodborneEboot, BannerSeventeenIsTheNightmareSlainMovie) {
+    EXPECT_EQ(Bytes(0x01BF9968, 4), HexBytes("4D 6B EE 58"));             // imul r13, r14, 0x58
+    EXPECT_EQ(Bytes(0x01BF996C, 8), HexBytes("4F 8D A4 2F 98 02 00 00")); // lea r12, [r15+r13+0x298]
+    EXPECT_EQ(Bytes(0x01BF651D, 3), HexBytes("48 8D 15"));                // lea rdx, [rip + x]
+    EXPECT_EQ(0x01BF6524 + ReadAt<s32>(*text, 0x01BF6520), 0x049343C6u);
+    EXPECT_EQ(Bytes(0x01BF654E, 7), HexBytes("49 8D 87 90 08 00 00")); // lea rax, [r15 + 0x890]
+    EXPECT_EQ(0x298u + 17 * 0x58 + 0x20, 0x890u);
 }
 
 // The role table's constructor names the co-operator role 7 (`mov dword [rax + 0x3A8], 107100`) and
