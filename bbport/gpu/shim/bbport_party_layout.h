@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 namespace BbPartyLayout {
 
@@ -85,7 +86,6 @@ inline float ListTop(const Rect& game, const Shift& shift = {}) {
 /// The downed player's own screen, from its revive ring's centre down to the give-up bar: the
 /// ring's radius, then each line's offset below the centre (times `scale`).
 inline constexpr float DownRingRadius = 40.0f;
-inline constexpr float DownTitleBelow = 54.0f;
 inline constexpr float DownHintBelow = 94.0f;
 inline constexpr float DownGiveUpBelow = 128.0f;
 inline constexpr float DownBarBelow = 152.0f;
@@ -95,6 +95,38 @@ inline constexpr float DownBarHeight = 4.0f;
 inline float DownRingY(const Rect& game, float scale) {
     const Rect stage = Stage(game);
     return std::round(stage.y + stage.h * 0.64f - (DownBarBelow + DownBarHeight) * scale);
+}
+
+/// The YOU ARE DOWN banner (bbport_overlay.cpp OwnDown): the overlay's own, since every banner of
+/// the game's HUD is the game's (slot 17 is NIGHTMARE SLAIN, 2026-10-29). As big and yellow as the
+/// banner it replaces, as a player goes down, above the ring.
+inline constexpr float DownBannerSize = 64.0f;
+inline constexpr float DownBannerSeconds = 4.0f;
+inline constexpr float DownBannerFadeIn = 0.4f;
+inline constexpr float DownBannerFadeOut = 1.0f;
+inline constexpr float DownBannerGap = 24.0f;
+
+inline bool DownBannerBegins(bool was_down, bool is_down) {
+    return is_down && !was_down;
+}
+
+/// Its alpha `seconds` after the player went down.
+inline float DownBannerAlpha(float seconds) {
+    if (seconds <= 0.0f || seconds >= DownBannerSeconds) {
+        return 0.0f;
+    }
+    return std::min({1.0f, seconds / DownBannerFadeIn,
+                     (DownBannerSeconds - seconds) / DownBannerFadeOut});
+}
+
+/// The top of its line.
+inline float DownBannerTop(const Rect& game, float scale) {
+    return DownRingY(game, scale) - (DownRingRadius + DownBannerGap + DownBannerSize) * scale;
+}
+
+/// Its words: capitals in English, as the banner had them; another language's words as they are.
+inline const char* DownBannerText(const char* translated) {
+    return std::string_view{translated} == "You are down" ? "YOU ARE DOWN" : translated;
 }
 
 /// The party HUD's prompt (CoopPrompt, hud_patch.py PROMPT_AT): where the game's own prompt has its
