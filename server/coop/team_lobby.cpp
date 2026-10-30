@@ -912,8 +912,8 @@ TeamLobby::Outcome TeamLobby::Request(const std::string& member, const bbcoop::T
             return refuse("only a team's leader resets a world's lamps"); // or one in no team
         }
         bbcoop::TeamWorldInfo* const world = FindWorld(request.world());
-        if (!world || (hosted && std::ranges::find(world->members(), member) ==
-                                     world->members().end())) {
+        if (!world ||
+            (hosted && std::ranges::find(world->members(), member) == world->members().end())) {
             return refuse("the server has no such world");
         }
         if (PlayedBy(request.world(), nullptr)) {

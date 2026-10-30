@@ -815,16 +815,16 @@ int ALampResetClearsOnlyLampFlags() {
                          72110200, 72110219, 73990200}) {
     CHECK(LampResetClears(flag));
   }
-  for (const s32 flag : {1000, 12107810, 12107811, 12117812, 12117800,
-                         12401800, 14007810, 72100200, 72110220, 72110199,
-                         70000200}) {
+  for (const s32 flag : {1000, 12107810, 12107811, 12117812, 12117800, 12401800,
+                         14007810, 72100200, 72110220, 72110199, 70000200}) {
     CHECK(!LampResetClears(flag));
   }
   return 0;
 }
 
 // Provi 2026-10-29: the leader resets a world's lamps in the picker, as it
-// forgets one: never another member, a world the server lacks or one played now.
+// forgets one: never another member, a world the server lacks or one played
+// now.
 int TheLeaderResetsAWorldsLamps() {
   TwoHunters t;
   TeamLobby &lobby = t.lobby;

@@ -506,5 +506,8 @@
  "Invite only: hunters come in when invited. On request: the team is listed and its leader takes who asks. Open to all: anyone listed joins at once.": "仅限邀请：猎人受邀后才能加入。需申请：队伍出现在列表中，队长接受申请者。对所有人开放：列表中的任何人都能立即加入。",
  "Allowed: hunters of other worlds may invade the team's world as red phantoms (when the server allows invasions).": "允许：其他世界的猎人可以作为红色幻影入侵队伍的世界（服务器允许入侵时）。",
  "Host rules": "房主规则",
- "Set in the leader's launcher, on its Co-op page.": "在队长的启动器的合作页面中设置。"
+ "Set in the leader's launcher, on its Co-op page.": "在队长的启动器的合作页面中设置。",
+ "Reset lamps": "重置灯",
+ "Reset lamps? Press again": "要重置吗？再按一次",
+ "Every lamp of this world goes out for every hunter; the rest stays.": "此世界的所有灯都会为每位猎人熄灭，其他内容保留。"
 }

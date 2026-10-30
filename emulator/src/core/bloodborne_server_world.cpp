@@ -2410,8 +2410,9 @@ void ApplyTeamWorldOnLoad(bool trip) {
             std::scoped_lock lock{team_mutex};
             if (playthroughs.NextPlaythrough(slot, *clear_count)) {
                 next_playthrough_due = true;
-                LOG_INFO(Debug, "Co-op team world: slot {} starts its next playthrough (clear "
-                                "count {})",
+                LOG_INFO(Debug,
+                         "Co-op team world: slot {} starts its next playthrough (clear "
+                         "count {})",
                          slot, *clear_count);
             }
         }

@@ -506,5 +506,8 @@
  "Invite only: hunters come in when invited. On request: the team is listed and its leader takes who asks. Open to all: anyone listed joins at once.": "招待のみ：招待された狩人だけが参加します。申請制：チームが一覧に載り、リーダーが申請者を受け入れます。誰でも可：一覧の誰でもすぐに参加できます。",
  "Allowed: hunters of other worlds may invade the team's world as red phantoms (when the server allows invasions).": "許可：他の世界の狩人が赤い霊としてチームの世界に侵入できます（サーバーが侵入を許可している場合）。",
  "Host rules": "ホストのルール",
- "Set in the leader's launcher, on its Co-op page.": "リーダーのランチャーの協力プレイページで設定します。"
+ "Set in the leader's launcher, on its Co-op page.": "リーダーのランチャーの協力プレイページで設定します。",
+ "Reset lamps": "灯りをリセット",
+ "Reset lamps? Press again": "リセットしますか？もう一度押す",
+ "Every lamp of this world goes out for every hunter; the rest stays.": "このワールドの灯りがすべての狩人で消えます。他はそのままです。"
 }

@@ -247,9 +247,10 @@ TEST_F(BloodborneEboot, BannersAreQueuedBySetTextEffect) {
 // 2026-10-29). The text effect dialog plays slot id (`imul r13, r14, 0x58`, the slots from +0x298),
 // and its setup puts the movie named "TextEffect_Draw" (0x049343C6) in slot 17's +0x20.
 TEST_F(BloodborneEboot, BannerSeventeenIsTheNightmareSlainMovie) {
-    EXPECT_EQ(Bytes(0x01BF9968, 4), HexBytes("4D 6B EE 58"));             // imul r13, r14, 0x58
-    EXPECT_EQ(Bytes(0x01BF996C, 8), HexBytes("4F 8D A4 2F 98 02 00 00")); // lea r12, [r15+r13+0x298]
-    EXPECT_EQ(Bytes(0x01BF651D, 3), HexBytes("48 8D 15"));                // lea rdx, [rip + x]
+    EXPECT_EQ(Bytes(0x01BF9968, 4), HexBytes("4D 6B EE 58")); // imul r13, r14, 0x58
+    EXPECT_EQ(Bytes(0x01BF996C, 8),
+              HexBytes("4F 8D A4 2F 98 02 00 00"));        // lea r12, [r15+r13+0x298]
+    EXPECT_EQ(Bytes(0x01BF651D, 3), HexBytes("48 8D 15")); // lea rdx, [rip + x]
     EXPECT_EQ(0x01BF6524 + ReadAt<s32>(*text, 0x01BF6520), 0x049343C6u);
     EXPECT_EQ(Bytes(0x01BF654E, 7), HexBytes("49 8D 87 90 08 00 00")); // lea rax, [r15 + 0x890]
     EXPECT_EQ(0x298u + 17 * 0x58 + 0x20, 0x890u);

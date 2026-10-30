@@ -2320,8 +2320,10 @@ int AWorldsLampsAreReset() {
   CHECK(file.open(QIODevice::ReadOnly));
   const QByteArray bytes = file.readAll();
   bbcoop::TeamWorld stored;
-  CHECK(stored.ParseFromArray(bytes.constData(), static_cast<int>(bytes.size())));
-  CHECK(stored.on_size() == 2 && stored.on(0) == 1000 && stored.on(1) == 12401800);
+  CHECK(
+      stored.ParseFromArray(bytes.constData(), static_cast<int>(bytes.size())));
+  CHECK(stored.on_size() == 2 && stored.on(0) == 1000 &&
+        stored.on(1) == 12401800);
   CHECK(stored.version() == 2);
   CHECK(QFile::exists(QDir{folder}.filePath("team_world.pb.1")));
   return 0;

@@ -506,5 +506,8 @@
  "Invite only: hunters come in when invited. On request: the team is listed and its leader takes who asks. Open to all: anyone listed joins at once.": "Kun invitation: jægere kommer ind, når de inviteres. Spørg først: holdet vises på listen, og lederen tager imod dem, der spørger. Åben for alle: alle på listen kommer ind med det samme.",
  "Allowed: hunters of other worlds may invade the team's world as red phantoms (when the server allows invasions).": "Tilladt: jægere fra andre verdener kan invadere holdets verden som røde fantomer (når serveren tillader invasioner).",
  "Host rules": "Værtsregler",
- "Set in the leader's launcher, on its Co-op page.": "Sat i lederens launcher, på dens Co-op-side."
+ "Set in the leader's launcher, on its Co-op page.": "Sat i lederens launcher, på dens Co-op-side.",
+ "Reset lamps": "Nulstil lygter",
+ "Reset lamps? Press again": "Nulstil lygter? Tryk igen",
+ "Every lamp of this world goes out for every hunter; the rest stays.": "Alle lygter i denne verden slukkes for alle jægere; resten bliver."
 }

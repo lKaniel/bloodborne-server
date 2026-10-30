@@ -506,5 +506,8 @@
  "Invite only: hunters come in when invited. On request: the team is listed and its leader takes who asks. Open to all: anyone listed joins at once.": "Alleen op uitnodiging: jagers komen binnen als ze worden uitgenodigd. Op verzoek: het team staat in de lijst en de leider laat vragers toe. Open voor iedereen: iedereen in de lijst komt meteen binnen.",
  "Allowed: hunters of other worlds may invade the team's world as red phantoms (when the server allows invasions).": "Toegestaan: jagers uit andere werelden kunnen de wereld van het team binnenvallen als rode fantomen (als de server invasies toestaat).",
  "Host rules": "Hostregels",
- "Set in the leader's launcher, on its Co-op page.": "Ingesteld in de launcher van de leider, op de Co-op-pagina."
+ "Set in the leader's launcher, on its Co-op page.": "Ingesteld in de launcher van de leider, op de Co-op-pagina.",
+ "Reset lamps": "Lantaarns resetten",
+ "Reset lamps? Press again": "Resetten? Druk nogmaals",
+ "Every lamp of this world goes out for every hunter; the rest stays.": "Elke lantaarn van deze wereld gaat uit voor alle jagers; de rest blijft."
 }

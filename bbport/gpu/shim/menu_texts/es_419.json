@@ -506,5 +506,8 @@
  "Invite only: hunters come in when invited. On request: the team is listed and its leader takes who asks. Open to all: anyone listed joins at once.": "Solo invitación: los cazadores entran cuando se les invita. Con solicitud: el equipo aparece en la lista y su líder acepta a quien lo pida. Abierto a todos: cualquiera de la lista entra al instante.",
  "Allowed: hunters of other worlds may invade the team's world as red phantoms (when the server allows invasions).": "Permitidos: cazadores de otros mundos pueden invadir el mundo del equipo como fantasmas rojos (si el servidor permite invasiones).",
  "Host rules": "Reglas del anfitrión",
- "Set in the leader's launcher, on its Co-op page.": "Se configuran en el launcher del líder, en su página Cooperativo."
+ "Set in the leader's launcher, on its Co-op page.": "Se configuran en el launcher del líder, en su página Cooperativo.",
+ "Reset lamps": "Reiniciar lámparas",
+ "Reset lamps? Press again": "¿Reiniciarlas? Presiona otra vez",
+ "Every lamp of this world goes out for every hunter; the rest stays.": "Todas las lámparas de este mundo se apagan para todos los cazadores; lo demás se queda."
 }
