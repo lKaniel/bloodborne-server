@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include "gpu/shim/bbport_party_layout.h"
 
 using namespace BbPartyLayout;
@@ -78,6 +79,21 @@ int main() {
     }
     assert(TeamScreenScale(1.0f, 1920.0f) == 1.0f && TeamScreenScale(0.75f, 1280.0f) == 0.75f);
     assert(TeamScreenScale(0.75f, 960.0f) < 0.75f);
+    // The YOU ARE DOWN banner (the overlay's, never the game's NIGHTMARE SLAIN): as a player goes
+    // down, not while it stays down; fades in, holds, fades out; above the ring, inside the frame.
+    assert(DownBannerBegins(false, true));
+    assert(!DownBannerBegins(true, true) && !DownBannerBegins(true, false));
+    assert(DownBannerAlpha(0.0f) == 0.0f && DownBannerAlpha(1.0f) == 1.0f);
+    assert(DownBannerAlpha(DownBannerSeconds - 0.25f) > 0.0f);
+    assert(DownBannerAlpha(DownBannerSeconds) == 0.0f && DownBannerAlpha(-1.0f) == 0.0f);
+    for (const Rect& game : {Rect{0, 0, 1920, 1080}, Rect{0, 60, 1920, 1080}, Rect{0, 0, 3840, 2160}}) {
+        const float scale = Scale(game.h);
+        assert(DownBannerTop(game, scale) >= game.y);
+        assert(DownBannerTop(game, scale) + DownBannerSize * scale <
+               DownRingY(game, scale) - DownRingRadius * scale);
+    }
+    assert(std::strcmp(DownBannerText("You are down"), "YOU ARE DOWN") == 0);
+    assert(std::strcmp(DownBannerText("Niedergestreckt"), "Niedergestreckt") == 0);
     std::puts("Party layout: PASS (1080p, 4K, 720p, small window, letterboxed, pillarboxed, 21:9, 4:3, "
               "narrow team screen)");
 }

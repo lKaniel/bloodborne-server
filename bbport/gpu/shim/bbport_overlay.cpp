@@ -5033,6 +5033,9 @@ void GiveUpBar(ImDrawList* draw, float mid, float ring_y) {
 }
 
 /// This player is down: a red edge around the screen, its revive ring and how to give up.
+// When this player last went down: the YOU ARE DOWN banner runs from here.
+double down_since = -1000.0;
+
 void OwnDown(ImDrawList* draw, float pulse) {
     using namespace BbPartyLayout;
     using Ui::S;
@@ -5053,8 +5056,12 @@ void OwnDown(ImDrawList* draw, float pulse) {
                0.85f + 0.15f * pulse);
     // Said here, never in a game banner: the one the party HUD once took (TextEffect_Draw) is the
     // game's NIGHTMARE SLAIN, and the Wet Nurse's kill read YOU ARE DOWN (player report 2026-10-29).
-    Text(draw, serif_font, S(30.0f), ImVec2(mid, centre.y + S(DownTitleBelow)), Bone(),
-         T("You are down", "Вы повержены"), 0.5f);
+    const float banner = DownBannerAlpha(float(ImGui::GetTime() - down_since));
+    if (banner > 0.0f) {
+        Text(draw, MenuArt::Font(), S(DownBannerSize), ImVec2(mid, DownBannerTop(game, base_scale)),
+             Rgba(0.847f, 0.690f, 0.235f, banner),
+             DownBannerText(T("You are down", "Вы повержены")), 0.5f);
+    }
     if (panel.native_prompt) { // the game's own prompt says it (CoopPrompt): only the hold's bar here
         GiveUpBar(draw, mid, centre.y);
         return;
@@ -5336,6 +5343,12 @@ void Draw() {
     } else if (!panel.native_supplies) { // else the HUD's own vial and bullet show them
         Supplies(draw);
     }
+    static bool was_down = false;
+    const bool is_down = panel.vital == BBCOOP_VITAL_DOWN;
+    if (BbPartyLayout::DownBannerBegins(was_down, is_down)) {
+        down_since = ImGui::GetTime();
+    }
+    was_down = is_down;
     if (panel.vital == BBCOOP_VITAL_SPECTATE) {
         OwnSpectate(draw);
     } else if (panel.vital == BBCOOP_VITAL_DOWN) {
