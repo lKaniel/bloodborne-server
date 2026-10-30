@@ -2644,6 +2644,15 @@ void LocalRevives::Clear() {
     revived.clear();
 }
 
+void QuietKills::Killed(u64 character, s64 now_ms) {
+    since[character] = now_ms;
+}
+
+bool QuietKills::Takes(u64 character, s64 now_ms) {
+    std::erase_if(since, [&](const auto& entry) { return now_ms - entry.second >= QuietMs; });
+    return since.erase(character) > 0;
+}
+
 void TakenBackKills::TakeBack(u32 handle, s64 now_ms) {
     since[handle] = now_ms;
 }
@@ -2754,9 +2763,8 @@ bool SharesWithParty(bool party_configured, bool player_loaded) {
 }
 
 bool SharesKillEchoes(u64 caller_offset, bool posts) {
-    constexpr u64 EnemyKillReward = 0x018FC99B;
     constexpr u64 BossKillReward = 0x01385263;
-    return posts && (caller_offset == EnemyKillReward || caller_offset == BossKillReward);
+    return posts && (caller_offset == EnemyKillRewardOffset || caller_offset == BossKillReward);
 }
 
 void KillEchoLedger::Paid(KillEchoes kill, s64 now_ms) {

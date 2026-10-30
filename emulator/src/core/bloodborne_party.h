@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -1237,6 +1238,8 @@ struct EchoBoardAnswer {
 // `posts`: a party member in the session is on another map (the game shares the echoes with the
 // ones on this map itself) and this member is the one here that posts them (PostsKillEchoes).
 bool SharesKillEchoes(u64 caller_offset, bool posts);
+// Where the enemy kill reward (0x018FC860) returns from its AddSouls call.
+constexpr u64 EnemyKillRewardOffset = 0x018FC99B;
 // The other members' kill echoes read from the board, and which of them this member is owed:
 // all but those the game paid it itself, being on the kill's map then (a kill reward of the same
 // echoes on that map, PaidWindowMs before the post was read up to ReceivedGraceMs after; each
@@ -2131,6 +2134,22 @@ public:
 
 private:
     std::map<u32, s64> since;
+};
+// The copies the kill step puts down with the game's kill (DiesInsteadOfHiding) are kills the
+// party has already: the game's death of any character worth echoes pays the local player
+// (0x018C5084 calls the kill reward 0x018FC860 with the dying character, kept in r14 up to its
+// AddSouls call at 0x018FC995), so a death respawn's reload paid every kill near the lamp again,
+// and the party got them too (Provi's report, v1.3.0: about 10k echoes each time the host died).
+// A copy noted here (Killed) pays nothing: the kill reward for it within QuietMs is taken.
+class QuietKills {
+public:
+    static constexpr s64 QuietMs = 10'000;
+    void Killed(u64 character, s64 now_ms);
+    // Whether the kill reward the game pays now for `character` is taken (once per Killed).
+    bool Takes(u64 character, s64 now_ms);
+
+private:
+    std::unordered_map<u64, s64> since;
 };
 std::string EncodeEchoUpdate(std::string_view member, s64 since,
                              std::span<const KillEchoes> echoes);

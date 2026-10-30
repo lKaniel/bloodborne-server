@@ -2312,6 +2312,10 @@ SeenCharacter SeeCharacter(u64 character) {
                             Coop::CurrentEnemyRole() == EnemyRole::Owner)};
 }
 
+// The copies the kill step put down with the game's kill: their kill reward pays nothing.
+std::mutex quiet_kills_mutex;
+QuietKills quiet_kills;
+
 // A death respawn reset the map: this member's kills are taken back (VisitKills::Forget).
 std::atomic<bool> party_kills_reset{};
 [[maybe_unused]] const bool party_kills_reset_registered =
@@ -2320,6 +2324,11 @@ std::atomic<bool> party_kills_reset{};
 } // namespace
 
 namespace Coop {
+
+bool TakesQuietKillReward(u64 character) {
+    std::scoped_lock lock{quiet_kills_mutex};
+    return quiet_kills.Takes(character, SteadyMilliseconds());
+}
 
 // Enemy deaths kept in step across loads: this member's kills during its visit go to the
 // party's kill board (VisitKills), and its copies of the enemies another member killed during
@@ -2605,12 +2614,16 @@ void KeepEnemyDeathsInStep(bool sharing) {
             if (can_kill && !died_for_others.contains(handle) && !revives.Revived(handle) &&
                 IsCharacter(character, "member kill") &&
                 DiesInsteadOfHiding(me, CharacterPosition(character))) {
-                // Near this player: it dies as the game kills (no echoes), not vanishing. Its
-                // one-time drop first: given with its lot's flag on, the game's death drops no
-                // orb of it as well (Kaniel's test 2026-10-23: the host got the hag's drop and
-                // saw it lying there too).
+                // Near this player: it dies as the game kills, not vanishing, and pays no echoes
+                // (QuietKills). Its one-time drop first: given with its lot's flag on, the game's
+                // death drops no orb of it as well (Kaniel's test 2026-10-23: the host got the
+                // hag's drop and saw it lying there too).
                 if (member_kills.contains(handle)) {
                     GiveMemberKillDrop(character, handle);
+                }
+                {
+                    std::scoped_lock lock{quiet_kills_mutex};
+                    quiet_kills.Killed(character, now_ms);
                 }
                 using Kill = void PS4_SYSV_ABI (*)(u64 character);
                 reinterpret_cast<Kill>(image_base + KillCharacterOffset)(character);
