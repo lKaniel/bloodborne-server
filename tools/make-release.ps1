@@ -31,6 +31,8 @@
 #   -DlssDir        a folder with a built bbport_dlss.dll and nvngx_dlss.dll (default: the port-src
 #                   checkout's bbport\out when this one has none)
 #   -NoDlss         release without DLSS (otherwise a missing DLSS bridge stops the build)
+#   -NotesFile      with -Publish, required: the release's what's-new list (bullets, under bold
+#                   sub-headings if wanted, no what's-new heading). Discord posts only this list
 #   -Iscc           Inno Setup 6's ISCC.exe (default: its per-user or Program Files install)
 param(
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$')][string]$Version,
@@ -39,6 +41,7 @@ param(
     [string]$DlssSdk,
     [string]$DlssDir,
     [switch]$NoDlss,
+    [string]$NotesFile,
     [string]$Iscc,
     [switch]$SkipPortBuild,
     [switch]$SkipServerBuild,
@@ -81,6 +84,17 @@ if (-not $commit) { throw "$root is neither a jj nor a git checkout" }
 Write-Host "  $tag from $commit$(if ($dirty) { ' (with uncommitted changes)' })"
 if ($dirty -and -not $AllowDirty) { throw "The checkout has uncommitted changes: commit them, or pass -AllowDirty for a test build." }
 if ($dirty -and $Publish) { throw "Only a committed (and pushed) tree can be published." }
+
+if ($Publish) {  # before anything builds
+    if (-not $NotesFile) { throw "-Publish needs -NotesFile: the what's-new list Discord posts" }
+    $utf8 = New-Object Text.UTF8Encoding $false
+    $outputEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = $utf8
+    $whatsNew = (py -3.12 -I (Join-Path $PSScriptRoot "release\release_notes.py") section $NotesFile $tag) -join "`n"
+    $notesRc = $LASTEXITCODE
+    [Console]::OutputEncoding = $outputEncoding
+    if ($notesRc -ne 0) { throw "the notes file $NotesFile is not a what's-new list" }
+}
 
 # --- 1. the port -------------------------------------------------------------------------------
 $msys = if ($env:MSYS2_ROOT) { $env:MSYS2_ROOT } else { "C:\msys64" }
@@ -347,7 +361,9 @@ Seamless co-op for Bloodborne on Bloodborne PC (the native Windows port).
 
 **Already installed?** Just open Yharnam Together and press **Update** next to PLAY (or **Check for updates** there if it isn't shown yet). It installs the new version and opens again; saves, settings and mods are kept.
 
-**New players:**
+$whatsNew
+
+**New players**:
 
 1. Download ``$setupName`` and run it (it installs for your Windows user; keep "Create a desktop shortcut" ticked). No installer wanted? Unpack ``$portableName`` anywhere and start ``BLauncher.exe`` in its Yharnam Together folder.
 2. Open **Yharnam Together**. It finds your game; fill in the Co-op card: your game folder, the host's IP and the enemies (**How to connect** explains Radmin VPN).
@@ -360,9 +376,11 @@ Everyone in a team must use this same release. Co-op runs at 60 FPS; a higher fr
 
 Built from $commit. SHA-256 of the setup: ``$sha``, of the portable zip: ``$portableSha``
 "@
+$notesFile = Join-Path $Out "notes.md"
+Write-Utf8 $notesFile $notes
+py -3.12 -I (Join-Path $PSScriptRoot "release\release_notes.py") check $notesFile
+if ($LASTEXITCODE -ne 0) { throw "the release notes would post nothing on Discord" }
 if (Get-Command gh -ErrorAction SilentlyContinue) {
-    $notesFile = Join-Path $Out "notes.md"
-    Write-Utf8 $notesFile $notes
     $flags = @("--draft", "--target", $commit, "--title", "Yharnam Together: Bloodborne Seamless Co-op $tag", "--notes-file", $notesFile)
     if ($Prerelease) { $flags += "--prerelease" }
     gh release create $tag $setup "$setup.sha256" $portable "$portable.sha256" --repo $Repo @flags
