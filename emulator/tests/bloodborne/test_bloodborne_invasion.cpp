@@ -121,6 +121,21 @@ TEST(Invasion, TheInvaderIsNobodyToStayFor) {
     EXPECT_EQ(TeamSessionMembers(1, true), 1u);
 }
 
+// The server's "joined" comes about 5 s before the invader's game is in the room: the team guest's
+// one other member is still its host, and it must not leave (rig 2026-10-31, invade-solo).
+TEST(Invasion, TheInvaderCountsOnlyOnceItIsInTheSession) {
+    using Names = std::vector<std::optional<std::string>>;
+    const Names host = {"host"};
+    EXPECT_FALSE(InvaderInSession(host, "invader"));
+    EXPECT_EQ(TeamSessionMembers(2, InvaderInSession(host, "invader")), 2u);
+    const Names invader = {"invader"};
+    EXPECT_TRUE(InvaderInSession(invader, "invader"));
+    EXPECT_EQ(TeamSessionMembers(2, InvaderInSession(invader, "invader")), 1u);
+    const Names unknown = {std::nullopt};
+    EXPECT_FALSE(InvaderInSession(unknown, "invader"));
+    EXPECT_FALSE(InvaderInSession(invader, ""));
+}
+
 // The invader joins with the server's kind and sign as they come (never a team guest's 7/6/5); the
 // fallback joins as a co-operator with the server's slot and is made hostile after.
 TEST(Invasion, JoinTakesTheServersKindAndSign) {
