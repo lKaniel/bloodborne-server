@@ -20,8 +20,9 @@ SHADNET_PORT = 32313
 WEBAPI_PORT = SHADNET_PORT + 2
 BACKEND_PORT = 20453
 GAME_SERVER = "https://ss4.scej-network.jp:20443"
-# The rig's accounts on its shadNet (rig-setup.ps1, run_scenario.py --add-guest2).
-ACCOUNTS = {"host": "rig_host", "guest": "rig_guest", "guest2": "rig_guest2"}
+# The rig's accounts on its shadNet (rig-setup.ps1, run_scenario.py --add-guest2/--add-guest3).
+ACCOUNTS = {"host": "rig_host", "guest": "rig_guest", "guest2": "rig_guest2",
+            "guest3": "rig_guest3"}
 PASSWORD = "rig"
 # Every build's game process, the rig's own and anyone else's (a player's copy).
 GAME_PROCESSES = ("shadPS4.exe", "bb-probe.exe")

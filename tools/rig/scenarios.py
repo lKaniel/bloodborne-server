@@ -304,6 +304,74 @@ def attack(target: str) -> list[str]:
     return [f"attack {target} 40"]
 
 
+
+# Kaniel 2026-10-31, teams apart (teams-apart, team-switch, invade-solo): each team's own flags,
+# a map block's unused one and a story or lamp flag; none is on in the rig's saves.
+FORBIDDEN_WOODS = "0x1b000000"
+FORBIDDEN_WOODS_LAMP = 2702950
+TEAM_FLAGS = {"A": (TEAM_WORLD_FLAG, CLERIC_BEAST_DEFEATED),
+              "B": (12400999, ONE_REBORN_DEFEATED),  # the Ward's unused block flag (WARD_BLOCK_FLAG)
+              "C": (OTHER_MAP_FLAG, YAHARGUL_LAMP_LIT)}
+# Simon's hostility in Ludwig's arena (m34: 1726 hostile, 13400913/13400923 its hit and done
+# flags, 73400421 its story step), which reached a team world from nowhere on 2026-10-28.
+SIMON_HOSTILE = (1726, 13400913, 13400923, 73400421)
+
+
+def expect_team_flags(own: str, others: tuple[str, ...], loaded: bool = True) -> list[str]:
+    """A game's checks: its team's flags on, the other teams' and Simon's hostility off. Before a
+    load (not `loaded`) a team guest has only the story flag: a block's flag comes with a load."""
+    return ([f"expect-flag {flag} 1" for flag in TEAM_FLAGS[own][0 if loaded else 1:]] +
+            [f"expect-flag {flag} 0" for team in others for flag in TEAM_FLAGS[team]] +
+            [f"expect-flag {flag} 0" for flag in SIMON_HOSTILE])
+
+
+def flags_off(*teams: str) -> list[str]:
+    """None of the teams' flags on (at the start: the saves')."""
+    return [f"expect-flag {flag} 0" for team in teams for flag in TEAM_FLAGS[team]]
+
+
+def apart_flags(own: str, *others: str) -> list[str]:
+    """None of the teams' flags on at the start, then the team's own set."""
+    return [*flags_off(own, *others), *[f"set-flag {flag} 1" for flag in TEAM_FLAGS[own]],
+            "wait 10"]
+
+
+def apart_script(own: str, others: tuple[str, ...], where: list[str], lamp: str, map_: str,
+                 team: list[str], members: int, sets: bool = True) -> list[str]:
+    """teams-apart's script for one game of team `own`: in its world, its flags set (by its
+    host: `sets`), everyone's checked, then a load from its team's world (the Dream and back) and
+    checked again. Every game checks the start before any sets a flag (apart-start)."""
+    setting = [f"set-flag {flag} 1" for flag in TEAM_FLAGS[own]] if sets else []
+    return [*team, START, *where, "godmode", f"wait-session {members} 300",
+            *flags_off(own, *others), "sync apart-start", *setting, "wait 10", "sync apart-set",
+            "wait 10", *expect_team_flags(own, others, loaded=sets),
+            f"expect-session {members}", "sync apart-checked", f"travel {HUNTERS_DREAM}", "wait-map 0x15000000 180",
+            "wait 10", f"travel {lamp}", f"wait-map {map_} 240",
+            f"wait-session {members} 420", "wait 15", *expect_team_flags(own, others),
+            f"expect-session {members}"]
+
+
+SOLO_TEAM = ["team-create", "team-wait 1", "team-start"]
+TO_WARD = [f"ensure-map {CATHEDRAL_WARD} {CATHEDRAL_WARD_LAMP}"]
+TO_WOODS = [f"ensure-map {FORBIDDEN_WOODS} {FORBIDDEN_WOODS_LAMP}"]
+TEAMS_APART_ROLES = {
+    "host": apart_script("A", ("B", "C"), [], CENTRAL_YHARNAM_LAMP, CENTRAL_YHARNAM,
+                         ["team-create", "team-invite rig_guest", "team-wait 2", "team-start"], 2),
+    "guest": apart_script("A", ("B", "C"), [], CENTRAL_YHARNAM_LAMP, CENTRAL_YHARNAM,
+                          ["team-accept", "team-ready"], 2, sets=False),
+    "guest2": apart_script("B", ("A", "C"), TO_WARD, CATHEDRAL_WARD_LAMP, CATHEDRAL_WARD,
+                           SOLO_TEAM, 1),
+    "guest3": apart_script("C", ("A", "B"), TO_WOODS, FORBIDDEN_WOODS_LAMP, FORBIDDEN_WOODS,
+                           SOLO_TEAM, 1),
+}
+TEAMS_APART3_ROLES = {
+    "host": apart_script("A", ("B", "C"), [], CENTRAL_YHARNAM_LAMP, CENTRAL_YHARNAM, SOLO_TEAM, 1),
+    "guest": apart_script("B", ("A", "C"), TO_WARD, CATHEDRAL_WARD_LAMP, CATHEDRAL_WARD,
+                          SOLO_TEAM, 1),
+    "guest2": apart_script("C", ("A", "B"), TO_WOODS, FORBIDDEN_WOODS_LAMP, FORBIDDEN_WOODS,
+                           SOLO_TEAM, 1),
+}
+
 SCENARIOS = {
     "setup": {
         "about": "every rig game at the first Central Yharnam lamp, saved there (then "
@@ -2502,6 +2570,99 @@ SCENARIOS = {
             "guest": [r"Co-op team menu: this save joins team \w+ where it stands, as its guest"],
         },
         "timeout": 300,
+    },
+    # Kaniel 2026-10-31: three teams on one server, each in its own world, never touch each
+    # other's progress. Team A (host and guest) plays in Central Yharnam, team B (guest2) in the
+    # Cathedral Ward, team C (guest3) in the Forbidden Woods. Each sets its own two flags (a map
+    # block's unused flag and a story or lamp flag); every game then finds its team's on and the
+    # other teams' off, again after a load from its team's world (a trip to the Dream and back).
+    # Simon's hostility (a team world took it from nowhere on 2026-10-28) stays off everywhere.
+    "teams-apart": {
+        "about": "three teams on one server in three worlds: each one's flags reach only its own "
+                 "team's games, before and after a load from its team's world",
+        "roles": TEAMS_APART_ROLES,
+        "syncs": {name: {"chapter": "teams-apart", "roles": list(TEAMS_APART_ROLES)}
+                  for name in ("apart-start", "apart-set", "apart-checked")},
+        "forbid": {role: SESSION_HOLDS for role in TEAMS_APART_ROLES},
+        "allow": CRASH_CLEANUP,
+        "timeout": 1200,
+    },
+    # The same with three games (one each), for a PC with less room.
+    "teams-apart3": {
+        "about": "three one-player teams on one server in three worlds: each one's flags reach "
+                 "only its own game, before and after a load from its team's world",
+        "roles": TEAMS_APART3_ROLES,
+        "syncs": {name: {"chapter": "teams-apart3", "roles": list(TEAMS_APART3_ROLES)}
+                  for name in ("apart-start", "apart-set", "apart-checked")},
+        "forbid": {role: SESSION_HOLDS for role in TEAMS_APART3_ROLES},
+        "allow": CRASH_CLEANUP,
+        "timeout": 1200,
+    },
+    # Kaniel 2026-10-31: a player changes teams. guest2 plays in its own team C in the Ward, then
+    # leaves it and joins the host's team A (invited from its menu); after its next load it has
+    # A's progress. A never gets C's, and team B (the guest, in the Forbidden Woods) neither.
+    "team-switch": {
+        "about": "a player leaves its own team for another one: it takes the new team's progress "
+                 "after a load, the new team never gets its old team's, a third team none",
+        "roles": {
+            "host": ["team-create", "team-wait 1", "team-start", START, "godmode",
+                     *apart_flags("A", "C"), "sync switch-set", "sync switch-left",
+                     "menu-invite rig_guest2 240", "wait-session 2 420", "wait 10",
+                     "sync switch-joined", "sync switch-loaded", "wait 15",
+                     *expect_team_flags("A", ("B", "C")), "expect-session 2"],
+            "guest": ["team-create", "team-wait 1", "team-start", START,
+                      f"ensure-map {FORBIDDEN_WOODS} {FORBIDDEN_WOODS_LAMP}", "godmode",
+                      *apart_flags("B", "A"), "sync switch-set", "sync switch-left",
+                      "sync switch-joined", "sync switch-loaded", "wait 15",
+                      *expect_team_flags("B", ("A", "C")), "expect-session 1"],
+            "guest2": ["team-create", "team-wait 1", "team-start", START,
+                       f"ensure-map {CATHEDRAL_WARD} {CATHEDRAL_WARD_LAMP}", "godmode",
+                       *apart_flags("C", "B"), "sync switch-set", "menu-leave 120", "wait 5",
+                       "sync switch-left", "menu-join 300", "wait-session 2 420",
+                       "sync switch-joined", f"travel {HUNTERS_DREAM}", "wait-map 0x15000000 180",
+                       "wait 10", f"travel {CENTRAL_YHARNAM_LAMP}",
+                       f"wait-map {CENTRAL_YHARNAM} 240", "wait-session 2 420", "wait 10",
+                       *expect_team_flags("A", ("B",)), "sync switch-loaded",
+                       "expect-session 2"],
+        },
+        "syncs": {name: {"chapter": "team-switch", "roles": ["host", "guest", "guest2"]}
+                  for name in ("switch-set", "switch-left", "switch-joined", "switch-loaded")},
+        "expect": {"guest2": [r"Co-op team lobby: the save plays in team \w+ as its host",
+                              r"Co-op team menu: this save joins team \w+ where it stands, as "
+                              r"its guest"]},
+        "allow": CRASH_CLEANUP,
+        "timeout": 1500,
+    },
+    # Kaniel 2026-10-31: invasions on the server (docs/INVASIONS.md, never played in a game before
+    # this). Team A (host and guest) in Central Yharnam allows invaders; guest2, in no team, in the
+    # Cathedral Ward, invades it, is in A's world, and goes home. The invader's own flag stays out
+    # of A's world and A's out of the invader's save.
+    "invade-solo": {
+        "about": "a player in no team invades a team that allows invaders: it reaches the team's "
+                 "world, goes home after, and neither world takes the other's flags",
+        "server": {"Invasions": "true"},
+        "roles": {
+            "host": ["team-create", "team-invite rig_guest", "team-wait 2", "team-start", START,
+                     "godmode", "wait-session 2 300", "menu-allow-invaders 1 60",
+                     f"set-flag {TEAM_FLAGS['A'][0]} 1", "sync invade-allowed",
+                     "wait-invader 1 420", "wait 20", "sync invade-in", "sync invade-home",
+                     "wait-invader 0 120", "wait 10", f"expect-flag {TEAM_FLAGS['A'][0]} 1",
+                     f"expect-flag {TEAM_FLAGS['B'][0]} 0", "expect-session 2"],
+            "guest": ["team-accept", "team-ready", START, "godmode", "wait-session 2 300",
+                      "sync invade-allowed", "wait-invader 1 420", "sync invade-in",
+                      "sync invade-home", "wait-invader 0 120", "wait 10",
+                      f"expect-flag {TEAM_FLAGS['B'][0]} 0", "expect-session 2"],
+            "guest2": ["team-alone", START, f"ensure-map {CATHEDRAL_WARD} {CATHEDRAL_WARD_LAMP}",
+                       "godmode", f"set-flag {TEAM_FLAGS['B'][0]} 1", "sync invade-allowed",
+                       "menu-invade 420", "wait 15", f"expect-map {CENTRAL_YHARNAM}",
+                       "shot invader-in", "sync invade-in", "menu-invade-leave 240", "wait 20",
+                       "sync invade-home", f"expect-flag {TEAM_FLAGS['B'][0]} 1",
+                       f"expect-flag {TEAM_FLAGS['A'][0]} 0"],
+        },
+        "syncs": {name: {"chapter": "invade-solo", "roles": ["host", "guest", "guest2"]}
+                  for name in ("invade-allowed", "invade-in", "invade-home")},
+        "allow": CRASH_CLEANUP,
+        "timeout": 1500,
     },
     "join3": {
         "about": "a party of three: both guests join the host (one bell summons both)",
