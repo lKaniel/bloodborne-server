@@ -310,16 +310,17 @@ def attack(target: str) -> list[str]:
 FORBIDDEN_WOODS = "0x1b000000"
 FORBIDDEN_WOODS_LAMP = 2702950
 TEAM_FLAGS = {"A": (TEAM_WORLD_FLAG, CLERIC_BEAST_DEFEATED),
-              "B": (12400999, GASCOIGNE_DEFEATED),  # the Ward's unused block flag (WARD_BLOCK_FLAG)
+              "B": (12400999, ONE_REBORN_DEFEATED),  # the Ward's unused block flag (WARD_BLOCK_FLAG)
               "C": (OTHER_MAP_FLAG, YAHARGUL_LAMP_LIT)}
 # Simon's hostility in Ludwig's arena (m34: 1726 hostile, 13400913/13400923 its hit and done
 # flags, 73400421 its story step), which reached a team world from nowhere on 2026-10-28.
 SIMON_HOSTILE = (1726, 13400913, 13400923, 73400421)
 
 
-def expect_team_flags(own: str, others: tuple[str, ...]) -> list[str]:
-    """A game's checks: its team's flags on, the other teams' and Simon's hostility off."""
-    return ([f"expect-flag {flag} 1" for flag in TEAM_FLAGS[own]] +
+def expect_team_flags(own: str, others: tuple[str, ...], loaded: bool = True) -> list[str]:
+    """A game's checks: its team's flags on, the other teams' and Simon's hostility off. Before a
+    load (not `loaded`) a team guest has only the story flag: a block's flag comes with a load."""
+    return ([f"expect-flag {flag} 1" for flag in TEAM_FLAGS[own][0 if loaded else 1:]] +
             [f"expect-flag {flag} 0" for team in others for flag in TEAM_FLAGS[team]] +
             [f"expect-flag {flag} 0" for flag in SIMON_HOSTILE])
 
@@ -343,8 +344,8 @@ def apart_script(own: str, others: tuple[str, ...], where: list[str], lamp: str,
     setting = [f"set-flag {flag} 1" for flag in TEAM_FLAGS[own]] if sets else []
     return [*team, START, *where, "godmode", f"wait-session {members} 300",
             *flags_off(own, *others), "sync apart-start", *setting, "wait 10", "sync apart-set",
-            "wait 10", *expect_team_flags(own, others), f"expect-session {members}",
-            "sync apart-checked", f"travel {HUNTERS_DREAM}", "wait-map 0x15000000 180",
+            "wait 10", *expect_team_flags(own, others, loaded=sets),
+            f"expect-session {members}", "sync apart-checked", f"travel {HUNTERS_DREAM}", "wait-map 0x15000000 180",
             "wait 10", f"travel {lamp}", f"wait-map {map_} 240",
             f"wait-session {members} 420", "wait 15", *expect_team_flags(own, others),
             f"expect-session {members}"]
