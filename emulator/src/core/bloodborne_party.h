@@ -3423,10 +3423,12 @@ s32 DownedHp(s32 max, u32 landed, u32 needed);
 // TextEffect_KillDemon), 2 YOU DIED, 4 BLOOD ECHOES RETRIEVED, 5 PREY SLAUGHTERED again
 // (TextEffect_KillTarget), 7 ADVERSARY EXPUNGED, 15 UNLOCKED, 16 a wordless one, 17 NIGHTMARE SLAIN
 // (TE_Draw's slot: TextEffect_Draw, text 522007; Mergo's Wet Nurse, Gehrman, the Orphan of Kos).
-// Every banner the HUD has is the game's own, so party death shows none (the overlay says YOU ARE
-// DOWN).
+// Every banner the HUD has is in use. Party death takes 15 (fe.gfx TextEffect_YouWin, the same
+// timeline and layers as NIGHTMARE SLAIN's): the party HUD (bbport/scripts/hud_patch.py) makes it
+// the yellow YOU ARE DOWN, and the event patch drops its one game event (m29 12900192).
 constexpr u64 SetTextEffectOffset = 0x013360B0;
 constexpr std::array<u8, 6> SetTextEffectStart{0x8D, 0x46, 0xFF, 0x83, 0xF8, 0x10};
+constexpr s32 DownedBannerTextEffect = 15;
 
 // The party HUD's nameplates: the game's tag over each remote player (fe.gfx RemotePCTag0-6). The
 // HUD tick updates each tag from a TagData (0x01B59E20: rdi the tag, rsi its data), and its one

@@ -53,26 +53,32 @@ DRAW_HTML = ('<p align="center"><font size="124" color="#9b2102" letterSpacing="
              '<b>HUNTED NIGHTMARE</b></font></p>')
 STOCK_HTML = '<p align="left"><font size="24" color="#afafaf"><b>99</b></font></p>'
 DEAD_HTML = DRAW_HTML.replace('9b2102', '960807').replace('HUNTED NIGHTMARE', 'YOU DIED')
+WIN_HTML = DRAW_HTML.replace('9b2102', 'fefefe').replace('HUNTED NIGHTMARE', 'UNLOCKED')
 
 
 def fe_movie():
-    """A small fe.gfx: TextEffect_Draw (two layers of its text) and TextEffect_Dead, as the game's is built."""
+    """A small fe.gfx: TextEffect_Draw and TextEffect_YouWin (two layers of their text) and TextEffect_Dead, as
+    the game's is built."""
     return movie(
         edit_text(10, DRAW_HTML), sprite(11, place2(1, 10, 'StaticText_522007')),
         edit_text(12, DRAW_HTML), sprite(13, place2(1, 12, 'StaticText_522007')),
         sprite(14, place2(1, 11, ''), place2(3, 13, '')),
         edit_text(20, DEAD_HTML, b'\x96\x08\x07\xff'), sprite(21, place2(1, 20, 'StaticText_522001')),
         sprite(22, place2(1, 21, '')),
+        edit_text(50, WIN_HTML, bytes.fromhex('fefefeff')), sprite(51, place2(1, 50, 'StaticText_522002')),
+        edit_text(52, WIN_HTML, bytes.fromhex('fefefeff')), sprite(53, place2(1, 52, 'StaticText_522002')),
+        sprite(54, place2(1, 51, ''), place2(3, 53, '')),
         sprite(30, tag(1, b'')), sprite(31, tag(1, b'')),
         # The player's HUD: its vial (TriDrug: a drawing, Stock/Stock) and bullet (AmmoItem: a drawing).
         shape(40, 48, 48), shape(41, 48, 48), edit_text(42, STOCK_HTML),
         sprite(43, place2(1, 42, 'Stock')), sprite(44, place2(1, 40, ''), place2(2, 43, 'Stock')),
         sprite(45, place2(1, 41, '')), sprite(46, place2(1, 44, 'TriDrug'), place2(2, 45, 'AmmoItem')),
         place2(4, 46, 'PlayerHUD'),
-        place2(5, 14, 'TextEffect_Draw'), place2(6, 22, 'TextEffect_Dead'), place2(9, 30, 'RemotePCTag0'),
+        place2(5, 14, 'TextEffect_Draw'), place2(6, 22, 'TextEffect_Dead'), place2(7, 54, 'TextEffect_YouWin'),
+        place2(9, 30, 'RemotePCTag0'),
         place2(10, 31, 'ActionButtonTop'),
         tag(1, b''),
-        symbol_class(14, 'Fe_fla._TextEffect_Draw_195'))
+        symbol_class(14, 'Fe_fla._TextEffect_Draw_195'), symbol_class(54, 'Fe_fla._TextEffect_YouWin_181'))
 
 
 class GfxTests(unittest.TestCase):
@@ -80,14 +86,12 @@ class GfxTests(unittest.TestCase):
         data = fe_movie()
         self.assertEqual(hud_patch.write_movie(hud_patch.read_movie(data)), data)
 
-    def test_the_game_banners_stay_the_games(self):
+    def test_nightmare_slain_stays_the_games(self):
         # Player report 2026-10-29: killing Mergo's Wet Nurse said YOU ARE DOWN. TextEffect_Draw is the game's
-        # NIGHTMARE SLAIN (text 522007, SetTextEffect 17), not an unused PvP banner: no banner is changed.
+        # NIGHTMARE SLAIN (text 522007, SetTextEffect 17), not an unused PvP banner: it is not changed.
         data = fe_movie()
         patched = hud_patch.patch_fe(data)
         self.assertEqual(struct.unpack_from('<I', patched, 4)[0], len(patched))
-        self.assertNotIn(b'YOU ARE DOWN', patched)
-        self.assertNotIn(b'CoopDownedText', patched)
         self.assertEqual(patched.count(b'StaticText_522007'), 2)
         self.assertEqual(patched.count(DRAW_HTML.encode()), 2)
         self.assertIn(b'<b>YOU DIED</b>', patched)
@@ -100,6 +104,20 @@ class GfxTests(unittest.TestCase):
                     if t.code in (hud_patch.SPRITE, hud_patch.EDIT_TEXT) and struct.unpack_from('<H', t.body)[0] <= 14}
         self.assertEqual(banner_tags(tags), banner_tags(original))
         self.assertEqual(hud_patch.write_movie(hud_patch.read_movie(patched)), patched)
+
+    def test_the_downed_banner_takes_the_youwin_slot(self):
+        patched = hud_patch.patch_fe(fe_movie())
+        self.assertEqual(hud_patch.DOWNED_BANNER, 'Fe_fla._TextEffect_YouWin_181')
+        self.assertEqual(patched.count(b'<b>YOU ARE DOWN</b>'), 2)  # both layers of the banner
+        self.assertIn(b'color="#d8b03c"', patched)
+        self.assertNotIn(b'UNLOCKED', patched)
+        # The game fills fields named StaticText_<id> from its text tables: the banner's fields are renamed.
+        self.assertNotIn(b'StaticText_522002', patched)
+        self.assertEqual(patched.count(hud_patch.DOWNED_FIELD.encode()), 2)
+
+    def test_a_movie_without_the_youwin_banner_is_refused(self):
+        with self.assertRaises(ValueError):
+            hud_patch.patch_fe(movie(sprite(14, tag(1, b''))))
 
     def test_the_party_list_is_three_more_nameplate_tags_on_top(self):
         _, tags = hud_patch.read_movie(hud_patch.patch_fe(fe_movie()))
@@ -354,8 +372,9 @@ class GfxTests(unittest.TestCase):
         self.assertEqual(bits.data(), bytes([0b11100000]))
 
     def test_a_hud_without_remote_tags_gets_no_list(self):
-        data = fe_movie().replace(b'RemotePCTag0', b'RemotePCTagX')
-        self.assertEqual(hud_patch.patch_fe(data), data)
+        patched = hud_patch.patch_fe(fe_movie().replace(b'RemotePCTag0', b'RemotePCTagX'))
+        self.assertIn(b'YOU ARE DOWN', patched)
+        self.assertNotIn(b'CoopParty0', patched)
 
     def test_the_patch_is_idempotent(self):
         once = hud_patch.patch_fe(fe_movie())
@@ -371,7 +390,8 @@ class GfxTests(unittest.TestCase):
         self.assertEqual(hud_patch.write_movie(hud_patch.read_movie(data)), data)
         patched = hud_patch.patch_fe(data)
         self.assertEqual(patched.count(b'StaticText_522007'), data.count(b'StaticText_522007'))  # NIGHTMARE SLAIN
-        self.assertNotIn(b'YOU ARE DOWN', patched)
+        self.assertEqual(patched.count(b'<b>YOU ARE DOWN</b>'), 2)
+        self.assertNotIn(b'StaticText_522002', patched)
         for name in hud_patch.PARTY_LIST:
             self.assertEqual(patched.count(name.encode() + b'\0'), 1)
         with_icons = hud_patch.patch_fe(data, hud_patch.HUD_ICONS.read_bytes())

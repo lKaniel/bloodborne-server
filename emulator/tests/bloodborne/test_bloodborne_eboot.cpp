@@ -256,6 +256,18 @@ TEST_F(BloodborneEboot, BannerSeventeenIsTheNightmareSlainMovie) {
     EXPECT_EQ(0x298u + 17 * 0x58 + 0x20, 0x890u);
 }
 
+// Party death's YOU ARE DOWN is banner 15: the setup puts the movie named "TextEffect_YouWin" in
+// slot 15's +0x20, the HUD patch makes it the yellow banner, and an id out of 1 to 17 queues
+// nothing (m29 12900192's banner is patched to 0).
+TEST_F(BloodborneEboot, BannerFifteenIsTheYouWinMovie) {
+    EXPECT_EQ(DownedBannerTextEffect, 15);
+    EXPECT_EQ(Bytes(0x01BF628D, 3), HexBytes("48 8D 15"));
+    EXPECT_EQ(0x01BF6294 + ReadAt<s32>(*text, 0x01BF6290), 0x049343A1u);
+    EXPECT_EQ(Bytes(0x01BF62BE, 3), HexBytes("49 8D 87"));
+    EXPECT_EQ(ReadAt<u32>(*text, 0x01BF62C1), 0x298u + 15 * 0x58 + 0x20);
+    EXPECT_EQ(Bytes(SetTextEffectOffset + SetTextEffectStart.size(), 1), HexBytes("77")); // ja
+}
+
 // The role table's constructor names the co-operator role 7 (`mov dword [rax + 0x3A8], 107100`) and
 // clears role 6's texts (`vmovaps [rax + 0x320], xmm0`), and the nameplate reads the role's +0x28
 // from the table (`lea rcx, [rip + ...]; mov esi, [rcx + rax + 0x28]` at 0x01AE8643).

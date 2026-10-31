@@ -1278,6 +1278,30 @@ void SetPlayerFlag(u64 offset, u8 value) {
     WriteValue(image_base + offset, 0, value);
 }
 
+// The yellow YOU ARE DOWN banner (the party HUD's, in place of the game's UNLOCKED banner): queued
+// by the game's own SetTextEffect, as YOU DIED is. Without the party HUD it would say UNLOCKED, so
+// it is left out where the HUD is not the port's (the emulator) or is off (BB_PARTY_HUD=0).
+void ShowDownedBanner() {
+#ifdef BLOODBORNE_PARTY_HUD
+    static const bool party_hud = [] {
+        const char* setting = std::getenv("BB_PARTY_HUD"); // run.py's switch for the patched HUD
+        return setting == nullptr || std::string_view{setting} != "0";
+    }();
+    if (!party_hud) {
+        return;
+    }
+    const auto* start = reinterpret_cast<const u8*>(image_base + SetTextEffectOffset);
+    if (!std::ranges::equal(std::span<const u8>{start, SetTextEffectStart.size()},
+                            SetTextEffectStart)) {
+        LOG_ERROR(Debug, "Bloodborne party death: SetTextEffect is not where it should be; no "
+                         "downed banner");
+        return;
+    }
+    reinterpret_cast<void PS4_SYSV_ABI (*)(u64, s32)>(image_base + SetTextEffectOffset)(
+        0, DownedBannerTextEffect);
+#endif
+}
+
 void GoDown(PartyDeathRun& run, u64 data, s64 now_ms) {
     const u32 down = run.downed.GoDown(now_ms, ReadValue<s32>(data, 0xFC));
     run.give_up.Restart((party_pad_buttons.load() & PadCircle) != 0);
@@ -1290,6 +1314,7 @@ void GoDown(PartyDeathRun& run, u64 data, s64 now_ms) {
     run.silence_before = ReadValue<u8>(image_base + PlayerSilenceFlagOffset, 0);
     SetPlayerFlag(PlayerHideFlagOffset, 1);
     SetPlayerFlag(PlayerSilenceFlagOffset, 1);
+    ShowDownedBanner();
     // The pose waits until the player takes it (KeepDown).
     run.kneel_waiting = downed_animation > 0;
     run.down_since = now_ms;

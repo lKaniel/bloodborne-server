@@ -346,6 +346,39 @@ CHALICE_REWARD_EVENTS = {'m29.emevd.dcx': 12901693}
 GOTO_IF_MULTIPLAYER_STATE = (1003, 105)
 
 
+# The game's banner 15 (TextEffect_YouWin, UNLOCKED) is party death's YOU ARE DOWN in the HUD patch
+# (bbport/scripts/hud_patch.py): every banner is in use and this one has NIGHTMARE SLAIN's timeline
+# and layers. Its only event shows none; the message box after it still says what happened.
+# SetTextEffect takes ids 1 to 17, so id 0 queues nothing.
+DROPPED_BANNER_EVENTS = {'m29.emevd.dcx': {12900192}}
+SET_TEXT_EFFECT = (2007, 2)
+DOWNED_BANNER_ID = 15
+
+
+def drop_banners(emevd: bytes, wanted: set[int],
+                 edits: list | None = None) -> tuple[bytes, int]:
+    data = bytearray(emevd)
+    fields = struct.unpack_from('<16q', data, 16)
+    event_count, event_offset, instruction_offset, args_offset = (fields[0], fields[1], fields[3],
+                                                                  fields[13])
+    patched = 0
+    for index in range(event_count):
+        event, count, first, _, _, _, _ = struct.unpack_from('<qqqqqii', data,
+                                                             event_offset + index * 48)
+        if event not in wanted:
+            continue
+        for k in range(count):
+            bank, ident, length, offset, _ = struct.unpack_from(
+                '<iiqqq', data, instruction_offset + first + k * INSTRUCTION_SIZE)
+            at = args_offset + offset
+            if ((bank, ident) == SET_TEXT_EFFECT and length >= 4 and
+                    struct.unpack_from('<i', data, at)[0] == DOWNED_BANNER_ID):
+                struct.pack_into('<i', data, at, 0)
+                note(edits, event, k, bank, ident, 'its banner is the downed banner now')
+                patched += 1
+    return bytes(data), patched
+
+
 def patch_chalice_rewards(emevd: bytes, edits: list | None = None,
                           event_id: int = 12901693) -> tuple[bytes, int]:
     data = bytearray(emevd)
@@ -1030,7 +1063,7 @@ def patch_file(name: str, original: bytes) -> tuple[bytes | None, list, dict]:
               'client event ends': 0, 'local events': 0, 'chalice wall checks': 0,
               'item pickup checks': 0, 'host door effects': 0, 'ambush checks': 0,
               'chalice reward checks': 0, 'one-time enemy checks': 0, 'lake dive checks': 0,
-              'ending checks': 0}
+              'ending checks': 0, 'dropped banners': 0}
     try:
         if name.startswith('m'):
             emevd, counts['boss event checks'] = patch_events(emevd, edits)
@@ -1061,6 +1094,9 @@ def patch_file(name: str, original: bytes) -> tuple[bytes | None, list, dict]:
         if name in CHALICE_REWARD_EVENTS:
             emevd, counts['chalice reward checks'] = patch_chalice_rewards(
                 emevd, edits, CHALICE_REWARD_EVENTS[name])
+        if name in DROPPED_BANNER_EVENTS:
+            emevd, counts['dropped banners'] = drop_banners(emevd, DROPPED_BANNER_EVENTS[name],
+                                                            edits)
         # Last: validate names changed instructions by their number in the game's event, which
         # only inserts move.
         if name in LOCAL_EVENTS:
