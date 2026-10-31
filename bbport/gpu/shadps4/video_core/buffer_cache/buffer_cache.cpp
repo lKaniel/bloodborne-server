@@ -679,7 +679,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
             std::printf("GPU: no VRAM kept for the game's memory (it can use system memory)\n");
         }
         if (const char* env = std::getenv("BB_VRAM_RESERVE_MB")) {
-            size = std::min(size, std::strtoull(env, nullptr, 10) << 20) / block_size * block_size;
+            size = std::min<u64>(size, std::strtoull(env, nullptr, 10) << 20) / block_size * block_size;
         }
         if (size != 0) {
             auto reserve = device.allocateMemory(
