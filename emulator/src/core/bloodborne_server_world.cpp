@@ -2073,6 +2073,28 @@ void TeamBackAtTitle() {
     }
 }
 
+// The session's members for TeamJoin: the invader only once its game is one of them. Only two
+// members can read "alone", and the name search runs twice a second at most.
+size_t TeamJoinMembers() {
+    const size_t members = SessionMembers();
+    const std::string invader = InvaderInWorld();
+    if (invader.empty() || members != 2) {
+        return members;
+    }
+    static s64 looked_ms = 0;
+    static bool in_session = false;
+    if (const s64 now_ms = SteadyMilliseconds(); now_ms - looked_ms >= 500) {
+        looked_ms = now_ms;
+        const std::vector<std::string> online_ids{OnlineIdOfBoardMember(invader)};
+        std::vector<std::optional<std::string>> names;
+        for (const u64 member : OtherSessionMembers()) {
+            names.push_back(SessionMemberBoardName(member, online_ids));
+        }
+        in_session = InvaderInSession(names, invader);
+    }
+    return TeamSessionMembers(members, in_session);
+}
+
 bool TickTeamJoin(bool ready) {
     if (!team_switch) {
         return false;
@@ -2134,7 +2156,7 @@ bool TickTeamJoin(bool ready) {
         .session_known = session.has_value() && !session->join().empty(),
         .room_owner = Libraries::Np::NpMatching2::OwnsItsRoom(),
         .room_has_others = Libraries::Np::NpMatching2::OwnedRoomHasOthers(),
-        .session_members = TeamSessionMembers(SessionMembers(), !InvaderInWorld().empty()),
+        .session_members = TeamJoinMembers(),
         .standing = party_death_run.downed.Current() == Vital::Up ||
                     party_death_run.downed.Current() == Vital::Off,
         .now_ms = SteadyMilliseconds(),
