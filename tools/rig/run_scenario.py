@@ -18,6 +18,7 @@ stay in rig/runs/<when>/<scenario>/ (the last RUNS_KEPT batches).
   py -3.12 tools/rig/run_scenario.py --engine port --lanes-status   (who holds which lane)
   py -3.12 tools/rig/run_scenario.py --save-baseline
   py -3.12 tools/rig/run_scenario.py --add-guest2   (a third game for parties of three)
+  py -3.12 tools/rig/run_scenario.py --add-guest3   (a fourth game: teams apart, invasions)
   py -3.12 tools/rig/run_scenario.py --boot-check host [--seconds 40]   (tools/smoke-boot.ps1)
   py -3.12 tools/rig/run_scenario.py --engine port --headless --lane 2 --boot-check host \
       --cache-twice <a cache a game with a GPU wrote>   (one pipeline cached twice: skipped)
@@ -88,6 +89,8 @@ ROLES = {
     "host": {"port": 51600, "role": "host"},
     "guest": {"port": 51601, "role": "guest"},
     "guest2": {"port": 51602, "role": "guest"},
+    # A fourth game (Kaniel 2026-10-31: several teams on one server, an invader beside a team).
+    "guest3": {"port": 51603, "role": "guest"},
 }
 
 # The build the games run: the emulator unless --engine says otherwise.
@@ -200,8 +203,24 @@ def with_matching_udp_port(config: str, port: int) -> str:
     return with_setting(config, "MatchingUdpPort", port)
 
 
+# shadnet.cfg's keys a scenario may set for its run ("server"), and what every other run has, so
+# one run's never stays for the next (Invasions: the server's kill switch, docs/INVASIONS.md).
+SERVER_DEFAULTS = {"Invasions": "false"}
+# The running scenario's own ("server"), set by run() before its servers start.
+SERVER_SETTINGS: dict[str, str] = {}
+
+
+def server_settings(scenario: dict) -> dict[str, str]:
+    """The shadnet.cfg keys a scenario's servers run with: the defaults, its "server" over them."""
+    unknown = set(scenario.get("server", {})) - set(SERVER_DEFAULTS)
+    if unknown:
+        raise ValueError(f"unknown server settings {sorted(unknown)} (SERVER_DEFAULTS)")
+    return {**SERVER_DEFAULTS, **scenario.get("server", {})}
+
+
 def configure_shadnet():
-    """The lane's shadNet on the lane's ports (lane 0's are the ones it always had)."""
+    """The lane's shadNet on the lane's ports (lane 0's are the ones it always had), with the
+    running scenario's server settings (SERVER_SETTINGS) or the defaults."""
     config = lane_dir() / "server" / "shadnet.cfg"
     if config.is_file():
         text = config.read_text(encoding="utf-8")
@@ -210,6 +229,8 @@ def configure_shadnet():
         wanted = with_setting(wanted, "WebApiPort", WEBAPI_PORT)
         wanted = with_backend(wanted, builtin_backend())
         wanted = with_build_check(wanted)
+        for key, value in (SERVER_SETTINGS or SERVER_DEFAULTS).items():
+            wanted = with_value(wanted, key, value)
         # BB_RIG_BACKEND_STORE=1: the backend keeps messages and chalice dungeons in a fresh file.
         store = lane_dir() / "server" / "rig-content.sqlite"
         store.unlink(missing_ok=True)
@@ -801,11 +822,12 @@ def setup_port(emulator: engines.Emulator, port: engines.Port) -> list[str]:
     return made
 
 
-def add_guest2():
-    """rig/guest2: the guest's folder (its save, settings, mods) with its own account
-    rig_guest2, registered on the rig's shadNet."""
+def add_guest(name: str):
+    """rig/<name> (guest2, guest3): the guest's folder (its save, settings, mods) with its own
+    account rig_<name>, registered on the rig's shadNet."""
+    account = engines.ACCOUNTS[name]
     source = user_dir("guest")
-    target = user_dir("guest2")
+    target = user_dir(name)
     if target.exists():
         print(f"{target} exists already")
     else:
@@ -814,20 +836,20 @@ def add_guest2():
         users_file = target / "users.json"  # the emulator's account (the port's: engines.py)
         if users_file.exists():
             users = users_file.read_text(encoding="utf-8")
-            users = users.replace('"shadnet_npid": "rig_guest"', '"shadnet_npid": "rig_guest2"')
-            users = users.replace('"user_name": "rig_guest"', '"user_name": "rig_guest2"')
+            users = users.replace('"shadnet_npid": "rig_guest"', f'"shadnet_npid": "{account}"')
+            users = users.replace('"user_name": "rig_guest"', f'"user_name": "{account}"')
             users_file.write_text(users, encoding="utf-8", newline="\n")
         print(f"made {target}")
     baseline = ENGINE.role_dir("guest") / "baseline"
-    if baseline.is_dir() and not (ENGINE.role_dir("guest2") / "baseline").exists():
-        shutil.copytree(baseline, ENGINE.role_dir("guest2") / "baseline")  # starts where guest does
-        print("guest2: baseline copied from the guest's")
+    if baseline.is_dir() and not (ENGINE.role_dir(name) / "baseline").exists():
+        shutil.copytree(baseline, ENGINE.role_dir(name) / "baseline")  # starts where guest does
+        print(f"{name}: baseline copied from the guest's")
     start_servers()
     sample = RIG / "server" / "clientsample"
     result = subprocess.run([str(sample / "shadnet-sample.exe"), "127.0.0.1", str(SHADNET_PORT),
-                             "register", "rig_guest2", "rig", "rig_guest2.rig@p2p.db"],
+                             "register", account, "rig", f"{account}.rig@p2p.db"],
                             cwd=sample, capture_output=True, text=True, timeout=30)
-    print(f"register rig_guest2: {(result.stdout + result.stderr).strip()[:200]}")
+    print(f"register {account}: {(result.stdout + result.stderr).strip()[:200]}")
     stop_servers()
 
 
@@ -1305,6 +1327,8 @@ def run(name: str, batch: pathlib.Path, attempt: int = 1, scenario: dict | None 
               f"{need} GB needed (close something big, or give Windows a bigger page file)")
         return False
     stop_servers()
+    global SERVER_SETTINGS
+    SERVER_SETTINGS = server_settings(scenario)
     # Every run starts with no party worlds on the server (shadNet keeps them on disk: phase 3).
     shutil.rmtree(lane_dir() / "server" / "bloodborne_worlds", ignore_errors=True)
     start_servers(run_dir)
@@ -1773,6 +1797,8 @@ def play(name: str, title: bool = False) -> int:
               f"{need} GB needed.")
         return 2
     stop_servers()
+    global SERVER_SETTINGS
+    SERVER_SETTINGS = server_settings(scenario)
     start_servers(run_dir)
     if not server_is_current(run_dir):
         print(rf"The rig's shadNet is too old (it keeps no party worlds): copy "
@@ -1846,6 +1872,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="keep every role's saves as the start of later runs")
     parser.add_argument("--add-guest2", action="store_true",
                         help="make the third game's rig folder and account")
+    parser.add_argument("--add-guest3", action="store_true",
+                        help="make the fourth game's rig folder and account")
     parser.add_argument("--engine", choices=sorted(engines.ENGINES), default="emulator",
                         help="the build the games run (default: the emulator)")
     parser.add_argument("--setup", action="store_true",
@@ -1916,8 +1944,10 @@ def act(args: argparse.Namespace) -> int:
             print(f"No such scenario: {args.play} (--list shows them)")
             return 2
         return play(args.play, title=args.title)
-    if args.add_guest2:
-        add_guest2()
+    if args.add_guest2 or args.add_guest3:
+        for name, wanted in (("guest2", args.add_guest2), ("guest3", args.add_guest3)):
+            if wanted:
+                add_guest(name)
         return 0
     if args.setup_lanes or args.lanes or args.lane:
         if ENGINE.name != "port":

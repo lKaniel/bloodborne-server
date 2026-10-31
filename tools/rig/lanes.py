@@ -259,7 +259,7 @@ def strays(listing: str, role_dirs: list[pathlib.Path]) -> list[int]:
     return found
 
 
-ROLES = ("host", "guest", "guest2")
+ROLES = ("host", "guest", "guest2", "guest3")
 
 
 def block_occupied(rig: pathlib.Path, port: pathlib.Path, listing: str,
